@@ -1,0 +1,4 @@
+/target
+
+# environment variables
+.env
