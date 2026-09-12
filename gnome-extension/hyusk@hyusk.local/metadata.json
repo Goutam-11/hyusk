@@ -1,0 +1,7 @@
+{
+  "uuid": "hyusk@hyusk.local",
+  "name": "Hyusk Agent Indicator",
+  "description": "Shows the Hyusk agent state as a color-coded butterfly in the top bar.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version": 2
+}

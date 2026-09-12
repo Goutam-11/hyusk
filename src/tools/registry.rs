@@ -14,41 +14,20 @@ impl ToolRegistry {
         }
     }
 
-    pub fn register<T>(
-        &mut self,
-        tool: T,
-    )
+    pub fn register<T>(&mut self, tool: T)
     where
         T: Tool + 'static,
     {
         let name = tool.name().to_string();
 
-        self.tools.insert(
-            name,
-            Arc::new(tool),
-        );
+        self.tools.insert(name, Arc::new(tool));
     }
 
-    pub fn get(
-        &self,
-        name: &str,
-    ) -> Option<Arc<dyn Tool>> {
-        self.tools
-            .get(name)
-            .cloned()
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.get(name).cloned()
     }
 
-    pub fn descriptions(&self) -> String {
-        self.tools
-            .values()
-            .map(|tool| {
-                format!(
-                    "- {}: {}",
-                    tool.name(),
-                    tool.description()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+    pub fn iter(&self) -> impl Iterator<Item = Arc<dyn Tool>> + '_ {
+        self.tools.values().cloned()
     }
 }

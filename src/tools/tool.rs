@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use serde_json::{json, Value};
 
 #[derive(Debug)]
 pub struct ToolResult {
@@ -27,16 +28,11 @@ impl ToolResult {
 
     pub fn as_agent_message(&self) -> String {
         if self.success {
-            format!(
-                "Tool execution succeeded.\nOutput:\n{}",
-                self.output
-            )
+            format!("Tool execution succeeded.\nOutput:\n{}", self.output)
         } else {
             format!(
                 "Tool execution failed.\nError:\n{}",
-                self.error
-                    .as_deref()
-                    .unwrap_or("Unknown error")
+                self.error.as_deref().unwrap_or("Unknown error")
             )
         }
     }
@@ -48,8 +44,12 @@ pub trait Tool: Send + Sync {
 
     fn description(&self) -> &str;
 
-    async fn execute(
-        &self,
-        input: &str,
-    ) -> Result<ToolResult>;
+    /// JSON Schema describing the arguments this tool accepts.
+    /// Defaults to a permissive empty object so existing tools
+    /// keep compiling without overrides.
+    fn input_schema(&self) -> Value {
+        json!({ "type": "object" })
+    }
+
+    async fn execute(&self, input: &str) -> Result<ToolResult>;
 }

@@ -31,28 +31,19 @@ impl ProcessTool {
         Self
     }
 
-    async fn launch(
-        program: &str,
-        args: &[String],
-    ) -> Result<ToolResult> {
+    async fn launch(program: &str, args: &[String]) -> Result<ToolResult> {
         let mut command = Command::new(program);
 
         command.args(args);
 
-        let mut child = match command
-            .spawn()
-            .context("Failed to spawn process")
-        {
+        let mut child = match command.spawn().context("Failed to spawn process") {
             Ok(child) => child,
 
             Err(error) => {
-                return Ok(ToolResult::failure(
-                    format!(
-                        "Failed to launch '{}': {}",
-                        program,
-                        error
-                    ),
-                ));
+                return Ok(ToolResult::failure(format!(
+                    "Failed to launch '{}': {}",
+                    program, error
+                )));
             }
         };
 
@@ -65,33 +56,22 @@ impl ProcessTool {
         match child.try_wait()? {
             Some(status) => {
                 if status.success() {
-                    Ok(ToolResult::success(
-                        format!(
-                            "'{}' exited successfully immediately. PID: {:?}",
-                            program,
-                            pid
-                        ),
-                    ))
+                    Ok(ToolResult::success(format!(
+                        "'{}' exited successfully immediately. PID: {:?}",
+                        program, pid
+                    )))
                 } else {
-                    Ok(ToolResult::failure(
-                        format!(
-                            "'{}' exited immediately with status: {}",
-                            program,
-                            status
-                        ),
-                    ))
+                    Ok(ToolResult::failure(format!(
+                        "'{}' exited immediately with status: {}",
+                        program, status
+                    )))
                 }
             }
 
-            None => {
-                Ok(ToolResult::success(
-                    format!(
-                        "'{}' launched and is still running. PID: {:?}",
-                        program,
-                        pid
-                    ),
-                ))
-            }
+            None => Ok(ToolResult::success(format!(
+                "'{}' launched and is still running. PID: {:?}",
+                program, pid
+            ))),
         }
     }
 }
@@ -103,52 +83,41 @@ impl Tool for ProcessTool {
     }
 
     fn description(&self) -> &str {
-        r#"Launch and manage local applications and processes.
-
-Input MUST be valid JSON.
-
-Launch an application:
-
-{
-  "action": "launch",
-  "program": "PROGRAM_NAME",
-  "args": []
-}
-
-Use this tool for:
-- Browsers
-- GUI applications
-- Editors
-- Music applications
-- Long-running programs
-- Servers
-
-Do not use the shell tool when simply launching
-an application. Use this process tool instead.
-
-The process tool does not wait for the application
-to finish.
-"#
+        "Launch a local application or process by name without         going through the shell. Use this for browsers, GUI apps,         editors, music players, and any long-running program. The         action is `launch`. The process does not block the agent."
     }
 
-    async fn execute(
-        &self,
-        input: &str,
-    ) -> Result<ToolResult> {
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["launch"],
+                    "description": "What to do with the program. Currently only 'launch'."
+                },
+                "program": {
+                    "type": "string",
+                    "description": "The program to launch, e.g. 'firefox' or '/usr/bin/spotify'."
+                },
+                "args": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional command-line arguments."
+                }
+            },
+            "required": ["action", "program"]
+        })
+    }
+
+    async fn execute(&self, input: &str) -> Result<ToolResult> {
         let input: ProcessInput =
             serde_json::from_str(input)
                 .context(
-                    "Process tool input must be valid JSON"
+                    "Process tool input must be a JSON object with 'action' and 'program' fields. See the tool description for the schema."
                 )?;
 
         match input.action {
-            ProcessAction::Launch => {
-                Self::launch(
-                    &input.program,
-                    &input.args,
-                )
-                .await
-            }
+            ProcessAction::Launch => Self::launch(&input.program, &input.args).await,
         }
     }
 }
