@@ -2,6 +2,7 @@ mod agent;
 mod model;
 mod speech;
 mod system_info;
+mod timing;
 mod tools;
 mod types;
 mod ui;
@@ -279,6 +280,9 @@ async fn main() -> Result<()> {
 
     #[cfg(target_os = "linux")]
     tools.register(AccessibilityTool::new());
+
+    #[cfg(target_os = "linux")]
+    tools.register(tools::window::WindowTool::new());
 
     tools.register(MemoryTool::new());
 

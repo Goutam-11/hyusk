@@ -84,14 +84,15 @@ cargo check --all-targets
 cargo test --workspace --no-run
 ```
 
-The crate currently has thirty-seven unit tests plus four ignored portal smoke
+The crate currently has fifty-plus unit tests plus four ignored portal smoke
 tests covering computer-tool key parsing, portal keysym/keycode mapping, schema
 advertisement, input validation, batch/clipboard/URL validation, status
 reporting, portal URI decoding, multimodal message serialization, image-marker
 parsing, OCR text targeting, AT-SPI accessibility, wake/clap detection
 (including the sliding-buffer clap cursor), the LiveKit/Alexa classifiers,
-RNNoise denoising, persistent memory search/render, and the one-shot
-`WakeResume` handshake. `cargo clippy -p hyusk_agent --all-targets` and
+RNNoise denoising, the instant-command router, streaming sentence splitting,
+persistent memory search/render, and the one-shot `WakeResume` handshake.
+`cargo clippy -p hyusk_agent --all-targets` and
 `cargo check -p hyusk_agent --all-targets` pass without warnings.
 
 The ignored tests open real RemoteDesktop/Screenshot approval dialogs and move

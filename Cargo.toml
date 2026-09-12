@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dotenvy = "0.15"
@@ -17,6 +17,7 @@ async-trait = "0.1"
 tokio-util = "0.7"
 base64 = "0.22"
 chrono = "0.4"
+futures-util = "0.3"
 whisper-rs = "0.5"
 cpal = "0.15"       # Audio input/output
 eframe = "0.33"
@@ -29,6 +30,7 @@ enigo = { version = "0.6.1", features = ["wayland"] }
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "remote_desktop", "screencast", "screenshot"] }
 enumflags2 = "0.7"
 xkbcommon = "0.9"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 enigo = "0.6.1"

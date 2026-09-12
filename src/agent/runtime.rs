@@ -199,7 +199,11 @@ async fn handle_listen(
     // task is cancelled mid-recording.
     let _resume_guard = ResumeOnDrop(wake_resume);
 
-    let recording = stt.transcribe_from_microphone(6.0);
+    let stt_start = std::time::Instant::now();
+
+    // A short cap keeps commands snappy; recording still stops as soon as the
+    // speaker pauses, so this is only a safety net for very long requests.
+    let recording = stt.transcribe_from_microphone(4.0);
 
     let transcription = match tokio::time::timeout(Duration::from_secs(45), async {
         tokio::select! {
@@ -228,6 +232,8 @@ async fn handle_listen(
         return;
     }
 
+    crate::timing::mark("record+transcribe", stt_start);
+
     match transcription {
         Some(text) if !text.trim().is_empty() => {
             let _ = agent_tx.send(HyuskEvent::UserInput(text)).await;
@@ -254,40 +260,87 @@ async fn run_turn(
 
     send_state(&ui_tx, HyuskState::Thinking).await;
 
+    let turn_start = std::time::Instant::now();
+
+    /*
+     * TTS worker. It speaks reply sentences as the model streams them, so the
+     * first words start before the full answer is generated.
+     */
+    let (sentence_tx, mut sentence_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+    let worker_tts = tts.clone();
+    let worker_ui = ui_tx.clone();
+    let worker_cancel = cancel.clone();
+
+    let tts_worker = tokio::spawn(async move {
+        let mut speaking = false;
+
+        while let Some(sentence) = sentence_rx.recv().await {
+            if worker_cancel.is_cancelled() {
+                break;
+            }
+
+            if !speaking {
+                speaking = true;
+                send_state(&worker_ui, HyuskState::Speaking).await;
+            }
+
+            if let Err(error) = worker_tts
+                .speak_cancellable(&sentence, &worker_cancel)
+                .await
+            {
+                eprintln!("[TTS] Error: {error}");
+            }
+        }
+    });
+
     let response = {
         let mut agent = agent.lock().await;
 
-        match agent.handle(text, Some(&ui_tx), &cancel).await {
-            Ok(Some(response)) => response,
+        if let Some(fast) = agent.try_fast_command(&text, &cancel).await {
+            // Common commands run locally, with no model round trip.
+            let _ = sentence_tx.send(fast.clone());
+            fast
+        } else {
+            match agent
+                .handle(text, Some(&ui_tx), &cancel, Some(&sentence_tx))
+                .await
+            {
+                Ok(Some(response)) => response,
 
-            Ok(None) => {
-                // Interrupted by a new request.
-                return;
-            }
-
-            Err(error) => {
-                eprintln!("[Agent] {error}");
-
-                if !cancel.is_cancelled() {
-                    send_state(&ui_tx, HyuskState::Hidden).await;
+                Ok(None) => {
+                    // Interrupted by a new request.
+                    drop(sentence_tx);
+                    let _ = tts_worker.await;
+                    return;
                 }
 
-                return;
+                Err(error) => {
+                    eprintln!("[Agent] {error}");
+
+                    drop(sentence_tx);
+                    let _ = tts_worker.await;
+
+                    if !cancel.is_cancelled() {
+                        send_state(&ui_tx, HyuskState::Hidden).await;
+                    }
+
+                    return;
+                }
             }
         }
     };
 
-    if cancel.is_cancelled() {
-        return;
-    }
+    crate::timing::mark("agent turn (model + tools)", turn_start);
 
-    let _ = ui_tx.try_send(HyuskEvent::Response(response.clone()));
+    let _ = ui_tx.try_send(HyuskEvent::Response(response));
 
-    send_state(&ui_tx, HyuskState::Speaking).await;
+    // Close the sink so the worker drains and finishes.
+    drop(sentence_tx);
 
-    if let Err(error) = tts.speak_cancellable(&response, &cancel).await {
-        eprintln!("[TTS] Error: {error}");
-    }
+    let tts_start = std::time::Instant::now();
+    let _ = tts_worker.await;
+    crate::timing::mark("tts", tts_start);
 
     if !cancel.is_cancelled() {
         send_state(&ui_tx, HyuskState::Hidden).await;

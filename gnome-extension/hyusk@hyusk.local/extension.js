@@ -1,10 +1,30 @@
 import GObject from 'gi://GObject';
 import GLib from 'gi://GLib';
+import Gio from 'gi://Gio';
+import Meta from 'gi://Meta';
 import St from 'gi://St';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+
+const SHELL_DBUS_NAME = 'org.hyusk.Shell';
+const SHELL_DBUS_PATH = '/org/hyusk/Shell';
+const SHELL_INTERFACE = `
+<node>
+  <interface name="org.hyusk.Shell">
+    <method name="ListWindows">
+      <arg type="s" direction="out"/>
+    </method>
+    <method name="ActiveWindow">
+      <arg type="s" direction="out"/>
+    </method>
+    <method name="ActivateWindow">
+      <arg type="s" direction="in"/>
+      <arg type="s" direction="out"/>
+    </method>
+  </interface>
+</node>`;
 
 const STATE_COLORS = {
     Hidden: [0x9a, 0xa0, 0xa6],
@@ -221,10 +241,133 @@ export default class HyuskIndicatorExtension extends Extension {
     enable() {
         this._indicator = new HyuskIndicator();
         Main.panel.addToStatusArea('hyusk-indicator', this._indicator, 0, 'right');
+
+        this._exportShell();
     }
 
     disable() {
         this._indicator?.destroy();
         this._indicator = null;
+
+        this._unexportShell();
+    }
+
+    _exportShell() {
+        const impl = {
+            ListWindows: () => this._listWindows(),
+            ActiveWindow: () => this._activeWindow(),
+            ActivateWindow: query => this._activateWindow(query),
+        };
+
+        this._dbus = Gio.DBusExportedObject.wrapJSObject(SHELL_INTERFACE, impl);
+        this._dbus.export(Gio.DBus.session, SHELL_DBUS_PATH);
+
+        this._nameId = Gio.bus_own_name(
+            Gio.BusType.SESSION,
+            SHELL_DBUS_NAME,
+            Gio.BusNameOwnerFlags.NONE,
+            null,
+            null,
+            null
+        );
+    }
+
+    _unexportShell() {
+        this._dbus?.unexport();
+        this._dbus = null;
+
+        if (this._nameId) {
+            Gio.bus_unown_name(this._nameId);
+            this._nameId = 0;
+        }
+    }
+
+    _normalWindows() {
+        return global
+            .get_window_actors()
+            .map(actor => actor.meta_window)
+            .filter(win => {
+                if (!win)
+                    return false;
+
+                try {
+                    return win.get_window_type() === Meta.WindowType.NORMAL;
+                } catch (_error) {
+                    return false;
+                }
+            });
+    }
+
+    _listWindows() {
+        const windows = this._normalWindows().map(win => ({
+            title: this._title(win),
+            app: this._app(win),
+            active: this._focused(win),
+        }));
+
+        return JSON.stringify(windows);
+    }
+
+    _activeWindow() {
+        const win = global.display.focus_window;
+
+        if (!win)
+            return JSON.stringify({});
+
+        return JSON.stringify({
+            title: this._title(win),
+            app: this._app(win),
+            active: true,
+        });
+    }
+
+    _activateWindow(query) {
+        const needle = String(query ?? '').toLowerCase().trim();
+
+        if (!needle)
+            return JSON.stringify({ ok: false, error: 'empty query' });
+
+        const windows = this._normalWindows();
+
+        // Prefer a window whose application name matches, then any title match.
+        const match =
+            windows.find(win => this._app(win).toLowerCase() === needle) ??
+            windows.find(win => this._app(win).toLowerCase().includes(needle)) ??
+            windows.find(win => this._title(win).toLowerCase().includes(needle));
+
+        if (!match)
+            return JSON.stringify({ ok: false, error: `no window matching '${query}'` });
+
+        Main.activateWindow(match, global.get_current_time());
+
+        return JSON.stringify({
+            ok: true,
+            title: this._title(match),
+            app: this._app(match),
+        });
+    }
+
+    _title(win) {
+        try {
+            return win.get_title() ?? '';
+        } catch (_error) {
+            return '';
+        }
+    }
+
+    _app(win) {
+        try {
+            return win.get_wm_class() ?? '';
+        } catch (_error) {
+            return '';
+        }
+    }
+
+    _focused(win) {
+        try {
+            return win.has_focus();
+        } catch (_error) {
+            return false;
+        }
     }
 }

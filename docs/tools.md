@@ -220,6 +220,36 @@ be seen (for example toolkit-accessibility is off), and `active` returns an
 explicit error when the focused app publishes no tree -- in that case the agent
 falls back to the `computer` tool (screenshot + vision or OCR).
 
+## Window control
+
+`WindowTool` lists, inspects, and switches desktop windows through the Hyusk
+GNOME Shell extension's `org.hyusk.Shell` D-Bus interface. This is the reliable
+way to switch applications on Wayland, where AT-SPI cannot raise windows.
+
+```json
+{ "action": "list" }
+{ "action": "active" }
+{ "action": "activate", "query": "code" }
+```
+
+| Action | Input | Notes |
+| --- | --- | --- |
+| `list` | none | Open windows with app name, title, and an active flag. |
+| `active` | none | The focused window. |
+| `activate` | `query` | Raises the first window whose app or title matches. |
+
+Prerequisite: install the extension with `scripts/install-gnome-indicator.sh`
+and log out/in once so `org.hyusk.Shell` is on the session bus. Without it the
+tool returns a failure and the agent falls back to `accessibility`/`computer`.
+
+## Instant commands
+
+`src/agent/commands.rs` is a local router that turns common utterances into
+tool calls without the model (see the README's "Instant voice commands"). It is
+not a tool itself; it runs before the model in `run_turn` and only falls
+through when nothing matches. Extend the app/site aliases in
+`~/.config/hyusk/commands.json`.
+
 ## Memory
 
 `MemoryTool` provides persistent local memory across runs. Data is stored in:

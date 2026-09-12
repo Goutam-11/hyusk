@@ -91,6 +91,15 @@
 
 ### Changed
 
+- Voice turns are much faster. Common commands ("open Firefox", "go to
+  YouTube", "switch to Code", "next song", "volume up") are recognized by a
+  local router and executed without a model call. Longer replies stream from
+  the model and are spoken sentence-by-sentence while generation continues,
+  instead of waiting for the whole answer. Recording now stops 700 ms after
+  speech ends (was about a second), recordings are capped at 4 s, and Whisper
+  uses all CPU cores instead of a hard-coded four.
+- The default model is now a fast paid one (`openai/gpt-4o-mini`); free tiers
+  are frequently queued and add seconds to every turn.
 - Hand-clap wake is disabled by default: background noise (doors, coughs,
   desk bumps) triggered it often enough to be a nuisance. Set
   `WAKE_CLAP_ENABLED=1` to opt back in; `alexa` remains the wake word.
@@ -124,6 +133,14 @@
 ### Added
 
 - Event-driven agent runtime using Tokio MPSC channels.
+- Local instant command router (`src/agent/commands.rs`) with built-in app and
+  site aliases, search-on-engine support, media/volume control, window
+  switching, lock/screenshot, and "take a note". Extend it with
+  `~/.config/hyusk/commands.json`.
+- `window` tool backed by a new `org.hyusk.Shell` D-Bus interface in the GNOME
+  extension: `list`, `active`, and `activate <query>` for native window
+  switching on Wayland (install with `scripts/install-gnome-indicator.sh`).
+- `HYUSK_TIMING=1` prints per-stage latency (record/transcribe, model, TTS).
 - `scripts/setup-accessibility.sh` enables GNOME toolkit accessibility and sets
   `ACCESSIBILITY_ENABLED=1` for Chromium/Electron apps (including Flatpak
   browsers) so more applications publish an accessibility tree; `--check` shows

@@ -45,6 +45,154 @@ impl Agent {
         }
     }
 
+    /// Try to satisfy `user_input` with the local instant command router.
+    ///
+    /// Common desktop commands ("open Firefox", "go to YouTube", "next song")
+    /// execute directly, without a model round trip. Returns `None` when the
+    /// utterance is not a recognized command or a required tool is missing, so
+    /// the caller falls back to the model for full reasoning.
+    pub async fn try_fast_command(
+        &mut self,
+        user_input: &str,
+        cancel: &CancellationToken,
+    ) -> Option<String> {
+        let plan = crate::agent::commands::parse(user_input)?;
+
+        if plan
+            .tools()
+            .iter()
+            .any(|name| self.tools.get(name).is_none())
+        {
+            return None;
+        }
+
+        if cancel.is_cancelled() {
+            return None;
+        }
+
+        let start = std::time::Instant::now();
+
+        for action in &plan.actions {
+            if cancel.is_cancelled() {
+                return None;
+            }
+
+            let tool = self.tools.get(action.tool_name())?;
+            let input = action.tool_input();
+
+            println!("[Hyusk][fast] {} {}", action.tool_name(), input);
+
+            match tool.execute(&input).await {
+                Ok(result) if result.success => {}
+
+                Ok(result) => {
+                    eprintln!("[fast] {} failed: {}", action.tool_name(), result.output);
+
+                    return Some(format!("I couldn't do that: {}", short(&result.output)));
+                }
+
+                Err(error) => {
+                    eprintln!("[fast] {} error: {error}", action.tool_name());
+
+                    return Some(format!("I couldn't do that: {error}"));
+                }
+            }
+        }
+
+        crate::timing::mark("fast command", start);
+
+        self.messages.push(Message::user(user_input.to_string()));
+        self.messages.push(Message::assistant(plan.spoken.clone()));
+
+        Some(plan.spoken)
+    }
+
+    /// Perform one model request, streaming reply sentences when a sink exists.
+    ///
+    /// Returns `None` when cancelled. If streaming fails before anything has
+    /// been spoken, it falls back to a plain (non-streamed) request so a
+    /// provider that rejects `stream: true` still works.
+    async fn request_model(
+        &self,
+        cancel: &CancellationToken,
+        sentences: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
+    ) -> Option<Result<Message>> {
+        let Some(sink) = sentences else {
+            let result = tokio::select! {
+                _ = cancel.cancelled() => return None,
+                result = self.client.chat(&self.model, &self.messages, &self.tool_specs) => result,
+            };
+
+            return Some(result);
+        };
+
+        let mut buffer = String::new();
+        let mut sent_any = false;
+
+        let streamed = {
+            let mut on_delta = |delta: &str| {
+                buffer.push_str(delta);
+
+                for sentence in take_sentences(&mut buffer) {
+                    if sink.send(sentence).is_ok() {
+                        sent_any = true;
+                    }
+                }
+            };
+
+            tokio::select! {
+                _ = cancel.cancelled() => return None,
+                result = self.client.chat_stream(
+                    &self.model,
+                    &self.messages,
+                    &self.tool_specs,
+                    &mut on_delta,
+                ) => result,
+            }
+        };
+
+        match streamed {
+            Ok(message) => {
+                let remainder = buffer.trim();
+
+                if !remainder.is_empty() {
+                    let _ = sink.send(remainder.to_string());
+                } else if !sent_any && !message.text().trim().is_empty() {
+                    let _ = sink.send(message.text());
+                }
+
+                Some(Ok(message))
+            }
+
+            Err(error) => {
+                if sent_any {
+                    // Part of the reply was already spoken; do not repeat it.
+                    return Some(Err(error));
+                }
+
+                eprintln!(
+                    "[Agent] Streaming unavailable ({}); using a plain request",
+                    first_line(&format!("{error:#}"))
+                );
+
+                let result = tokio::select! {
+                    _ = cancel.cancelled() => return None,
+                    result = self.client.chat(&self.model, &self.messages, &self.tool_specs) => result,
+                };
+
+                if let Ok(message) = &result {
+                    let text = message.text();
+
+                    if !text.trim().is_empty() {
+                        let _ = sink.send(text);
+                    }
+                }
+
+                Some(result)
+            }
+        }
+    }
+
     /// Run one turn for `user_input`.
     ///
     /// Cancelling `cancel` aborts the model request or tool call in progress
@@ -52,11 +200,16 @@ impl Agent {
     /// replacement request never sees half-finished tool messages.
     ///
     /// Returns `Ok(None)` when the turn was cancelled.
+    ///
+    /// When `sentences` is provided, streamed reply text is split into
+    /// sentences and forwarded as it arrives so the caller can speak them
+    /// while the model is still generating.
     pub async fn handle(
         &mut self,
         user_input: String,
         ui_tx: Option<&Sender<HyuskEvent>>,
         cancel: &CancellationToken,
+        sentences: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
     ) -> Result<Option<String>> {
         /*
          * The system prompt contains the wall-clock time and retrieved
@@ -72,14 +225,7 @@ impl Agent {
         self.messages.push(Message::user(user_input));
 
         loop {
-            let response = match tokio::select! {
-                _ = cancel.cancelled() => None,
-                response = self.client.chat(
-                    &self.model,
-                    &self.messages,
-                    &self.tool_specs,
-                ) => Some(response),
-            } {
+            let response = match self.request_model(cancel, sentences).await {
                 None => {
                     self.messages.truncate(turn_start);
                     return Ok(None);
@@ -193,6 +339,60 @@ impl Agent {
     }
 }
 
+fn short(text: &str) -> String {
+    let first = text.lines().next().unwrap_or(text).trim();
+
+    if first.chars().count() > 120 {
+        first.chars().take(117).collect::<String>() + "..."
+    } else {
+        first.to_string()
+    }
+}
+
+/// Pull complete spoken sentences out of a growing stream buffer.
+///
+/// Sentences shorter than a small threshold are kept in the buffer so decimals
+/// and abbreviations do not split (the next terminator flushes them whole).
+fn take_sentences(buffer: &mut String) -> Vec<String> {
+    let mut sentences = Vec::new();
+
+    loop {
+        let mut boundary = None;
+
+        for (index, character) in buffer.char_indices() {
+            if matches!(character, '.' | '!' | '?' | '\n') {
+                let end = index + character.len_utf8();
+
+                if end >= 12 {
+                    boundary = Some(end);
+                }
+
+                break;
+            }
+        }
+
+        match boundary {
+            Some(end) => {
+                let sentence = buffer[..end].trim().to_string();
+
+                buffer.drain(..end);
+
+                if !sentence.is_empty() {
+                    sentences.push(sentence);
+                }
+            }
+
+            None => break,
+        }
+    }
+
+    sentences
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or(text)
+}
+
 fn build_tool_specs(tools: &ToolRegistry) -> Vec<Value> {
     tools
         .iter()
@@ -282,6 +482,10 @@ On Linux, drive the desktop natively with `accessibility` first:
    scoped with `app`) to locate a control, then act on the returned path:
    `click` (optionally with `action_name`), `focus`, or `set_text` /
    `get_text`.
+To switch applications or bring a window to the front on GNOME, use the
+`window` tool (`list`, `active`, or `activate` with a query). It is the
+reliable way on Wayland; prefer it over blind alt+tab.
+
 Blind spots: apps that do not publish an accessibility tree (Chromium and
 Electron apps unless `ACCESSIBILITY_ENABLED=1`, or any app while
 toolkit-accessibility is off) return no nodes and a `warnings` field. When that

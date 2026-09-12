@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::sleep;
 
-use crate::types::Message;
+use crate::types::{
+    message::{FunctionCall, ToolCall},
+    Message,
+};
 
 const MAX_RETRIES: u32 = 3;
 const BASE_BACKOFF: Duration = Duration::from_millis(500);
@@ -19,6 +22,9 @@ struct ChatRequest {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<Value>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +114,7 @@ impl OpenRouterClient {
             } else {
                 Some(tools.to_vec())
             },
+            stream: None,
         };
 
         let max_attempts = MAX_RETRIES + 1;
@@ -195,6 +202,163 @@ impl OpenRouterClient {
 
         Ok(choice.message)
     }
+
+    /// Stream a chat completion, invoking `on_delta` for each text delta.
+    ///
+    /// Returns the assembled assistant message (text plus any streamed tool
+    /// calls). This is a single attempt with no retries: it is meant to make
+    /// replies feel fast, and the caller falls back to [`Self::chat`] when the
+    /// provider rejects streaming.
+    pub async fn chat_stream<F>(
+        &self,
+        model: &str,
+        messages: &[Message],
+        tools: &[Value],
+        on_delta: &mut F,
+    ) -> Result<Message>
+    where
+        F: FnMut(&str),
+    {
+        let request = ChatRequest {
+            model: model.to_string(),
+            messages: messages.to_vec(),
+            tools: if tools.is_empty() {
+                None
+            } else {
+                Some(tools.to_vec())
+            },
+            stream: Some(true),
+        };
+
+        let response = self
+            .client
+            .post(format!("{}/chat/completions", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| {
+                anyhow!(HttpError {
+                    status: None,
+                    retry_after: None,
+                    body: error.to_string(),
+                })
+            })
+            .context("Failed to reach model provider")?;
+
+        let status = response.status();
+
+        if !status.is_success() {
+            let retry_after = parse_retry_after(response.headers());
+            let body = response.text().await.unwrap_or_default();
+
+            return Err(anyhow!(HttpError {
+                status: Some(status),
+                retry_after,
+                body: truncate(&body, 240),
+            }));
+        }
+
+        parse_sse_stream(response, on_delta).await
+    }
+}
+
+async fn parse_sse_stream<F>(response: reqwest::Response, on_delta: &mut F) -> Result<Message>
+where
+    F: FnMut(&str),
+{
+    use futures_util::StreamExt;
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut content = String::new();
+    let mut tool_calls: std::collections::BTreeMap<usize, ToolCall> =
+        std::collections::BTreeMap::new();
+    let mut done = false;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("Model stream error")?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(position) = buffer.find('\n') {
+            let line = buffer[..position].trim_end_matches('\r').to_string();
+
+            buffer.drain(..position + 1);
+
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+
+            let data = data.trim();
+
+            if data == "[DONE]" {
+                done = true;
+                break;
+            }
+
+            let Ok(value) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
+
+            let Some(delta) = value.pointer("/choices/0/delta") else {
+                continue;
+            };
+
+            if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                if !text.is_empty() {
+                    content.push_str(text);
+                    on_delta(text);
+                }
+            }
+
+            if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                for call in calls {
+                    let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+
+                    let entry = tool_calls.entry(index).or_insert_with(|| ToolCall {
+                        id: String::new(),
+                        kind: "function".to_string(),
+                        function: FunctionCall {
+                            name: String::new(),
+                            arguments: String::new(),
+                        },
+                    });
+
+                    if let Some(id) = call.get("id").and_then(Value::as_str) {
+                        if !id.is_empty() {
+                            entry.id = id.to_string();
+                        }
+                    }
+
+                    if let Some(function) = call.get("function") {
+                        if let Some(name) = function.get("name").and_then(Value::as_str) {
+                            entry.function.name.push_str(name);
+                        }
+
+                        if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
+                            entry.function.arguments.push_str(arguments);
+                        }
+                    }
+                }
+            }
+        }
+
+        if done {
+            break;
+        }
+    }
+
+    let mut message = Message::assistant(content.clone());
+
+    if !tool_calls.is_empty() {
+        if content.is_empty() {
+            message.content = None;
+        }
+
+        message.tool_calls = Some(tool_calls.into_values().collect());
+    }
+
+    Ok(message)
 }
 
 fn backoff_for(attempt: u32, retry_after: Option<Duration>) -> Duration {

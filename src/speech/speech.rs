@@ -283,9 +283,10 @@ impl SpeechToText {
         // Variable-length recording. Waiting the full fixed duration (the old
         // behavior) added several seconds of dead air to every voice command.
         // Instead, stop shortly after the speech itself ends: once enough
-        // audio has energy, keep collecting until a stretch of quiet frames
-        // passes, or the maximum duration is reached.
-        const SILENCE_STOP_AFTER_FRAMES: usize = 1; // ~0.9 s of quiet
+        // audio has energy, keep collecting until a stretch of quiet passes,
+        // or the maximum duration is reached. A shorter tail (700 ms) shaves
+        // latency off every voice command.
+        const SILENCE_STOP_MS: usize = 700;
         let speech_start_frame = (sample_rate as f32 * 0.35) as usize;
         let speech_energy_floor = 0.006;
 
@@ -377,7 +378,7 @@ impl SpeechToText {
 
                     if saw_speech
                         && collected > speech_start_frame
-                        && quiet_frames >= rate * SILENCE_STOP_AFTER_FRAMES
+                        && quiet_frames * 1000 >= rate * SILENCE_STOP_MS
                     {
                         println!(
                             "🎤 Speech ended after {:.2}s",
@@ -517,7 +518,14 @@ impl SpeechToText {
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 
-        params.set_n_threads(4);
+        // Use the machine's cores (capped so we do not oversubscribe an SMT
+        // machine); the old hard-coded 4 left most of a modern CPU idle.
+        let threads = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(4)
+            .clamp(1, 8);
+
+        params.set_n_threads(threads as i32);
         params.set_translate(false);
         params.set_language(Some("en"));
         params.set_print_special(false);

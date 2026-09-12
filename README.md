@@ -235,6 +235,36 @@ when the environment limits visibility; the agent falls back to the `computer`
 tool for apps that publish no tree (e.g. Chromium/Electron without
 `ACCESSIBILITY_ENABLED=1`).
 
+### Instant voice commands
+
+Common commands are handled locally, with no model round trip, so they run in
+well under a second:
+
+- `open Firefox`, `open Brave`, `open Calculator`, ...
+- `open YouTube`, `go to github.com`, `search lofi beats on youtube`
+- `switch to Code`, `show Firefox`
+- `next song`, `pause`, `volume up`, `set volume to 30`
+- `lock the screen`, `screenshot`, `take a note buy milk`
+- chains: `open Brave and go to YouTube`
+
+Built-in aliases live in `src/agent/commands.rs`; add your own in
+`~/.config/hyusk/commands.json`:
+
+```json
+{
+  "apps":  { "notes": ["flatpak", "run", "com.example.Notes"] },
+  "sites": { "hn": "https://news.ycombinator.com" }
+}
+```
+
+Anything the router does not recognize goes to the model as before.
+
+**`window` tool.** Native window control on GNOME via the
+`org.hyusk.Shell` D-Bus interface in the extension: `list`, `active`, and
+`activate` (by app or title substring). This is the reliable way to switch
+apps on Wayland. Install/refresh the extension with
+`scripts/install-gnome-indicator.sh`, then log out and back in.
+
 ### `memory`
 
 Persistent local memory that survives restarts. Data is stored under
@@ -396,6 +426,7 @@ Wake-word diagnostics:
 HYUSK_WAKE_TEST=30 cargo run          # live level/gate/score output
 HYUSK_WAKE_TEST=30 HYUSK_WAKE_CAPTURE=/tmp/wake.raw cargo run
 HYUSK_STT_TEST=1 cargo run            # record + transcribe without a wake word
+HYUSK_TIMING=1 cargo run              # per-stage latency (record, model, TTS)
 ```
 
 If wake detection misses, clips, or falsely fires, calibrate the microphone
