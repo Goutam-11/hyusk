@@ -8,6 +8,8 @@ pub mod portal;
 pub mod process;
 pub mod registry;
 pub mod shell;
+pub mod task;
+pub mod timer;
 pub mod tool;
 #[cfg(target_os = "linux")]
 pub mod window;

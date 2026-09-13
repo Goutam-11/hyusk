@@ -29,5 +29,6 @@ impl HyuskState {
         let path = std::path::Path::new(&directory).join("hyusk-state");
 
         let _ = std::fs::write(path, self.as_str());
+        crate::status::state(self.as_str());
     }
 }

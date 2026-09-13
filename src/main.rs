@@ -1,6 +1,10 @@
 mod agent;
+mod apps;
+mod credentials;
 mod model;
+mod settings;
 mod speech;
+mod status;
 mod system_info;
 mod timing;
 mod tools;
@@ -18,6 +22,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use dotenvy::dotenv;
+use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use agent::Agent;
@@ -134,6 +139,102 @@ fn gnome_indicator_enabled() -> bool {
     }
 }
 
+fn emergency_stop_path() -> std::path::PathBuf {
+    let directory = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+    std::path::Path::new(&directory).join("hyusk-stop")
+}
+
+fn control_path() -> std::path::PathBuf {
+    let directory = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+    std::path::Path::new(&directory).join("hyusk-control.json")
+}
+
+fn catalog_cache_path() -> std::path::PathBuf {
+    let base = std::env::var("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|_| {
+            std::env::var("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
+        })
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+    base.join("hyusk").join("models.json")
+}
+
+fn load_cached_catalogs() -> Option<Vec<status::Catalog>> {
+    let mut catalogs: Vec<status::Catalog> =
+        serde_json::from_str(&std::fs::read_to_string(catalog_cache_path()).ok()?).ok()?;
+    for catalog in &mut catalogs {
+        catalog.fresh = false;
+    }
+    Some(catalogs)
+}
+
+fn cache_is_fresh() -> bool {
+    std::fs::metadata(catalog_cache_path())
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.elapsed().ok())
+        .map(|age| age < Duration::from_secs(86_400))
+        .unwrap_or(false)
+}
+
+#[derive(Deserialize)]
+struct ExtensionControl {
+    revision: u64,
+    action: String,
+    provider: Option<String>,
+    model: Option<String>,
+}
+
+async fn refresh_catalogs(openrouter: OpenRouterClient, openai: Option<OpenRouterClient>) {
+    let mut catalogs = Vec::new();
+    let openai_configured = openai.is_some();
+    for (provider, client) in
+        std::iter::once(("openrouter", Some(openrouter))).chain(std::iter::once(("openai", openai)))
+    {
+        let Some(client) = client else {
+            continue;
+        };
+        let models = client
+            .list_models()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, label)| status::Model { id, label })
+            .collect();
+        catalogs.push(status::Catalog {
+            provider: provider.to_string(),
+            models,
+            fresh: true,
+        });
+    }
+    if !openai_configured {
+        catalogs.push(status::Catalog {
+            provider: "OpenAI API (key needed)".to_string(),
+            models: Vec::new(),
+            fresh: true,
+        });
+    }
+    catalogs.push(status::Catalog {
+        provider: "codex".to_string(),
+        models: vec![status::Model {
+            id: "default".to_string(),
+            label: "Codex CLI workspace mode".to_string(),
+        }],
+        fresh: std::process::Command::new("codex")
+            .arg("--version")
+            .output()
+            .is_ok(),
+    });
+    let path = catalog_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_vec(&catalogs) {
+        let _ = std::fs::write(path, json);
+    }
+    status::catalogs(catalogs);
+}
+
 /// Standalone microphone/classifier diagnostic: `HYUSK_WAKE_TEST=1 cargo run`.
 ///
 /// Runs only the wake detector (with debug output) for N seconds and prints
@@ -222,7 +323,7 @@ async fn stt_test_mode() -> Result<()> {
     let model = std::env::var("STT_MODEL")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| default_model_path("models/ggml-base.en.bin"));
+        .unwrap_or_else(|| default_model_path("models/ggml-large-v3-turbo.bin"));
 
     println!("🎤 STT test using {}", model);
 
@@ -255,12 +356,16 @@ async fn main() -> Result<()> {
     println!();
 
     tools::computer::cleanup_screenshots();
+    let _ = std::fs::remove_file(emergency_stop_path());
 
     // ==========================================
     // OpenRouter
     // ==========================================
 
-    let api_key = std::env::var("OPENROUTER_API_KEY").context("OPENROUTER_API_KEY is missing")?;
+    let api_key = std::env::var("OPENROUTER_API_KEY")
+        .ok()
+        .or_else(|| credentials::lookup("openrouter"))
+        .context("OPENROUTER_API_KEY is missing")?;
 
     let model =
         std::env::var("OPENROUTER_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
@@ -269,6 +374,11 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
 
     let client = OpenRouterClient::new(api_key, base_url);
+    let openai_client = std::env::var("OPENAI_API_KEY")
+        .ok()
+        .or_else(|| credentials::lookup("openai"))
+        .filter(|key| !key.trim().is_empty())
+        .map(|key| OpenRouterClient::new(key, "https://api.openai.com/v1".to_string()));
 
     // ==========================================
     // Tools
@@ -291,8 +401,7 @@ async fn main() -> Result<()> {
     tools.register(ProcessTool::new());
 
     tools.register(MediaTool::new());
-
-    let agent = Agent::new(client, model, tools);
+    tools.register(tools::timer::TimerTool::default());
 
     // ==========================================
     // Audio
@@ -319,6 +428,62 @@ async fn main() -> Result<()> {
      * something sends through agent_tx.
      */
     let (agent_tx, agent_rx) = mpsc::channel::<HyuskEvent>(32);
+
+    // The task tool needs the runtime channel so a completed background task
+    // can wake the main assistant without replacing the active user turn.
+    tools.register(tools::task::TaskTool::new(
+        agent_tx.clone(),
+        client.clone(),
+        model.clone(),
+    ));
+
+    let saved_selection = settings::load();
+    let selected_provider = saved_selection
+        .as_ref()
+        .map(|s| s.provider.clone())
+        .unwrap_or_else(|| "openrouter".to_string());
+    let selected_model = saved_selection
+        .as_ref()
+        .map(|s| s.model.clone())
+        .unwrap_or_else(|| model.clone());
+    let mut agent = Agent::new(client.clone(), model, tools).with_openai(openai_client.clone());
+    let active_selection =
+        if let Err(error) = agent.select_model(&selected_provider, &selected_model) {
+            eprintln!("[Model] Saved selection unavailable ({error}); using OpenRouter default");
+            settings::ModelSelection {
+                provider: "openrouter".to_string(),
+                model: std::env::var("OPENROUTER_MODEL")
+                    .unwrap_or_else(|_| "openai/gpt-4o-mini".to_string()),
+            }
+        } else {
+            settings::ModelSelection {
+                provider: selected_provider,
+                model: selected_model,
+            }
+        };
+    status::model(&active_selection.provider, &active_selection.model);
+
+    if let Some(mut cached) = load_cached_catalogs() {
+        if openai_client.is_none()
+            && !cached
+                .iter()
+                .any(|catalog| catalog.provider == "OpenAI API (key needed)")
+        {
+            cached.push(status::Catalog {
+                provider: "OpenAI API (key needed)".to_string(),
+                models: Vec::new(),
+                fresh: false,
+            });
+        }
+        status::catalogs(cached);
+    }
+    if !cache_is_fresh() {
+        let catalog_openrouter = client.clone();
+        let catalog_openai = openai_client.clone();
+        tokio::spawn(async move {
+            refresh_catalogs(catalog_openrouter, catalog_openai).await;
+        });
+    }
 
     /*
      * Agent/runtime sends UI events through
@@ -389,6 +554,75 @@ async fn main() -> Result<()> {
         .await
         {
             eprintln!("❌ Agent task stopped: {}", error);
+        }
+    });
+
+    // The GNOME indicator writes this small runtime marker from its Stop
+    // action. Polling avoids giving a Shell extension broad control over the
+    // process while still working reliably on a locked-down Wayland session.
+    let stop_tx = agent_tx.clone();
+    tokio::spawn(async move {
+        let path = emergency_stop_path();
+        loop {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            if path.exists() {
+                let _ = std::fs::remove_file(&path);
+                if stop_tx.send(HyuskEvent::StopRequested).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    let control_tx = agent_tx.clone();
+    let control_openrouter = client.clone();
+    let control_openai = openai_client.clone();
+    tokio::spawn(async move {
+        let path = control_path();
+        let mut seen = 0u64;
+        loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let Ok(contents) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(control) = serde_json::from_str::<ExtensionControl>(&contents) else {
+                continue;
+            };
+            if control.revision <= seen {
+                continue;
+            }
+            seen = control.revision;
+            match control.action.as_str() {
+                "set_model" => {
+                    if let (Some(provider), Some(model)) = (control.provider, control.model) {
+                        let _ = control_tx
+                            .send(HyuskEvent::ModelSelected { provider, model })
+                            .await;
+                    }
+                }
+                "refresh_models" => {
+                    let a = control_openrouter.clone();
+                    let b = control_openai.clone();
+                    tokio::spawn(async move {
+                        refresh_catalogs(a, b).await;
+                    });
+                }
+                "dismiss_card" => status::dismiss(),
+                "approve" => {
+                    let _ = control_tx
+                        .send(HyuskEvent::UserInput("yes".to_string()))
+                        .await;
+                }
+                "deny" => {
+                    let _ = control_tx
+                        .send(HyuskEvent::UserInput("no".to_string()))
+                        .await;
+                }
+                "stop_listening" => {
+                    let _ = control_tx.send(HyuskEvent::StopListening).await;
+                }
+                _ => {}
+            }
         }
     });
 

@@ -45,6 +45,10 @@ pub enum Action {
     Remember {
         text: String,
     },
+    Timer {
+        action: String,
+        seconds: Option<u64>,
+    },
 }
 
 impl Action {
@@ -58,6 +62,7 @@ impl Action {
             Action::Shell { .. } => "shell",
             Action::Screenshot => "computer",
             Action::Remember { .. } => "memory",
+            Action::Timer { .. } => "timer",
         }
     }
 
@@ -110,13 +115,25 @@ impl Action {
                 "text": text,
             })
             .to_string(),
+
+            Action::Timer { action, seconds } => serde_json::json!({
+                "action": action,
+                "seconds": seconds,
+            })
+            .to_string(),
         }
     }
 
     /// Short, natural sentence spoken back to the user.
     fn spoken(&self) -> String {
         match self {
-            Action::Launch { label, .. } => format!("Opening {label}."),
+            Action::Launch { program, label, .. } => {
+                if program == "mpv" {
+                    format!("Playing {label}.")
+                } else {
+                    format!("Opening {label}.")
+                }
+            }
             Action::OpenUrl { label, .. } => format!("Opening {label}."),
             Action::SwitchWindow { query } => format!("Switching to {query}."),
             Action::Media { action, level } => match (action.as_str(), level) {
@@ -138,6 +155,14 @@ impl Action {
             Action::Shell { .. } => "Done.".to_string(),
             Action::Screenshot => "Screenshot taken.".to_string(),
             Action::Remember { .. } => "Noted.".to_string(),
+            Action::Timer {
+                action,
+                seconds: Some(seconds),
+            } if action == "set" => format!("Timer set for {seconds} seconds."),
+            Action::Timer { action, .. } if action == "show_time" => {
+                "Showing the time.".to_string()
+            }
+            Action::Timer { .. } => "Done.".to_string(),
         }
     }
 }
@@ -181,55 +206,6 @@ fn load_config() -> Config {
         .ok()
         .and_then(|contents| serde_json::from_str(&contents).ok())
         .unwrap_or_default()
-}
-
-fn builtin_apps() -> HashMap<&'static str, Vec<&'static str>> {
-    HashMap::from([
-        ("firefox", vec!["firefox"]),
-        ("brave", vec!["flatpak", "run", "com.brave.Browser"]),
-        ("brave browser", vec!["flatpak", "run", "com.brave.Browser"]),
-        ("chrome", vec!["flatpak", "run", "com.google.Chrome"]),
-        ("google chrome", vec!["flatpak", "run", "com.google.Chrome"]),
-        ("chromium", vec!["chromium"]),
-        ("terminal", vec!["ptyxis"]),
-        ("console", vec!["ptyxis"]),
-        ("ptyxis", vec!["ptyxis"]),
-        ("gnome terminal", vec!["gnome-terminal"]),
-        ("files", vec!["nautilus"]),
-        ("file manager", vec!["nautilus"]),
-        ("nautilus", vec!["nautilus"]),
-        ("calculator", vec!["gnome-calculator"]),
-        ("calc", vec!["gnome-calculator"]),
-        ("settings", vec!["gnome-control-center"]),
-        ("system settings", vec!["gnome-control-center"]),
-        ("control center", vec!["gnome-control-center"]),
-        ("text editor", vec!["gnome-text-editor"]),
-        ("editor", vec!["gnome-text-editor"]),
-        ("code", vec!["code"]),
-        ("vs code", vec!["code"]),
-        ("vscode", vec!["code"]),
-        ("visual studio code", vec!["code"]),
-        ("spotify", vec!["spotify"]),
-        ("discord", vec!["discord"]),
-        ("slack", vec!["slack"]),
-        ("vlc", vec!["vlc"]),
-        ("thunderbird", vec!["thunderbird"]),
-        ("camera", vec!["cheese"]),
-        ("libreoffice", vec!["libreoffice"]),
-        ("office", vec!["libreoffice"]),
-        (
-            "podman desktop",
-            vec!["flatpak", "run", "io.podman_desktop.PodmanDesktop"],
-        ),
-        (
-            "gradia",
-            vec!["flatpak", "run", "be.alexandervanhee.gradia"],
-        ),
-        (
-            "exhibit",
-            vec!["flatpak", "run", "io.github.nokse22.Exhibit"],
-        ),
-    ])
 }
 
 fn builtin_sites() -> HashMap<&'static str, &'static str> {
@@ -320,12 +296,10 @@ fn resolve_app(target: &str, config: &Config) -> Option<(String, Vec<String>, St
         }
     }
 
-    let builtins = builtin_apps();
+    if crate::apps::resolves(&key) {
+        let (program, args) = crate::apps::resolve(&key);
 
-    if let Some(parts) = builtins.get(key.as_str()) {
-        let mut parts = parts.iter().map(|part| part.to_string());
-        let program = parts.next()?;
-        return Some((program, parts.collect(), key));
+        return Some((program, args, key));
     }
 
     None
@@ -344,6 +318,46 @@ fn ensure_scheme(token: &str) -> String {
     } else {
         format!("https://{token}")
     }
+}
+
+/// Play `query` for real when a native player is available, otherwise open a
+/// YouTube Music search.
+///
+/// `mpv` + `yt-dlp` start playback immediately and need no clicks, which is
+/// what "play X" should mean. Without them the browser can only show results,
+/// so the confirmation says so.
+fn music_action(query: &str) -> Action {
+    if on_path("mpv") && on_path("yt-dlp") {
+        return Action::Launch {
+            program: "mpv".to_string(),
+            args: vec![
+                "--no-video".to_string(),
+                "--really-quiet".to_string(),
+                format!("ytdl://ytsearch1:{query}"),
+            ],
+            label: query.to_string(),
+        };
+    }
+
+    Action::OpenUrl {
+        url: format!(
+            "https://music.youtube.com/search?q={}",
+            percent_encode(query)
+        ),
+        label: if query == "music" {
+            "YouTube Music".to_string()
+        } else {
+            format!("YouTube Music for {query}")
+        },
+    }
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|directory| directory.join(program).is_file())
+        })
+        .unwrap_or(false)
 }
 
 fn strip_prefix_any<'a>(text: &'a str, prefixes: &[&str]) -> Option<&'a str> {
@@ -413,6 +427,15 @@ fn looks_like_action_start(text: &str) -> bool {
         "unmute",
         "search ",
         "lock",
+        "brightness",
+        "increase brightness",
+        "decrease brightness",
+        "brighter",
+        "dimmer",
+        "what time",
+        "tell me the time",
+        "set a timer",
+        "set timer",
         "screenshot",
         "take a note",
         "note that",
@@ -484,7 +507,11 @@ fn parse_clause(clause: &str, config: &Config) -> Option<Action> {
         }
     }
 
-    // "play <query> on youtube" is a search, not media control.
+    // Music.
+    //   "play <query> on <engine>" -> search that site
+    //   "play <query>"             -> play it directly if a native player
+    //                                 exists, else search YouTube Music
+    //   "play music/something"     -> play/serve generic music
     if let Some(rest) = strip_prefix_any(clause, &["play ", "put on "]) {
         if let Some((query, engine)) = rest.rsplit_once(" on ") {
             if let Some(prefix) = search_prefix(engine.trim()) {
@@ -494,6 +521,27 @@ fn parse_clause(clause: &str, config: &Config) -> Option<Action> {
                     label: format!("{} for {query}", title_case(engine.trim())),
                 });
             }
+        }
+
+        let query = rest.trim();
+
+        if matches!(
+            query,
+            "something"
+                | "some music"
+                | "music"
+                | "some songs"
+                | "songs"
+                | "a song"
+                | "song"
+                | "some tunes"
+                | "tunes"
+        ) {
+            return Some(music_action("music"));
+        }
+
+        if !query.is_empty() {
+            return Some(music_action(query));
         }
     }
 
@@ -571,8 +619,7 @@ fn parse_media(clause: &str) -> Option<Action> {
     };
 
     match clause {
-        "play" | "play music" | "play some music" | "resume" | "resume music" | "continue"
-        | "continue music" | "play the music" => return media("play"),
+        "play" | "resume" | "resume music" | "continue" | "continue music" => return media("play"),
 
         "pause" | "pause music" | "pause the music" | "stop the music" => return media("pause"),
 
@@ -631,6 +678,49 @@ fn parse_media(clause: &str) -> Option<Action> {
 }
 
 fn parse_shell(clause: &str) -> Option<Action> {
+    if matches!(
+        clause,
+        "what time is it" | "tell me the time" | "show the time" | "show time"
+    ) {
+        return Some(Action::Timer {
+            action: "show_time".to_string(),
+            seconds: None,
+        });
+    }
+
+    if let Some(rest) = clause
+        .strip_prefix("set a timer for ")
+        .or_else(|| clause.strip_prefix("set timer for "))
+    {
+        let parts: Vec<_> = rest.split_whitespace().collect();
+        if let Some(number) = parts.first().and_then(|value| value.parse::<u64>().ok()) {
+            let seconds = if parts.get(1).is_some_and(|unit| unit.starts_with("hour")) {
+                number.saturating_mul(3600)
+            } else if parts
+                .get(1)
+                .is_some_and(|unit| unit.starts_with("minute") || *unit == "min")
+            {
+                number.saturating_mul(60)
+            } else {
+                number
+            };
+            return Some(Action::Timer {
+                action: "set".to_string(),
+                seconds: Some(seconds),
+            });
+        }
+    }
+
+    if matches!(clause, "brightness up" | "increase brightness" | "brighter") {
+        return Some(Action::Shell {
+            command: "brightnessctl set +5%".to_string(),
+        });
+    }
+    if matches!(clause, "brightness down" | "decrease brightness" | "dimmer") {
+        return Some(Action::Shell {
+            command: "brightnessctl set 5%-".to_string(),
+        });
+    }
     if matches!(
         clause,
         "lock" | "lock screen" | "lock the screen" | "lock session" | "lock the session"
@@ -778,6 +868,28 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn plays_music_on_youtube_music() {
+        let plan = parse("play some music on youtube music").expect("parses");
+
+        match &plan.actions[0] {
+            Action::OpenUrl { url, .. } => {
+                assert!(url.contains("music.youtube.com/search"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn play_something_is_handled_without_the_model() {
+        let plan = parse("play something").expect("parses");
+
+        assert!(matches!(
+            plan.actions[0],
+            Action::OpenUrl { .. } | Action::Launch { .. }
+        ));
     }
 
     #[test]

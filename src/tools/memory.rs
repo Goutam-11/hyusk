@@ -229,23 +229,19 @@ fn rank_entries<'a>(
 ///
 /// Ranks stored notes against the message so the assistant sees the memories
 /// that matter for *this* turn instead of an arbitrary "most recent" list. When
-/// nothing matches, the most recent notes are used so there is still some
-/// continuity. Stable facts from the knowledge graph are always included.
+/// nothing matches, no note is injected. Graph facts are filtered by the
+/// current query as well, preventing stale or unrelated context from
+/// distracting the current request.
 pub fn context_for(query: &str, limit: usize) -> String {
     let store = load_store();
     let mut output = String::new();
 
     let terms = tokenize(query);
 
-    let mut chosen: Vec<&MemoryEntry> = rank_entries(&store.entries, &terms, limit)
+    let chosen: Vec<&MemoryEntry> = rank_entries(&store.entries, &terms, limit)
         .into_iter()
         .map(|(entry, _)| entry)
         .collect();
-
-    if chosen.is_empty() {
-        chosen = store.entries.iter().rev().take(limit).collect();
-        chosen.reverse();
-    }
 
     if !chosen.is_empty() {
         output.push_str("Relevant memories:\n");
@@ -255,7 +251,17 @@ pub fn context_for(query: &str, limit: usize) -> String {
         }
     }
 
-    let facts: Vec<&GraphTriple> = store.graph.iter().rev().take(limit).collect();
+    let facts: Vec<&GraphTriple> = store
+        .graph
+        .iter()
+        .rev()
+        .filter(|triple| {
+            let text = format!("{} {} {}", triple.subject, triple.relation, triple.object);
+            let fact_terms = tokenize(&text);
+            terms.iter().any(|term| fact_terms.contains(term))
+        })
+        .take(limit)
+        .collect();
 
     if !facts.is_empty() {
         output.push_str("Known facts:\n");

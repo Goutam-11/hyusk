@@ -280,15 +280,27 @@ impl SpeechToText {
 
         let frame_count = (sample_rate as f32 * duration_secs) as usize;
 
-        // Variable-length recording. Waiting the full fixed duration (the old
-        // behavior) added several seconds of dead air to every voice command.
-        // Instead, stop shortly after the speech itself ends: once enough
-        // audio has energy, keep collecting until a stretch of quiet passes,
-        // or the maximum duration is reached. A shorter tail (700 ms) shaves
-        // latency off every voice command.
-        const SILENCE_STOP_MS: usize = 700;
-        let speech_start_frame = (sample_rate as f32 * 0.35) as usize;
-        let speech_energy_floor = 0.006;
+        // Variable-length recording: keep capturing only while the user is
+        // actually talking. Speech start/end are detected on 20 ms frames
+        // against an adaptive noise floor, so it works whether the microphone
+        // is quiet or noisy, and stops shortly after the user stops speaking
+        // instead of always waiting for the maximum duration.
+        let silence_stop_ms = env::var("STT_SILENCE_MS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(900);
+
+        let no_speech_timeout_ms = env::var("STT_NO_SPEECH_MS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(4000);
+
+        let frame_len = (sample_rate as usize / 50).max(1); // 20 ms
+        let silence_stop_frames = (silence_stop_ms / 20).max(1);
+        let no_speech_timeout_frames = (no_speech_timeout_ms / 20).max(1);
+        let speech_start_frames = 3; // 60 ms of sustained energy
+        let min_speech_rms = 0.006;
+        let warmup_frames = 15; // 300 ms ignored while the capture settles
 
         let (tx, rx) = mpsc::channel::<f32>();
 
@@ -346,45 +358,102 @@ impl SpeechToText {
 
         let mut audio_samples = Vec::with_capacity(frame_count);
         let mut collected = 0usize;
-        let mut loud_frames = 0usize;
-        let mut quiet_frames = 0usize;
+
+        // End-of-speech detector state.
+        let mut frame_index = 0usize;
+        let mut frame_energy = 0.0f32;
+        let mut speech_frames = 0usize;
+        let mut silence_frames = 0usize;
         let mut saw_speech = false;
+        let mut noise_floor = 0.0f32;
+        let mut noise_frames = 0usize;
+        let mut total_frames = 0usize;
+        let mut warmup_min = f32::MAX;
+
+        // One-pole high-pass state for the endpointer's energy measurement, so
+        // low-frequency room rumble does not dominate the noise floor.
+        let hp_alpha = {
+            let dt = 1.0 / sample_rate as f32;
+            let rc = 1.0 / (2.0 * std::f32::consts::PI * 90.0);
+            rc / (rc + dt)
+        };
+        let mut hp_prev_in = 0.0f32;
+        let mut hp_prev_out = 0.0f32;
 
         while collected < frame_count {
             match rx.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(sample) => {
-                    let is_loud = sample.abs() >= speech_energy_floor;
+                    let filtered = hp_alpha * (hp_prev_out + sample - hp_prev_in);
+                    hp_prev_in = sample;
+                    hp_prev_out = filtered;
 
-                    let rate = sample_rate as usize;
-
-                    if is_loud {
-                        loud_frames += 1;
-                        quiet_frames = 0;
-
-                        // ~120 ms of sustained energy counts as speech.
-                        if loud_frames >= rate * 3 / 25 {
-                            saw_speech = true;
-                        }
-                    } else {
-                        quiet_frames += 1;
-
-                        if quiet_frames > 4 {
-                            loud_frames = loud_frames.saturating_sub(1);
-                        }
-                    }
-
+                    frame_energy += filtered * filtered;
+                    frame_index += 1;
                     audio_samples.push(sample);
                     collected += 1;
 
-                    if saw_speech
-                        && collected > speech_start_frame
-                        && quiet_frames * 1000 >= rate * SILENCE_STOP_MS
-                    {
+                    if frame_index < frame_len {
+                        continue;
+                    }
+
+                    // One 20 ms frame is complete: classify it.
+                    let frame_rms = (frame_energy / frame_len as f32).sqrt();
+
+                    frame_energy = 0.0;
+                    frame_index = 0;
+                    total_frames += 1;
+
+                    // Ignore the first frames while the capture stream settles
+                    // (opening the microphone usually produces a click); track
+                    // the quietest of them as the starting noise floor.
+                    if total_frames <= warmup_frames {
+                        warmup_min = warmup_min.min(frame_rms);
+                        noise_floor = warmup_min.max(1e-4);
+
+                        continue;
+                    }
+
+                    if noise_frames == 0 {
+                        noise_floor = warmup_min.max(1e-4);
+                    }
+
+                    noise_frames += 1;
+
+                    let threshold = (noise_floor * 2.0).max(min_speech_rms);
+
+                    if env::var_os("STT_DEBUG").is_some() && total_frames.is_multiple_of(5) {
+                        eprintln!(
+                            "[stt-debug] frame {total_frames} rms {frame_rms:.4} thr {threshold:.4} noise {noise_floor:.4} saw {saw_speech}"
+                        );
+                    }
+
+                    if frame_rms >= threshold {
+                        speech_frames += 1;
+                        silence_frames = 0;
+
+                        if speech_frames >= speech_start_frames {
+                            saw_speech = true;
+                        }
+                    } else {
+                        silence_frames += 1;
+                        speech_frames = speech_frames.saturating_sub(1);
+
+                        // Track the noise floor from quiet frames only, so loud
+                        // speech cannot raise the threshold and cut the command.
+                        noise_floor = noise_floor * 0.95 + frame_rms * 0.05;
+                    }
+
+                    if saw_speech && silence_frames >= silence_stop_frames {
                         println!(
                             "🎤 Speech ended after {:.2}s",
                             collected as f32 / sample_rate as f32
                         );
 
+                        break;
+                    }
+
+                    if !saw_speech && total_frames - warmup_frames >= no_speech_timeout_frames {
+                        println!("🎤 No speech detected; stopping early");
                         break;
                     }
                 }
@@ -432,6 +501,10 @@ impl SpeechToText {
 
         if sample_rate != self.sample_rate {
             audio_samples = self.resample_audio(&audio_samples, sample_rate, self.sample_rate)?;
+        }
+
+        if voice_denoise_enabled() {
+            audio_samples = denoise_for_stt(&audio_samples);
         }
 
         if !self.has_speech_energy(&audio_samples) {
@@ -631,6 +704,56 @@ impl SpeechToText {
 
         Ok(output)
     }
+}
+
+fn voice_denoise_enabled() -> bool {
+    !matches!(
+        env::var("VOICE_DENOISE")
+            .unwrap_or_else(|_| "1".to_string())
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "off" | "no"
+    )
+}
+
+/// RNNoise reduces persistent environmental noise before Whisper transcribes a
+/// command. It is denoising rather than biometric speaker separation: nearby
+/// voices can still be heard by a single laptop microphone.
+fn denoise_for_stt(samples: &[f32]) -> Vec<f32> {
+    use nnnoiseless::DenoiseState;
+
+    if samples.is_empty() {
+        return Vec::new();
+    }
+    const UPSAMPLE: usize = 3;
+    let mut input = Vec::with_capacity(samples.len() * UPSAMPLE);
+    for (index, current) in samples.iter().copied().enumerate() {
+        let next = samples.get(index + 1).copied().unwrap_or(current);
+        input.extend(
+            [
+                current,
+                current + (next - current) / 3.0,
+                current + (next - current) * 2.0 / 3.0,
+            ]
+            .map(|sample| sample * 32768.0),
+        );
+    }
+    let size = DenoiseState::FRAME_SIZE;
+    let mut state = DenoiseState::new();
+    let silence = vec![0.0; size];
+    let mut frame = vec![0.0; size];
+    for _ in 0..8 {
+        state.process_frame(&mut frame, &silence);
+    }
+    let mut output = Vec::with_capacity(samples.len());
+    for chunk in input.chunks_exact(size) {
+        state.process_frame(&mut frame, chunk);
+        for values in frame.chunks_exact(3) {
+            output.push(((values[0] + values[1] + values[2]) / 3.0 / 32768.0).clamp(-1.0, 1.0));
+        }
+    }
+    output.resize(samples.len(), 0.0);
+    output
 }
 
 impl TextToSpeech {

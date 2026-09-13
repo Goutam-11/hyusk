@@ -23,10 +23,16 @@ top-bar butterfly color/label
 ```
 
 The Rust side writes the current state name (`Hidden`, `Waking`, `Listening`,
-`Thinking`, `Working`, `Speaking`) to `$XDG_RUNTIME_DIR/hyusk-state` on every
-state change. The extension reads that file, smoothly interpolates the color,
-and animates the wings. Animation speed changes by state: working flaps
-fastest, speaking bounces, thinking tilts, idle stays calm.
+`Thinking`, `Working`, `Speaking`) to `$XDG_RUNTIME_DIR/hyusk-state` and richer
+card/model state to `$XDG_RUNTIME_DIR/hyusk-status.json`. The extension reads
+those files, smoothly interpolates the color, and animates the wings. Animation
+speed changes by state: working flaps fastest, speaking bounces, thinking tilts,
+idle stays calm.
+
+The indicator menu includes a Model picker, Refresh models, and Stop Hyusk.
+The model picker sends a small control JSON file back to the running agent; it
+does not store API keys. A compact response card appears below the top bar near
+the butterfly, with More, Copy, and Dismiss actions.
 
 ## Install
 

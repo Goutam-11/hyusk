@@ -88,11 +88,14 @@ or times out, the wake event is ignored and the terminal input path still works.
 | `OPENROUTER_API_KEY` | Yes | - | Bearer token for the chat provider. |
 | `OPENROUTER_MODEL` | No | `openai/gpt-4o-mini` | Model identifier sent to the provider. |
 | `OPENROUTER_BASE_URL` | No | `https://openrouter.ai/api/v1` | Base URL; `/chat/completions` is appended. |
+| `OPENAI_API_KEY` | No | - | Separate OpenAI API credential; API usage is billed separately from a ChatGPT subscription. |
+| `HYUSK_WORKSPACE` | No | Current directory | Workspace root for Codex CLI coding mode. |
 | `MODEL_VISION` | No | `1` | Attach screenshots as image content for vision-capable models. Set `0` for text-only models, then use `ocr` instead. |
 | `ORB_STEAL_FOCUS` | No | `0` | Let the orb take keyboard focus while active. Default is off so portal keyboard input goes to the controlled app. |
 | `HYUSK_ORB` | No | auto | Set `0` to disable the orb, `1` to force it. By default the orb is skipped when the GNOME indicator extension is enabled. |
 | `HYUSK_SCREENSHOT_RETENTION_SECS` | No | `900` | Delete temporary screenshots older than this. |
 | `HYUSK_SCREENSHOT_MAX_FILES` | No | `30` | Maximum temporary screenshots retained. |
+| Background subagents | No configuration | At most two workers. Research is read-only; workspace tasks use local Codex CLI with a 15-minute limit. |
 | `WAKE_CLAP_ENABLED` | No | `0` | Enable hand-clap wake (off by default; noise triggers it). |
 | `WAKE_CLAP_SENSITIVITY` | No | `6.0` | How many times louder than background a clap must be. |
 | `WAKE_CLAP_MIN_PEAK` | No | `0.03` | Absolute peak floor for a clap. |
@@ -104,9 +107,31 @@ or times out, the wake event is ignored and the terminal input path still works.
 | `WAKE_WORD_COOLDOWN_MS` | No | `1500` | Minimum milliseconds between detections. |
 | `WAKE_WORD_DENOISE` | No | `1` | Run RNNoise before wake scoring to suppress fan/hiss noise. |
 | `STT_MODEL` | No | `models/ggml-base.en.bin` | Whisper GGML model for post-wake transcription. |
+| `STT_SILENCE_MS` | No | `900` | Silence after speech before recording stops. |
+| `STT_NO_SPEECH_MS` | No | `4000` | Give up and stop early if no speech starts. |
 | `PIPER_MODEL` | No | `models/en_US-lessac-medium.onnx` | Piper voice model used by Linux TTS. |
 
 The base URL must not include the trailing `/chat/completions` path.
+
+## Start automatically and view logs
+
+On Fedora GNOME, install Hyusk as a per-user graphical-session service:
+
+```bash
+./scripts/install-autostart.sh
+```
+
+It builds the release binary, starts Hyusk after graphical login, restarts it
+after crashes, and sends SIGINT during logout or shutdown so it can stop cleanly.
+The service preserves the existing component-tagged logs in journald:
+
+```bash
+systemctl --user status hyusk.service
+journalctl --user -u hyusk.service -f       # live logs
+journalctl --user -u hyusk.service -b       # this boot
+```
+
+Disable it with `./scripts/uninstall-autostart.sh`.
 
 ## Tools
 
@@ -235,6 +260,24 @@ when the environment limits visibility; the agent falls back to the `computer`
 tool for apps that publish no tree (e.g. Chromium/Electron without
 `ACCESSIBILITY_ENABLED=1`).
 
+### `task`
+
+Delegates independent work while Hyusk remains available. The default
+`research` profile is read-only and has no local tools, memory, desktop access,
+or credentials. The `workspace` profile gives an already-installed and signed-in
+Codex CLI a single approved project root in `workspace-write` sandbox mode for
+code inspection and edits. Starting either profile requires explicit user
+confirmation.
+
+The GNOME indicator displays the latest response, completion, or error in a
+small card even when audio is muted. Its Model menu uses a cached provider
+catalog (refreshed every 24 hours or manually) to switch OpenRouter, OpenAI API,
+or Codex CLI workspace mode. Switching starts a fresh conversation; the choice
+is stored in `$XDG_CONFIG_HOME/hyusk/config.json`.
+
+The GNOME top-bar indicator includes **Stop Hyusk**, which cancels the active
+foreground turn and listening session.
+
 ### Instant voice commands
 
 Common commands are handled locally, with no model round trip, so they run in
@@ -244,6 +287,8 @@ well under a second:
 - `open YouTube`, `go to github.com`, `search lofi beats on youtube`
 - `switch to Code`, `show Firefox`
 - `next song`, `pause`, `volume up`, `set volume to 30`
+- `play something`, `play lofi beats` (plays via `mpv` + `yt-dlp` when
+  installed, otherwise opens a YouTube Music search)
 - `lock the screen`, `screenshot`, `take a note buy milk`
 - chains: `open Brave and go to YouTube`
 

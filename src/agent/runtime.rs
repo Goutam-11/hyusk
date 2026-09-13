@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -19,11 +20,13 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     agent::Agent,
     speech::{SpeechToText, TextToSpeech},
+    tools::media,
     types::{HyuskEvent, HyuskState},
     wake::detector::WakeResume,
 };
 
 struct ActiveTurn {
+    id: u64,
     cancel: CancellationToken,
     handle: JoinHandle<()>,
 }
@@ -62,6 +65,21 @@ impl Drop for OutputOnDrop {
     }
 }
 
+/// Resume media that was paused for a voice command, when the turn ends.
+///
+/// The turn clears the flag first when the command itself controlled playback
+/// (so "pause music" is not immediately undone). Dropping this guard spawns the
+/// resume, so it also fires on cancellation and error paths.
+struct MediaOnDrop(Arc<AtomicBool>);
+
+impl Drop for MediaOnDrop {
+    fn drop(&mut self) {
+        if self.0.swap(false, Ordering::Relaxed) {
+            tokio::spawn(media::resume());
+        }
+    }
+}
+
 async fn interrupt_active(active: &mut Option<ActiveTurn>) {
     if let Some(turn) = active.take() {
         turn.cancel.cancel();
@@ -89,11 +107,19 @@ pub async fn run_agent_task(
     let tts = TextToSpeech::new();
     let mut active: Option<ActiveTurn> = None;
     let mut listen: Option<ActiveListen> = None;
+    let mut completed_tasks = VecDeque::new();
+    let mut next_turn_id = 1u64;
+
+    /*
+     * Set when media was playing and was paused for a voice command. The turn
+     * resumes it afterwards unless the command itself controlled playback.
+     */
+    let resume_media = Arc::new(AtomicBool::new(false));
 
     while let Some(event) = event_rx.recv().await {
         match event {
-            HyuskEvent::WakeWordDetected => {
-                println!("[Wake] Wake word detected");
+            HyuskEvent::WakeWordDetected | HyuskEvent::ContinueListening => {
+                println!("[Wake] Listening requested");
 
                 /*
                  * A new voice request replaces any in-flight model, tool,
@@ -103,6 +129,12 @@ pub async fn run_agent_task(
                  */
                 interrupt_active(&mut active).await;
                 interrupt_listen(&mut listen).await;
+
+                // Quiet any music so the command is heard, and remember to
+                // resume it once the request is handled.
+                if media::pause_if_playing().await {
+                    resume_media.store(true, Ordering::Relaxed);
+                }
 
                 send_state(&ui_tx, HyuskState::Waking).await;
                 send_state(&ui_tx, HyuskState::Listening).await;
@@ -119,9 +151,18 @@ pub async fn run_agent_task(
                 let task_ui_tx = ui_tx.clone();
                 let task_resume = wake_resume.clone();
                 let task_cancel = cancel.clone();
+                let task_media = Arc::clone(&resume_media);
 
                 let handle = tokio::spawn(async move {
-                    handle_listen(stt, task_agent_tx, task_ui_tx, task_resume, task_cancel).await;
+                    handle_listen(
+                        stt,
+                        task_agent_tx,
+                        task_ui_tx,
+                        task_resume,
+                        task_cancel,
+                        task_media,
+                    )
+                    .await;
                 });
 
                 listen = Some(ActiveListen { cancel, handle });
@@ -138,6 +179,7 @@ pub async fn run_agent_task(
                  */
                 interrupt_active(&mut active).await;
                 interrupt_listen(&mut listen).await;
+                crate::status::awaiting_reply(false);
 
                 let cancel = CancellationToken::new();
 
@@ -153,6 +195,10 @@ pub async fn run_agent_task(
                 let turn_tts = tts.clone();
                 let turn_cancel = cancel.clone();
                 let turn_output = Arc::clone(&output_active);
+                let turn_resume = Arc::clone(&resume_media);
+                let turn_event_tx = agent_tx.clone();
+                let id = next_turn_id;
+                next_turn_id += 1;
 
                 let handle = tokio::spawn(async move {
                     run_turn(
@@ -162,11 +208,74 @@ pub async fn run_agent_task(
                         turn_tts,
                         turn_cancel,
                         turn_output,
+                        turn_resume,
+                        turn_event_tx.clone(),
                     )
                     .await;
+                    let _ = turn_event_tx.send(HyuskEvent::TurnFinished { id }).await;
                 });
 
-                active = Some(ActiveTurn { cancel, handle });
+                active = Some(ActiveTurn { id, cancel, handle });
+            }
+
+            HyuskEvent::TurnFinished { id } => {
+                if active.as_ref().map(|turn| turn.id) == Some(id) {
+                    active = None;
+                    announce_completed_tasks(&mut completed_tasks, &ui_tx, &tts).await;
+                }
+            }
+
+            HyuskEvent::SubtaskFinished {
+                id,
+                label,
+                success,
+                summary,
+            } => {
+                println!(
+                    "[Task #{id}] {label} {}:\n{summary}",
+                    if success { "completed" } else { "failed" }
+                );
+                let report = format!(
+                    "Background task {label} {}:\n{summary}",
+                    if success { "completed" } else { "failed" }
+                );
+                crate::status::card("task", &report, true);
+                let _ = ui_tx.try_send(HyuskEvent::Response(report));
+                completed_tasks.push_back((label, success));
+                if active.is_none() {
+                    announce_completed_tasks(&mut completed_tasks, &ui_tx, &tts).await;
+                }
+            }
+
+            HyuskEvent::StopRequested => {
+                println!("[Agent] Emergency stop requested");
+                interrupt_active(&mut active).await;
+                interrupt_listen(&mut listen).await;
+                send_state(&ui_tx, HyuskState::Hidden).await;
+            }
+
+            HyuskEvent::StopListening => {
+                interrupt_listen(&mut listen).await;
+                crate::status::awaiting_reply(false);
+                send_state(&ui_tx, HyuskState::Hidden).await;
+            }
+
+            HyuskEvent::ModelSelected { provider, model } => {
+                interrupt_active(&mut active).await;
+                let result = agent.lock().await.select_model(&provider, &model);
+                let message = match result {
+                    Ok(()) => {
+                        crate::status::model(&provider, &model);
+                        crate::settings::save(&crate::settings::ModelSelection {
+                            provider: provider.clone(),
+                            model: model.clone(),
+                        });
+                        format!("Switched to {provider}: {model}. Started a new conversation.")
+                    }
+                    Err(error) => format!("Could not switch model: {error}"),
+                };
+                crate::status::card("model", &message, false);
+                let _ = ui_tx.try_send(HyuskEvent::Response(message));
             }
 
             HyuskEvent::Shutdown => {
@@ -183,6 +292,26 @@ pub async fn run_agent_task(
     Ok(())
 }
 
+async fn announce_completed_tasks(
+    completed_tasks: &mut VecDeque<(String, bool)>,
+    ui_tx: &Sender<HyuskEvent>,
+    tts: &TextToSpeech,
+) {
+    while let Some((label, success)) = completed_tasks.pop_front() {
+        let announcement = format!(
+            "Background task {label} {}. Its report is ready.",
+            if success { "completed" } else { "failed" }
+        );
+        let _ = ui_tx.try_send(HyuskEvent::Response(announcement.clone()));
+        crate::status::card("task", &announcement, true);
+        let tts = tts.clone();
+        tokio::spawn(async move {
+            let cancel = CancellationToken::new();
+            let _ = tts.speak_cancellable(&announcement, &cancel).await;
+        });
+    }
+}
+
 /// Record a short command from the microphone and forward it as user input.
 ///
 /// This runs as a dedicated task so a slow or failed recording never blocks
@@ -194,6 +323,7 @@ async fn handle_listen(
     ui_tx: Sender<HyuskEvent>,
     wake_resume: WakeResume,
     cancel: CancellationToken,
+    resume_media: Arc<AtomicBool>,
 ) {
     // Always hand the microphone back to the wake detector, even when this
     // task is cancelled mid-recording.
@@ -201,9 +331,9 @@ async fn handle_listen(
 
     let stt_start = std::time::Instant::now();
 
-    // A short cap keeps commands snappy; recording still stops as soon as the
-    // speaker pauses, so this is only a safety net for very long requests.
-    let recording = stt.transcribe_from_microphone(4.0);
+    // A generous cap; recording still stops shortly after the speaker pauses,
+    // so this only bounds unusually long requests.
+    let recording = stt.transcribe_from_microphone(8.0);
 
     let transcription = match tokio::time::timeout(Duration::from_secs(45), async {
         tokio::select! {
@@ -236,15 +366,23 @@ async fn handle_listen(
 
     match transcription {
         Some(text) if !text.trim().is_empty() => {
+            crate::status::awaiting_reply(false);
             let _ = agent_tx.send(HyuskEvent::UserInput(text)).await;
         }
 
         _ => {
+            crate::status::awaiting_reply(false);
+            // Nothing usable was heard: hand media back immediately.
+            if resume_media.swap(false, Ordering::Relaxed) {
+                media::resume().await;
+            }
+
             send_state(&ui_tx, HyuskState::Hidden).await;
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_turn(
     agent: Arc<Mutex<Agent>>,
     text: String,
@@ -252,9 +390,12 @@ async fn run_turn(
     tts: TextToSpeech,
     cancel: CancellationToken,
     output_active: Arc<AtomicBool>,
+    resume_media: Arc<AtomicBool>,
+    event_tx: Sender<HyuskEvent>,
 ) {
     // Keep the detector muted until this turn (including TTS) is done.
     let _output_guard = OutputOnDrop(output_active);
+    let _media_guard = MediaOnDrop(resume_media);
 
     println!("[User] {text}");
 
@@ -333,7 +474,17 @@ async fn run_turn(
 
     crate::timing::mark("agent turn (model + tools)", turn_start);
 
-    let _ = ui_tx.try_send(HyuskEvent::Response(response));
+    let requires_approval = agent.lock().await.awaiting_approval();
+    crate::status::card(
+        if requires_approval {
+            "approval"
+        } else {
+            "response"
+        },
+        &response,
+        requires_approval,
+    );
+    let _ = ui_tx.try_send(HyuskEvent::Response(response.clone()));
 
     // Close the sink so the worker drains and finishes.
     drop(sentence_tx);
@@ -341,6 +492,13 @@ async fn run_turn(
     let tts_start = std::time::Instant::now();
     let _ = tts_worker.await;
     crate::timing::mark("tts", tts_start);
+
+    // Each completed voice turn has a short, one-shot follow-up window. This
+    // makes normal conversation continuous; silence returns to wake-word mode.
+    if !cancel.is_cancelled() {
+        crate::status::awaiting_reply(true);
+        let _ = event_tx.send(HyuskEvent::ContinueListening).await;
+    }
 
     if !cancel.is_cancelled() {
         send_state(&ui_tx, HyuskState::Hidden).await;

@@ -63,6 +63,7 @@ impl std::fmt::Display for HttpError {
 
 impl std::error::Error for HttpError {}
 
+#[derive(Clone)]
 pub struct OpenRouterClient {
     client: Client,
     api_key: String,
@@ -76,6 +77,42 @@ impl OpenRouterClient {
             api_key,
             base_url,
         }
+    }
+
+    /// Fetch a provider's OpenAI-compatible model catalog. OpenRouter and the
+    /// OpenAI API both expose this at `/models`.
+    pub async fn list_models(&self) -> Result<Vec<(String, String)>> {
+        let response = self
+            .client
+            .get(format!("{}/models", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await
+            .context("Failed to fetch model catalog")?;
+        let status = response.status();
+        let body: Value = response
+            .json()
+            .await
+            .context("Invalid model catalog response")?;
+        if !status.is_success() {
+            return Err(anyhow!("Model catalog request failed with HTTP {status}"));
+        }
+        Ok(body
+            .get("data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| {
+                let id = item.get("id")?.as_str()?.to_string();
+                let label = item
+                    .get("name")
+                    .or_else(|| item.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(&id)
+                    .to_string();
+                Some((id, label))
+            })
+            .collect())
     }
 
     /// Issue a chat completion with automatic retries on

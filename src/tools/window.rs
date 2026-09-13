@@ -21,7 +21,13 @@ pub struct WindowTool;
 enum WindowAction {
     List,
     Active,
-    Activate { query: String },
+    Activate {
+        query: String,
+    },
+    Close {
+        #[serde(default)]
+        query: String,
+    },
 }
 
 async fn connection() -> Result<zbus::Connection> {
@@ -72,12 +78,13 @@ impl Tool for WindowTool {
     }
 
     fn description(&self) -> &str {
-        "List, inspect, and switch desktop windows natively on GNOME through the \
-         Hyusk shell extension. Use `list` for open windows (app, title, active \
-         flag), `active` for the focused window, and `activate` with a `query` \
-         (app name or title substring) to raise a window. This is the reliable \
-         way to switch applications on Wayland; prefer it over blind alt+tab \
-         or accessibility, which cannot raise windows."
+        "List, inspect, switch, and close desktop windows natively on GNOME \
+         through the Hyusk shell extension. Use `list` for open windows (app, \
+         title, active flag), `active` for the focused window, `activate` with \
+         a `query` (app name or title substring) to raise a window, and `close` \
+         (empty `query` closes the focused window). This is the reliable way to \
+         manage windows on Wayland; prefer it over blind alt+tab or \
+         accessibility, which cannot raise windows."
     }
 
     fn input_schema(&self) -> Value {
@@ -86,12 +93,12 @@ impl Tool for WindowTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "active", "activate"],
+                    "enum": ["list", "active", "activate", "close"],
                     "description": "Window operation."
                 },
                 "query": {
                     "type": "string",
-                    "description": "App name or window-title substring for `activate`."
+                    "description": "App name or window-title substring for `activate`/`close`. Empty closes the focused window."
                 }
             },
             "required": ["action"]
@@ -163,6 +170,33 @@ impl Tool for WindowTool {
                     let title = value.get("title").and_then(Value::as_str).unwrap_or(&query);
 
                     Ok(ToolResult::success(format!("Activated window: {title}")))
+                } else {
+                    let error = value
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("no window matched the query");
+
+                    Ok(ToolResult::failure(error.to_string()))
+                }
+            }
+
+            WindowAction::Close { query } => {
+                let query = query.trim().to_string();
+
+                let raw = match call("CloseWindow", &query).await {
+                    Ok(raw) => raw,
+                    Err(error) => return Ok(ToolResult::failure(error.to_string())),
+                };
+
+                let value: Value = serde_json::from_str(&raw).unwrap_or(Value::String(raw.clone()));
+
+                if value.get("ok").and_then(Value::as_bool) == Some(true) {
+                    let title = value
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("window");
+
+                    Ok(ToolResult::success(format!("Closed window: {title}")))
                 } else {
                     let error = value
                         .get("error")

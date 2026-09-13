@@ -94,7 +94,13 @@ impl ShellTool {
     }
 
     async fn run_detached(command: &str) -> Result<ToolResult> {
-        let child = Command::new("sh").arg("-c").arg(command).spawn();
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
 
         match child {
             Ok(child) => Ok(ToolResult::success(format!(

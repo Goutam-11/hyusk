@@ -1,3 +1,4 @@
+use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -32,9 +33,24 @@ impl ProcessTool {
     }
 
     async fn launch(program: &str, args: &[String]) -> Result<ToolResult> {
-        let mut command = Command::new(program);
+        // Resolve friendly names (e.g. `brave` -> `flatpak run
+        // com.brave.Browser`) so the agent does not have to know which apps are
+        // Flatpaks, and does not try several wrong binaries in a row.
+        let (program, mut resolved_args) = crate::apps::resolve(program);
 
-        command.args(args);
+        resolved_args.extend_from_slice(args);
+
+        let mut command = Command::new(&program);
+
+        command.args(&resolved_args);
+
+        // GUI apps write chatter (updates, GPU warnings, sandbox noise) to
+        // stderr. Detach their stdio so it does not spill into the agent's
+        // console; the tool still reports spawn failures and immediate exits.
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
 
         let mut child = match command.spawn().context("Failed to spawn process") {
             Ok(child) => child,

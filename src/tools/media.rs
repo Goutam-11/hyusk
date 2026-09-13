@@ -16,10 +16,53 @@ enum MediaAction {
     Next,
     Previous,
     Stop,
-    Volume { level: u32 },
+    Volume {
+        level: u32,
+    },
     VolumeUp,
     VolumeDown,
     Status,
+    Shuffle,
+    Repeat {
+        #[serde(default)]
+        mode: Option<String>,
+    },
+    Seek {
+        offset: String,
+    },
+    Position,
+}
+
+/// Run `playerctl` and return trimmed stdout, or an empty string on failure.
+async fn playerctl_quiet(args: &[&str]) -> String {
+    match Command::new("playerctl").args(args).output().await {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+        _ => String::new(),
+    }
+}
+
+/// Pause the active MPRIS player if it is currently playing.
+///
+/// Returns `true` when something was actually paused, so the caller knows to
+/// resume it after the command. Used to quiet media while the agent listens.
+pub async fn pause_if_playing() -> bool {
+    if playerctl_quiet(&["status"])
+        .await
+        .eq_ignore_ascii_case("playing")
+    {
+        let _ = playerctl_quiet(&["pause"]).await;
+
+        return true;
+    }
+
+    false
+}
+
+/// Resume playback (a no-op if nothing is paused or no player exists).
+pub async fn resume() {
+    let _ = playerctl_quiet(&["play"]).await;
 }
 
 impl MediaTool {
@@ -59,7 +102,7 @@ impl Tool for MediaTool {
     }
 
     fn description(&self) -> &str {
-        "Control media playback on the local desktop via MPRIS.         Works with Spotify, YouTube Music in a browser, VLC, mpv,         and any other MPRIS player. Requires `playerctl` to be         installed. The `status` action returns the current track         (artist, title, album) and whether playback is playing or         paused."
+        "Control media playback on the local desktop via MPRIS.         Works with Spotify, YouTube Music in a browser, VLC, mpv,         and any other MPRIS player. Requires `playerctl` to be         installed. `status` returns the current track (artist, title,         album) and whether it is playing; `position` returns the playback         position; `shuffle`, `repeat`, and `seek` adjust playback."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -71,7 +114,8 @@ impl Tool for MediaTool {
                     "enum": [
                         "play", "pause", "play_pause", "next",
                         "previous", "stop", "status", "volume",
-                        "volume_up", "volume_down"
+                        "volume_up", "volume_down", "shuffle", "repeat",
+                        "seek", "position"
                     ],
                     "description": "What to do."
                 },
@@ -80,6 +124,15 @@ impl Tool for MediaTool {
                     "minimum": 0,
                     "maximum": 100,
                     "description": "Volume level 0-100. Only used when action is 'volume'."
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["off", "one", "all"],
+                    "description": "Repeat mode for the `repeat` action."
+                },
+                "offset": {
+                    "type": "string",
+                    "description": "Seek offset for `seek`, e.g. '+10' or '-5' seconds."
                 }
             },
             "required": ["action"]
@@ -135,6 +188,24 @@ impl Tool for MediaTool {
                     artist, title, album, status
                 )))
             }
+            MediaAction::Shuffle => Self::run(&["shuffle", "toggle"]).await,
+            MediaAction::Repeat { mode } => {
+                let value = match mode.as_deref() {
+                    Some("off") | Some("none") => "None",
+                    Some("one") | Some("track") => "Track",
+                    Some("all") | Some("playlist") => "Playlist",
+                    _ => "Track",
+                };
+                Self::run(&["loop", value]).await
+            }
+            MediaAction::Seek { offset } => {
+                let offset = offset.trim();
+                if offset.is_empty() {
+                    return Ok(ToolResult::failure("`seek` requires an `offset`."));
+                }
+                Self::run(&["position", offset]).await
+            }
+            MediaAction::Position => Self::run(&["position"]).await,
         }
     }
 }

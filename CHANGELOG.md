@@ -18,6 +18,11 @@
 
 ### Fixed
 
+- Launched GUI apps no longer spill their own warnings into the agent console.
+  The `process` tool and `shell ... detached` now detach child stdio, so noise
+  like Brave/Chromium's harmless Puffin "Failed to create a temporary file for
+  memory-mapping" line (a Flatpak sandbox restriction in its component
+  updater) stays out of the agent's output.
 - Wake-word classifier never fired from an exactly 2-second buffer: the
   classifier consumes the last 16 embedding windows, which a 32000-sample
   buffer cannot produce. The inference buffer is now 2.2 seconds.
@@ -79,6 +84,20 @@
 - Speech-to-text fed low-frequency rumble straight to Whisper, which
   hallucinated sentences from noise; the recording is now high-passed (the
   same 90 Hz filter the wake detector uses).
+- Speech-to-text now stops recording when the user stops talking. End of
+  speech is detected on 20 ms frames against an adaptive, high-passed noise
+  floor (the capture-start click is ignored), so it no longer runs to the full
+  timeout or cuts off early on a fixed level. Tail silence defaults to 900 ms
+  (tunable with `STT_SILENCE_MS`) and the hard cap is 8 s, so longer commands
+  and natural pauses are not cut off (`STT_NO_SPEECH_MS` for the no-speech
+  give-up).
+- One shared app-alias table (`src/apps.rs`) is used by both the instant
+  command router and the `process` tool, so `brave`/`chrome` resolve to their
+  Flatpak commands instead of the agent trying several wrong binaries.
+- "Play" commands are handled directly: `play <query> on <site>` searches that
+  site, `play something`/`play music` starts music, and `play <query>` plays
+  through `mpv` + `yt-dlp` when installed (instant) or otherwise opens a
+  YouTube Music search.
 - The wake detector kept its microphone stream open while speech-to-text
   recorded the command, opening a second capture stream. It now pauses the
   stream for the recording and resumes afterwards.

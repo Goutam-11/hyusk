@@ -1,0 +1,20 @@
+[Unit]
+Description=Hyusk desktop agent
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=@WORKDIR@
+ExecStart=@BINARY@
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGINT
+Environment=RUST_BACKTRACE=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hyusk
+
+[Install]
+WantedBy=graphical-session.target

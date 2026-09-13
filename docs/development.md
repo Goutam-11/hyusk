@@ -125,6 +125,22 @@ The terminal prints audio, wake, tool, and agent diagnostics. Type a message in
 the terminal and press Enter to send it to the agent; the UI currently shows
 only an animated status visual.
 
+## Fedora automatic startup and logs
+
+Run `scripts/install-autostart.sh` from this crate to build and install the
+`hyusk.service` user unit. It is bound to `graphical-session.target`, so it
+starts after GNOME login and stops when the graphical session ends or the
+laptop powers down. The unit captures stdout/stderr in journald with the
+identifier `hyusk` and enables Rust backtraces for crash diagnosis.
+
+```bash
+systemctl --user status hyusk.service
+journalctl --user -u hyusk.service -f
+journalctl --user -u hyusk.service -b -p warning
+```
+
+Use `scripts/uninstall-autostart.sh` to disable and remove the unit.
+
 ## Known runtime gaps
 
 - `models/hey_hyusk.onnx` is not bundled. The temporary
