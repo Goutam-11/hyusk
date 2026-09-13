@@ -1,5 +1,18 @@
 /target
 
-# environment variables
+# Local credentials and editor swap files
 .env
+.env.*
+!.env.example
+*.swp
+*.swo
+*.swn
+
+# Runtime and generated artifacts
+*.log
+*.tmp
+screenshots/
+hyusk-status.json
+hyusk-state
+
 models/*
