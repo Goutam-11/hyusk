@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
@@ -25,6 +26,17 @@ pub struct Agent {
     vision: bool,
     pending_approval: Option<String>,
     approved_approval: Option<String>,
+    reply_needs_follow_up: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StructuredReply {
+    text: String,
+    #[serde(default)]
+    needs_reply: bool,
+    #[serde(default)]
+    #[allow(dead_code)]
+    reply_type: Option<String>,
 }
 
 impl Agent {
@@ -56,6 +68,7 @@ impl Agent {
             vision,
             pending_approval: None,
             approved_approval: None,
+            reply_needs_follow_up: Some(false),
         }
     }
 
@@ -66,6 +79,10 @@ impl Agent {
 
     pub fn awaiting_approval(&self) -> bool {
         self.pending_approval.is_some()
+    }
+
+    pub fn reply_needs_follow_up(&self) -> Option<bool> {
+        self.reply_needs_follow_up
     }
 
     pub fn select_model(&mut self, provider: &str, model: &str) -> Result<()> {
@@ -94,6 +111,7 @@ impl Agent {
         self.messages[0] = Message::system(build_system_prompt(&self.tool_guide, ""));
         self.pending_approval = None;
         self.approved_approval = None;
+        self.reply_needs_follow_up = Some(false);
         Ok(())
     }
 
@@ -164,7 +182,8 @@ impl Agent {
         Some(plan.spoken)
     }
 
-    /// Perform one model request, streaming reply sentences when a sink exists.
+    /// Perform one model request. Streaming is buffered so a structured reply
+    /// envelope is never spoken before it can be parsed.
     ///
     /// Returns `None` when cancelled. If streaming fails before anything has
     /// been spoken, it falls back to a plain (non-streamed) request so a
@@ -180,15 +199,9 @@ impl Agent {
                 _ = cancel.cancelled() => return None,
                 result = client.chat(&self.model, &self.messages) => result,
             };
-            if let (Some(sink), Ok(message)) = (sentences, &result) {
-                let text = message.text();
-                if !text.trim().is_empty() {
-                    let _ = sink.send(text);
-                }
-            }
             return Some(result);
         }
-        let Some(sink) = sentences else {
+        let Some(_sink) = sentences else {
             let result = tokio::select! {
                 _ = cancel.cancelled() => return None,
                 result = self.client.chat(&self.model, &self.messages, &self.tool_specs) => result,
@@ -198,17 +211,9 @@ impl Agent {
         };
 
         let mut buffer = String::new();
-        let mut sent_any = false;
-
         let streamed = {
             let mut on_delta = |delta: &str| {
                 buffer.push_str(delta);
-
-                for sentence in take_sentences(&mut buffer) {
-                    if sink.send(sentence).is_ok() {
-                        sent_any = true;
-                    }
-                }
             };
 
             tokio::select! {
@@ -223,24 +228,9 @@ impl Agent {
         };
 
         match streamed {
-            Ok(message) => {
-                let remainder = buffer.trim();
-
-                if !remainder.is_empty() {
-                    let _ = sink.send(remainder.to_string());
-                } else if !sent_any && !message.text().trim().is_empty() {
-                    let _ = sink.send(message.text());
-                }
-
-                Some(Ok(message))
-            }
+            Ok(message) => Some(Ok(message)),
 
             Err(error) => {
-                if sent_any {
-                    // Part of the reply was already spoken; do not repeat it.
-                    return Some(Err(error));
-                }
-
                 eprintln!(
                     "[Agent] Streaming unavailable ({}); using a plain request",
                     first_line(&format!("{error:#}"))
@@ -250,14 +240,6 @@ impl Agent {
                     _ = cancel.cancelled() => return None,
                     result = self.client.chat(&self.model, &self.messages, &self.tool_specs) => result,
                 };
-
-                if let Ok(message) = &result {
-                    let text = message.text();
-
-                    if !text.trim().is_empty() {
-                        let _ = sink.send(text);
-                    }
-                }
 
                 Some(result)
             }
@@ -272,9 +254,8 @@ impl Agent {
     ///
     /// Returns `Ok(None)` when the turn was cancelled.
     ///
-    /// When `sentences` is provided, streamed reply text is split into
-    /// sentences and forwarded as it arrives so the caller can speak them
-    /// while the model is still generating.
+    /// When `sentences` is provided, the parsed final reply is forwarded for
+    /// speech after its structured envelope has been removed.
     pub async fn handle(
         &mut self,
         user_input: String,
@@ -302,6 +283,7 @@ impl Agent {
         let turn_start = self.messages.len();
 
         self.messages.push(Message::user(user_input));
+        self.reply_needs_follow_up = None;
 
         loop {
             let response = match self.request_model(cancel, sentences).await {
@@ -409,10 +391,32 @@ impl Agent {
                 }
             }
 
-            self.messages.push(response.clone());
+            let (text, needs_reply) = parse_structured_reply(&response.text());
+            self.reply_needs_follow_up = needs_reply;
+            self.messages.push(Message::assistant(text.clone()));
 
-            return Ok(Some(response.text()));
+            if let Some(sink) = sentences {
+                if !text.trim().is_empty() {
+                    let _ = sink.send(text.clone());
+                }
+            }
+
+            return Ok(Some(text));
         }
+    }
+}
+
+fn parse_structured_reply(raw: &str) -> (String, Option<bool>) {
+    let candidate = raw
+        .trim()
+        .strip_prefix("```json")
+        .and_then(|text| text.strip_suffix("```"))
+        .map(str::trim)
+        .unwrap_or_else(|| raw.trim());
+
+    match serde_json::from_str::<StructuredReply>(candidate) {
+        Ok(reply) if !reply.text.trim().is_empty() => (reply.text, Some(reply.needs_reply)),
+        _ => (raw.to_string(), None),
     }
 }
 
@@ -497,46 +501,6 @@ async fn execute_tool(
             "Tool execution error: {error}"
         ))),
     }
-}
-
-/// Pull complete spoken sentences out of a growing stream buffer.
-///
-/// Sentences shorter than a small threshold are kept in the buffer so decimals
-/// and abbreviations do not split (the next terminator flushes them whole).
-fn take_sentences(buffer: &mut String) -> Vec<String> {
-    let mut sentences = Vec::new();
-
-    loop {
-        let mut boundary = None;
-
-        for (index, character) in buffer.char_indices() {
-            if matches!(character, '.' | '!' | '?' | '\n') {
-                let end = index + character.len_utf8();
-
-                if end >= 12 {
-                    boundary = Some(end);
-                }
-
-                break;
-            }
-        }
-
-        match boundary {
-            Some(end) => {
-                let sentence = buffer[..end].trim().to_string();
-
-                buffer.drain(..end);
-
-                if !sentence.is_empty() {
-                    sentences.push(sentence);
-                }
-            }
-
-            None => break,
-        }
-    }
-
-    sentences
 }
 
 fn first_line(text: &str) -> &str {
@@ -680,6 +644,10 @@ Available tools:
     prompt.push_str(tool_guide);
 
     prompt.push_str(
+        "\nResponse protocol (required): after all tool calls are complete, return exactly one JSON object with this shape: {\"text\":\"the concise spoken response\",\"needs_reply\":false,\"reply_type\":\"none\"}. Set needs_reply to true only when the user must answer a question, choose an option, or confirm an action. Use reply_type values none, question, choice, or confirmation. Do not wrap the JSON in markdown and do not add any text outside it.\n",
+    );
+
+    prompt.push_str(
         "\nIf the user sends a new message while you are still working, treat it \
          as a replacement request and answer the newest message.\n",
     );
@@ -729,7 +697,7 @@ async fn load_image_data_url(path: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{approval_key, confirms, split_image_marker};
+    use super::{approval_key, confirms, parse_structured_reply, split_image_marker};
 
     #[test]
     fn splits_image_marker_from_output() {
@@ -748,5 +716,23 @@ mod tests {
         assert!(approval_key("shell", r#"{"command":"id"}"#).is_none());
         assert!(approval_key("shell", r#"{"command":"rm -rf /tmp/example"}"#).is_some());
         assert!(approval_key("computer", r#"{"action":"screenshot"}"#).is_none());
+    }
+
+    #[test]
+    fn parses_structured_reply_intent_and_strips_envelope() {
+        let (text, needs_reply) = parse_structured_reply(
+            r#"{"text":"Please confirm before I continue.","needs_reply":true,"reply_type":"confirmation"}"#,
+        );
+
+        assert_eq!(text, "Please confirm before I continue.");
+        assert_eq!(needs_reply, Some(true));
+    }
+
+    #[test]
+    fn falls_back_for_plain_provider_output() {
+        let (text, needs_reply) = parse_structured_reply("Done.");
+
+        assert_eq!(text, "Done.");
+        assert_eq!(needs_reply, None);
     }
 }

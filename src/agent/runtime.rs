@@ -474,7 +474,10 @@ async fn run_turn(
 
     crate::timing::mark("agent turn (model + tools)", turn_start);
 
-    let requires_approval = agent.lock().await.awaiting_approval();
+    let (requires_approval, model_needs_reply) = {
+        let agent = agent.lock().await;
+        (agent.awaiting_approval(), agent.reply_needs_follow_up())
+    };
     crate::status::card(
         if requires_approval {
             "approval"
@@ -493,16 +496,35 @@ async fn run_turn(
     let _ = tts_worker.await;
     crate::timing::mark("tts", tts_start);
 
-    // Each completed voice turn has a short, one-shot follow-up window. This
-    // makes normal conversation continuous; silence returns to wake-word mode.
-    if !cancel.is_cancelled() {
+    // Only open a follow-up window when the response actually asks the user
+    // for a decision or answer. Completed commands return to wake-word mode.
+    let needs_reply =
+        requires_approval || model_needs_reply.unwrap_or_else(|| response_needs_reply(&response));
+    if !cancel.is_cancelled() && needs_reply {
         crate::status::awaiting_reply(true);
         let _ = event_tx.send(HyuskEvent::ContinueListening).await;
+    } else {
+        crate::status::awaiting_reply(false);
     }
 
     if !cancel.is_cancelled() {
         send_state(&ui_tx, HyuskState::Hidden).await;
     }
+}
+
+fn response_needs_reply(response: &str) -> bool {
+    let text = response.trim().to_ascii_lowercase();
+    text.ends_with('?')
+        || [
+            "please say",
+            "would you like",
+            "do you want",
+            "which one",
+            "what should i",
+            "what would you",
+        ]
+        .iter()
+        .any(|phrase| text.contains(phrase))
 }
 
 async fn send_state(ui_tx: &Sender<HyuskEvent>, state: HyuskState) {
@@ -516,4 +538,20 @@ async fn send_state(ui_tx: &Sender<HyuskEvent>, state: HyuskState) {
      * agent is not.
      */
     let _ = ui_tx.try_send(HyuskEvent::StateChanged(state));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::response_needs_reply;
+
+    #[test]
+    fn only_explicit_questions_open_follow_up_listening() {
+        assert!(response_needs_reply("Which timer duration should I use?"));
+        assert!(response_needs_reply("Please say confirm to continue."));
+        assert!(response_needs_reply("Would you like me to open it?"));
+        assert!(!response_needs_reply(
+            "The timer is set for thirty minutes."
+        ));
+        assert!(!response_needs_reply("Done."));
+    }
 }
