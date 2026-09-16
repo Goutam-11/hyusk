@@ -108,6 +108,7 @@ pub async fn run_agent_task(
     let mut active: Option<ActiveTurn> = None;
     let mut listen: Option<ActiveListen> = None;
     let mut completed_tasks = VecDeque::new();
+    let mut scheduled_inputs = VecDeque::new();
     let mut next_turn_id = 1u64;
 
     /*
@@ -222,6 +223,34 @@ pub async fn run_agent_task(
                 if active.as_ref().map(|turn| turn.id) == Some(id) {
                     active = None;
                     announce_completed_tasks(&mut completed_tasks, &ui_tx, &tts).await;
+                    if let Some(text) = scheduled_inputs.pop_front() {
+                        let _ = agent_tx.send(HyuskEvent::UserInput(text)).await;
+                    }
+                }
+            }
+
+            HyuskEvent::ScheduledWorkflow { id, name } => {
+                println!("[Scheduler #{id}] Workflow due: {name}");
+                crate::status::card(
+                    "scheduled_workflow",
+                    format!("Scheduled workflow ready: {name}"),
+                    false,
+                );
+                let text = format!("run {name}");
+                if active.is_some() {
+                    scheduled_inputs.push_back(text);
+                } else {
+                    let _ = agent_tx.send(HyuskEvent::UserInput(text)).await;
+                }
+            }
+
+            HyuskEvent::ScheduledAgentTask { id, prompt } => {
+                println!("[Scheduler #{id}] Agent task due");
+                crate::status::card("scheduled_task", "Scheduled agent task is starting", false);
+                if active.is_some() {
+                    scheduled_inputs.push_back(prompt);
+                } else {
+                    let _ = agent_tx.send(HyuskEvent::UserInput(prompt)).await;
                 }
             }
 

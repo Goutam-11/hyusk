@@ -100,6 +100,9 @@ impl ShellTool {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            // Detached applications are intentionally independent of the
+            // shell tool task and must remain alive after it returns.
+            .kill_on_drop(false)
             .spawn();
 
         match child {

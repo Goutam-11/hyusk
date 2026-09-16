@@ -600,7 +600,7 @@ impl SpeechToText {
 
         params.set_n_threads(threads as i32);
         params.set_translate(false);
-        params.set_language(Some("en"));
+        params.set_language(configured_stt_language());
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
@@ -650,7 +650,6 @@ impl SpeechToText {
                     }
 
                     let mut full_text = String::new();
-
                     for i in 0..num_segments {
                         match context.full_get_segment_text(i) {
                             Ok(text) => {
@@ -707,13 +706,44 @@ impl SpeechToText {
 }
 
 fn voice_denoise_enabled() -> bool {
+    let configured = env::var("STT_DENOISE")
+        .or_else(|_| env::var("VOICE_DENOISE"))
+        .unwrap_or_else(|_| "1".to_string());
     !matches!(
-        env::var("VOICE_DENOISE")
-            .unwrap_or_else(|_| "1".to_string())
-            .to_ascii_lowercase()
-            .as_str(),
+        configured.to_ascii_lowercase().as_str(),
         "0" | "false" | "off" | "no"
     )
+}
+
+/// Whisper language code configured for short commands. `auto` is useful for
+/// multilingual households; an explicit code is usually more accurate and
+/// faster for short utterances. Common Indian language codes are accepted
+/// directly without allocating or leaking a new string for every command.
+fn configured_stt_language() -> Option<&'static str> {
+    let language = env::var("STT_LANGUAGE")
+        .unwrap_or_else(|_| "en".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    match language.as_str() {
+        "auto" | "detect" => None,
+        "en" | "english" => Some("en"),
+        "hi" | "hindi" => Some("hi"),
+        "bn" | "bengali" => Some("bn"),
+        "gu" | "gujarati" => Some("gu"),
+        "kn" | "kannada" => Some("kn"),
+        "ml" | "malayalam" => Some("ml"),
+        "mr" | "marathi" => Some("mr"),
+        "or" | "odia" | "oriya" => Some("or"),
+        "pa" | "punjabi" => Some("pa"),
+        "ta" | "tamil" => Some("ta"),
+        "te" | "telugu" => Some("te"),
+        "ur" | "urdu" => Some("ur"),
+        "ne" | "nepali" => Some("ne"),
+        other => {
+            eprintln!("[STT] Unknown STT_LANGUAGE '{other}'; using English");
+            Some("en")
+        }
+    }
 }
 
 /// RNNoise reduces persistent environmental noise before Whisper transcribes a
@@ -853,6 +883,10 @@ impl TextToSpeech {
         use tokio::process::Command as AsyncCommand;
 
         let model_path = env::var("PIPER_MODEL").unwrap_or_else(|_| default_piper_model_path());
+        let speaker = env::var("PIPER_SPEAKER")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
 
         if !std::path::Path::new(&model_path).exists() {
             return Err(anyhow::anyhow!("Piper model not found at '{}'", model_path));
@@ -860,13 +894,18 @@ impl TextToSpeech {
 
         let tmp_wav = std::env::temp_dir().join("hyusk_tts_output.wav");
 
-        let mut child = AsyncCommand::new("piper")
-            .args([
-                "--model",
-                &model_path,
-                "--output_file",
-                tmp_wav.to_str().unwrap(),
-            ])
+        let mut command = AsyncCommand::new("piper");
+        command.args([
+            "--model",
+            &model_path,
+            "--output_file",
+            tmp_wav.to_str().unwrap(),
+        ]);
+        if let Some(speaker) = speaker.as_deref() {
+            command.args(["--speaker", speaker]);
+        }
+
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

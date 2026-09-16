@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Hyusk Workflows
+Comment=Create and run voice-triggered desktop workflows
+Exec=hyusk-workflows
+Icon=preferences-system-symbolic
+Terminal=false
+Type=Application
+Categories=Utility;GTK;
+Keywords=automation;voice;shortcuts;workflow;hyusk;
+StartupNotify=true
+StartupWMClass=io.github.hyusk.Workflows

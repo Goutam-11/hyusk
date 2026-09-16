@@ -37,6 +37,17 @@ pub enum HyuskEvent {
         summary: String,
     },
 
+    // A persisted schedule became due. Unlike direct user input, this is
+    // queued behind an active foreground turn instead of interrupting it.
+    ScheduledWorkflow {
+        id: u64,
+        name: String,
+    },
+    ScheduledAgentTask {
+        id: u64,
+        prompt: String,
+    },
+
     TurnFinished {
         id: u64,
     },

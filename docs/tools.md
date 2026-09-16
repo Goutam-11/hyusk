@@ -255,8 +255,9 @@ through when nothing matches. Extend the app/site aliases in
 `MemoryTool` provides persistent local memory across runs. Data is stored in:
 
 ```text
-$XDG_DATA_HOME/hyusk/memory.json   (or ~/.local/share/hyusk/memory.json)
-$XDG_DATA_HOME/hyusk/memory.md     (human-readable)
+$XDG_DATA_HOME/hyusk/memory.db     (or ~/.local/share/hyusk/memory.db; source of truth)
+$XDG_DATA_HOME/hyusk/memory.md     (generated human-readable view)
+$XDG_DATA_HOME/hyusk/memory.json   (legacy backup after automatic migration)
 ```
 
 ```json
@@ -270,8 +271,8 @@ $XDG_DATA_HOME/hyusk/memory.md     (human-readable)
 
 | Action | Input | Notes |
 | --- | --- | --- |
-| `remember` | `text`, optional `tags` | Adds a note and rewrites `memory.json` and `memory.md`. Duplicate notes are rejected. |
-| `search` | `query`, optional `limit` | Ranks notes with a small tf-idf score; tag matches weigh more. |
+| `remember` | `text`, optional `tags` | Transactionally adds a note to SQLite and refreshes `memory.md`. Duplicate notes are rejected. |
+| `search` | `query`, optional `limit` | Uses SQLite FTS5 plus tag and recency signals. |
 | `graph_add` | `subject`, `relation`, `object` | Adds a knowledge-graph triple. Duplicate triples are rejected. |
 | `graph_query` | optional `subject`, `relation`, `object` | Filters triples by substring. |
 | `list` | optional `limit` | Most recent notes. |
@@ -282,6 +283,9 @@ them into the system prompt, so the model sees what is relevant to the current
 request rather than only the newest notes. The prompt also tells the model to
 save durable facts proactively (preferences, routines, projects, decisions,
 corrections) and to search before assuming something about the user or system.
+Retrieved text is delimited as untrusted reference data and cannot override the
+current user message. On first use, legacy JSON is imported in one transaction
+and retained unchanged as a recovery backup.
 
 ## Shell
 

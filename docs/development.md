@@ -61,19 +61,22 @@ MODEL_VISION=1
 WAKE_WORD_ENABLED=1
 WAKE_WORD_MODEL=models/hey_hyusk.onnx
 WAKE_WORD_MODELS=models/hey_hyusk.onnx,models/hey_livekit.onnx
-WAKE_WORD_THRESHOLD=0.4
+WAKE_WORD_THRESHOLD=0.93
+WAKE_WORD_STRONG_THRESHOLD=0.94
+WAKE_WORD_MIN_HITS=1
+WAKE_WORD_HIT_WINDOW_MS=1000
 WAKE_WORD_MIN_RMS=0.003
 WAKE_WORD_COOLDOWN_MS=1500
-WAKE_WORD_DENOISE=1
+WAKE_WORD_DENOISE=0
 STT_MODEL=models/ggml-base.en.bin
 ```
 
 `.env` is ignored by Git. Do not commit credentials. Shell exports override
 values loaded from the file.
 
-The model files are runtime assets and are not ignored by the current
-`.gitignore`. Confirm the repository's size and Git LFS policy before committing
-the roughly 1.7 GB currently present in `models/`.
+Model files are runtime assets and `models/` is ignored by Git. Keep trained
+wake models, Whisper files, Piper voices, and downloaded negative datasets out
+of normal commits.
 
 ## Validation
 

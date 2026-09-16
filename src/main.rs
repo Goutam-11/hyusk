@@ -183,6 +183,34 @@ struct ExtensionControl {
     action: String,
     provider: Option<String>,
     model: Option<String>,
+    /// Preferred workflow name field for standalone clients. `text` remains
+    /// supported for the GNOME extension and older control writers.
+    workflow: Option<String>,
+    text: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ScheduleControl {
+    #[serde(default)]
+    workflow: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    delay_seconds: u64,
+}
+
+fn control_schedule(control: &ExtensionControl) -> Option<ScheduleControl> {
+    let payload = control.text.as_deref()?;
+    let parsed: ScheduleControl = serde_json::from_str(payload).ok()?;
+    (parsed.delay_seconds > 0).then_some(parsed)
+}
+
+fn control_workflow_name(control: &ExtensionControl) -> Option<&str> {
+    control
+        .workflow
+        .as_deref()
+        .or(control.text.as_deref())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
 }
 
 async fn refresh_catalogs(openrouter: OpenRouterClient, openai: Option<OpenRouterClient>) {
@@ -254,11 +282,34 @@ async fn wake_test_mode() -> Result<()> {
     let wake_threshold = std::env::var("WAKE_WORD_THRESHOLD")
         .ok()
         .and_then(|value| value.parse::<f32>().ok())
-        .unwrap_or(0.35);
+        .unwrap_or(0.93);
+    let wake_strong_threshold = std::env::var("WAKE_WORD_STRONG_THRESHOLD")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(0.94);
+    let wake_min_rms = std::env::var("WAKE_WORD_MIN_RMS")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(0.003);
+    let wake_cooldown = std::env::var("WAKE_WORD_COOLDOWN_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1_500);
+    let wake_min_hits = std::env::var("WAKE_WORD_MIN_HITS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(1);
+    let wake_hit_window = std::env::var("WAKE_WORD_HIT_WINDOW_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1_000);
 
     let detector = WakeWordDetector::new_many(wake_model_paths)?
         .with_threshold(wake_threshold)
-        .with_cooldown(Duration::from_millis(1_500))
+        .with_strong_threshold(wake_strong_threshold)
+        .with_confirmation(wake_min_hits, Duration::from_millis(wake_hit_window))
+        .with_cooldown(Duration::from_millis(wake_cooldown))
+        .with_min_rms(wake_min_rms)
         .with_denoise(
             std::env::var("WAKE_WORD_DENOISE")
                 .map(|value| {
@@ -403,6 +454,14 @@ async fn main() -> Result<()> {
     tools.register(MediaTool::new());
     tools.register(tools::timer::TimerTool::default());
 
+    let brave_search_key = std::env::var("BRAVE_SEARCH_API_KEY")
+        .ok()
+        .or_else(|| credentials::lookup("brave_search"));
+    match tools::web_search::WebSearchTool::new(brave_search_key) {
+        Ok(tool) => tools.register(tool),
+        Err(error) => eprintln!("[Web] Native search unavailable: {error}"),
+    }
+
     // ==========================================
     // Audio
     // ==========================================
@@ -431,6 +490,7 @@ async fn main() -> Result<()> {
 
     // The task tool needs the runtime channel so a completed background task
     // can wake the main assistant without replacing the active user turn.
+    tools.register(tools::scheduler::SchedulerTool::new(agent_tx.clone()));
     tools.register(tools::task::TaskTool::new(
         agent_tx.clone(),
         client.clone(),
@@ -579,7 +639,14 @@ async fn main() -> Result<()> {
     let control_openai = openai_client.clone();
     tokio::spawn(async move {
         let path = control_path();
-        let mut seen = 0u64;
+        // Do not replay the last menu action after a service restart. The
+        // extension uses wall-clock revisions so actions remain monotonic
+        // across extension reloads as well.
+        let mut seen = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|contents| serde_json::from_str::<ExtensionControl>(&contents).ok())
+            .map(|control| control.revision)
+            .unwrap_or(0);
         loop {
             tokio::time::sleep(Duration::from_millis(250)).await;
             let Ok(contents) = std::fs::read_to_string(&path) else {
@@ -620,6 +687,69 @@ async fn main() -> Result<()> {
                 }
                 "stop_listening" => {
                     let _ = control_tx.send(HyuskEvent::StopListening).await;
+                }
+                "run_workflow" => {
+                    if let Some(name) = control_workflow_name(&control) {
+                        // `commands::parse` reads commands.json for each
+                        // request, so a standalone editor can save the file
+                        // and run the workflow without a service restart.
+                        let _ = control_tx
+                            .send(HyuskEvent::UserInput(format!("run {name}")))
+                            .await;
+                    } else {
+                        status::card("workflow", "A workflow name is required.", false);
+                    }
+                }
+                "reload_workflows" => {
+                    // Workflow configuration is intentionally not cached;
+                    // the next run observes the latest commands.json. This
+                    // action exists so editors can explicitly acknowledge a
+                    // save through the same control channel.
+                    status::card("workflow", "Workflow configuration reloaded.", false);
+                }
+                "schedule_workflow" => {
+                    match control_schedule(&control).and_then(|schedule| {
+                        schedule
+                            .workflow
+                            .filter(|name| !name.trim().is_empty())
+                            .map(|name| (name, schedule.delay_seconds))
+                    }) {
+                        Some((name, seconds)) => {
+                            let _ = control_tx
+                                .send(HyuskEvent::UserInput(format!(
+                                    "schedule workflow {} in {seconds} seconds",
+                                    name.trim()
+                                )))
+                                .await;
+                        }
+                        None => status::card(
+                            "schedule",
+                            "Choose a workflow and a valid delay first.",
+                            false,
+                        ),
+                    }
+                }
+                "schedule_reminder" => {
+                    match control_schedule(&control).and_then(|schedule| {
+                        schedule
+                            .text
+                            .filter(|text| !text.trim().is_empty())
+                            .map(|text| (text, schedule.delay_seconds))
+                    }) {
+                        Some((text, seconds)) => {
+                            let _ = control_tx
+                                .send(HyuskEvent::UserInput(format!(
+                                    "remind me in {seconds} seconds to {}",
+                                    text.trim()
+                                )))
+                                .await;
+                        }
+                        None => status::card(
+                            "schedule",
+                            "Enter a reminder and a valid delay first.",
+                            false,
+                        ),
+                    }
                 }
                 _ => {}
             }
@@ -706,7 +836,12 @@ async fn main() -> Result<()> {
         let wake_threshold = std::env::var("WAKE_WORD_THRESHOLD")
             .ok()
             .and_then(|value| value.parse::<f32>().ok())
-            .unwrap_or(0.4);
+            .unwrap_or(0.93);
+
+        let wake_strong_threshold = std::env::var("WAKE_WORD_STRONG_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .unwrap_or(0.94);
 
         let wake_min_rms = std::env::var("WAKE_WORD_MIN_RMS")
             .ok()
@@ -717,6 +852,16 @@ async fn main() -> Result<()> {
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(1_500);
+
+        let wake_min_hits = std::env::var("WAKE_WORD_MIN_HITS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(1);
+
+        let wake_hit_window = std::env::var("WAKE_WORD_HIT_WINDOW_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(1_000);
 
         let wake_denoise = std::env::var("WAKE_WORD_DENOISE")
             .map(|value| {
@@ -760,6 +905,8 @@ async fn main() -> Result<()> {
             Ok(wake_detector) => {
                 let wake_detector = wake_detector
                     .with_threshold(wake_threshold)
+                    .with_strong_threshold(wake_strong_threshold)
+                    .with_confirmation(wake_min_hits, Duration::from_millis(wake_hit_window))
                     .with_cooldown(Duration::from_millis(wake_cooldown))
                     .with_min_rms(wake_min_rms)
                     .with_denoise(wake_denoise)
@@ -776,9 +923,12 @@ async fn main() -> Result<()> {
                 wake_started = true;
 
                 println!(
-                    "🎙 Wake-word detector enabled: {} (threshold {:.2}, min RMS {:.3}, cooldown {} ms, denoise {}, step {} ms, clap {})",
+                    "🎙 Wake-word detector enabled: {} (threshold {:.2}, strong {:.2}, confirmation {} hits/{} ms, min RMS {:.3}, cooldown {} ms, denoise {}, step {} ms, clap {})",
                     wake_model_summary,
                     wake_threshold,
+                    wake_strong_threshold,
+                    wake_min_hits,
+                    wake_hit_window,
                     wake_min_rms,
                     wake_cooldown,
                     wake_denoise,
@@ -876,4 +1026,49 @@ async fn main() -> Result<()> {
     // detached blocking microphone task cannot keep the process alive.
     tokio::time::sleep(Duration::from_millis(250)).await;
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::{control_schedule, control_workflow_name, ExtensionControl};
+
+    #[test]
+    fn standalone_workflow_field_is_preferred() {
+        let control: ExtensionControl = serde_json::from_str(
+            r#"{"revision":7,"action":"run_workflow","workflow":" Focus ","text":"legacy"}"#,
+        )
+        .expect("valid workflow control payload");
+
+        assert_eq!(control_workflow_name(&control), Some("Focus"));
+    }
+
+    #[test]
+    fn legacy_text_field_remains_supported() {
+        let control: ExtensionControl =
+            serde_json::from_str(r#"{"revision":8,"action":"run_workflow","text":"  Focus  "}"#)
+                .expect("valid legacy workflow control payload");
+
+        assert_eq!(control_workflow_name(&control), Some("Focus"));
+    }
+
+    #[test]
+    fn blank_workflow_payload_is_rejected() {
+        let control: ExtensionControl = serde_json::from_str(
+            r#"{"revision":9,"action":"run_workflow","workflow":"  ","text":""}"#,
+        )
+        .expect("valid empty workflow control payload");
+
+        assert_eq!(control_workflow_name(&control), None);
+    }
+
+    #[test]
+    fn schedule_payload_is_decoded_from_control_text() {
+        let control: ExtensionControl = serde_json::from_str(
+            r#"{"revision":10,"action":"schedule_workflow","text":"{\"workflow\":\"Focus\",\"delay_seconds\":900}"}"#,
+        )
+        .expect("valid schedule control payload");
+        let schedule = control_schedule(&control).expect("decoded schedule");
+        assert_eq!(schedule.workflow.as_deref(), Some("Focus"));
+        assert_eq!(schedule.delay_seconds, 900);
+    }
 }

@@ -22,12 +22,14 @@ the main `hyusk` CLI in `../crates/hyusk-cli`; see the workspace
 | Interruptible async turns | Implemented; a new message or wake word cancels the current model/tool/TTS work |
 | Circular desktop orb | Implemented; optional when the GNOME top-bar indicator is installed |
 | GNOME top-bar indicator | Implemented as a Shell extension in `gnome-extension/` |
-| Persistent memory | Implemented; Markdown + JSON notes, knowledge-graph triples, query-aware tf-idf retrieval |
+| Persistent memory | Implemented; SQLite + FTS5 hybrid retrieval, knowledge-graph triples, readable Markdown export |
 | System context in prompt | Implemented; OS, distro, session type, host, date/time |
 | Wake-word detection | Optional; uses `hey_hyusk.onnx` or the temporary `hey_livekit.onnx` |
 | Speech-to-text | Connected to the wake flow when a Whisper model loads |
 | Text-to-speech | Invoked and awaited after responses; depends on local tools |
-| Persistent sessions, streaming, permissions, cancellation | Not implemented here |
+| Guarded long-running model/tool loops | Implemented; configurable round/time limits, cancellation, and no-progress detection |
+| Background model/Codex tasks | Implemented; bounded concurrency with list, cancel, completion cards, and announcements |
+| Persistent reminders and workflow schedules | Implemented; one-shot jobs survive service restarts |
 
 The `models/` directory currently contains Whisper and Piper assets plus the
 downloaded temporary `hey_livekit.onnx` classifier. The detector is optional:
@@ -89,12 +91,16 @@ or times out, the wake event is ignored and the terminal input path still works.
 | `OPENROUTER_MODEL` | No | `openai/gpt-4o-mini` | Model identifier sent to the provider. |
 | `OPENROUTER_BASE_URL` | No | `https://openrouter.ai/api/v1` | Base URL; `/chat/completions` is appended. |
 | `OPENAI_API_KEY` | No | - | Separate OpenAI API credential; API usage is billed separately from a ChatGPT subscription. |
+| `BRAVE_SEARCH_API_KEY` | No | DuckDuckGo fallback | Optional token for Brave's structured Search API. |
 | `HYUSK_WORKSPACE` | No | Current directory | Workspace root for Codex CLI coding mode. |
 | `MODEL_VISION` | No | `1` | Attach screenshots as image content for vision-capable models. Set `0` for text-only models, then use `ocr` instead. |
 | `ORB_STEAL_FOCUS` | No | `0` | Let the orb take keyboard focus while active. Default is off so portal keyboard input goes to the controlled app. |
 | `HYUSK_ORB` | No | auto | Set `0` to disable the orb, `1` to force it. By default the orb is skipped when the GNOME indicator extension is enabled. |
 | `HYUSK_SCREENSHOT_RETENTION_SECS` | No | `900` | Delete temporary screenshots older than this. |
 | `HYUSK_SCREENSHOT_MAX_FILES` | No | `30` | Maximum temporary screenshots retained. |
+| `HYUSK_AGENT_MAX_TOOL_ROUNDS` | No | `24` | Maximum model/tool rounds in one foreground turn. |
+| `HYUSK_AGENT_MAX_TURN_SECS` | No | `600` | Wall-clock limit for one foreground turn, including tools. |
+| `HYUSK_AGENT_MAX_REPEATED_TOOL_ROUNDS` | No | `3` | Stop after this many identical tool-call/result rounds. |
 | Background subagents | No configuration | At most two workers. Research is read-only; workspace tasks use local Codex CLI with a 15-minute limit. |
 | `WAKE_CLAP_ENABLED` | No | `0` | Enable hand-clap wake (off by default; noise triggers it). |
 | `WAKE_CLAP_SENSITIVITY` | No | `6.0` | How many times louder than background a clap must be. |
@@ -102,14 +108,20 @@ or times out, the wake event is ignored and the terminal input path still works.
 | `WAKE_WORD_ENABLED` | No | `1` | Set to `0`, `false`, `off`, or `no` to skip wake detection. |
 | `WAKE_WORD_MODEL` | No | `models/hey_hyusk.onnx`, then fallbacks | LiveKit-compatible classifier. |
 | `WAKE_WORD_MODELS` | No | - | Comma-separated classifiers; highest score wins. Overrides `WAKE_WORD_MODEL`. |
-| `WAKE_WORD_THRESHOLD` | No | `0.4` | Detection confidence threshold. Lower is more sensitive. |
+| `WAKE_WORD_THRESHOLD` | No | `0.93` | Detection confidence threshold. Lower is more sensitive. |
+| `WAKE_WORD_STRONG_THRESHOLD` | No | `0.94` | A single score at or above this level wakes immediately. |
+| `WAKE_WORD_MIN_HITS` | No | `1` | Matching scores required before waking. One minimizes latency and avoids cutting off speech. |
+| `WAKE_WORD_HIT_WINDOW_MS` | No | `1000` | Time window in which confirmation hits must arrive. |
 | `WAKE_WORD_MIN_RMS` | No | `0.003` | Adaptive noise-gate floor. Lower accepts quieter speech. |
 | `WAKE_WORD_COOLDOWN_MS` | No | `1500` | Minimum milliseconds between detections. |
-| `WAKE_WORD_DENOISE` | No | `1` | Run RNNoise before wake scoring to suppress fan/hiss noise. |
+| `WAKE_WORD_DENOISE` | No | `0` | Optional RNNoise preprocessing. Leave off for models made by the bundled raw-audio trainer. |
 | `STT_MODEL` | No | `models/ggml-base.en.bin` | Whisper GGML model for post-wake transcription. |
+| `STT_LANGUAGE` | No | `en` | Whisper language code, or `auto` with a multilingual model. |
+| `STT_DENOISE` | No | `1` | Apply RNNoise to command audio before Whisper transcription. |
 | `STT_SILENCE_MS` | No | `900` | Silence after speech before recording stops. |
 | `STT_NO_SPEECH_MS` | No | `4000` | Give up and stop early if no speech starts. |
 | `PIPER_MODEL` | No | `models/en_US-lessac-medium.onnx` | Piper voice model used by Linux TTS. |
+| `PIPER_SPEAKER` | No | - | Speaker name or numeric ID for a multi-speaker Piper model. |
 
 The base URL must not include the trailing `/chat/completions` path.
 
@@ -135,7 +147,48 @@ Disable it with `./scripts/uninstall-autostart.sh`.
 
 ## Tools
 
-The agent exposes six tools through OpenAI-compatible function specs:
+The agent exposes its tools through OpenAI-compatible function specs. In
+addition to desktop, process, media, memory, and timer actions, it includes
+managed background tasks and persistent scheduling.
+
+### `scheduler`
+
+Creates one-time reminders or runs named deterministic workflows later. Jobs
+are stored atomically in `$XDG_DATA_HOME/hyusk/schedules.json`, reloaded after a
+restart, and can be listed or cancelled by ID:
+
+```json
+{ "action": "schedule", "type": "reminder", "text": "stretch", "after_seconds": 600 }
+{ "action": "schedule", "type": "workflow", "workflow": "focus mode", "at_unix": 1900000000 }
+{ "action": "schedule", "type": "agent_task", "prompt": "summarize today's notes", "after_seconds": 3600 }
+{ "action": "list" }
+{ "action": "cancel", "id": 2 }
+```
+
+Common relative phrases are handled without an LLM, including `remind me in
+ten minutes to stretch`, `remind me to drink water in thirty minutes`, and
+`schedule workflow focus mode in one hour`. A scheduled workflow that becomes
+due during another foreground request is queued instead of interrupting it.
+
+### `task`
+
+Delegates longer model work while the main assistant remains responsive.
+Research workers cannot use local tools; workspace workers use the installed
+Codex CLI inside one explicitly approved project root. Use `list` and `cancel`
+to manage running jobs, and optionally set `timeout_seconds` between thirty
+seconds and one hour. Hyusk posts the report and announces completion when a
+worker finishes.
+
+### `web_search`
+
+Searches the live web directly without opening a browser or using screenshots.
+It returns titles, source URLs, and snippets for the model to summarize. The
+keyless fallback uses DuckDuckGo's non-JavaScript HTML search. For more stable
+API results, set `BRAVE_SEARCH_API_KEY` or store it in GNOME Keyring:
+
+```bash
+secret-tool store --label="Hyusk Brave Search" hyusk provider brave_search
+```
 
 ### `shell`
 
@@ -302,6 +355,71 @@ Built-in aliases live in `src/agent/commands.rs`; add your own in
 }
 ```
 
+#### Native voice workflows (no LLM)
+
+The same file can define Shortcuts-style workflows. A workflow matches its
+name, any phrase in `phrases`, or `run <name>` / `start <name>`, then executes
+each `steps` entry locally in order:
+
+```json
+{
+  "workflows": [
+    {
+      "name": "start my workday",
+      "phrases": ["begin work", "open my work setup"],
+      "steps": [
+        "open code",
+        "open slack",
+        "set timer for 25 minutes"
+      ]
+    }
+  ]
+}
+```
+
+Workflow steps use the built-in deterministic command vocabulary, so they do
+not require an API key, model call, or screenshots. They can launch configured
+apps, open sites, switch windows, control media, set timers, change brightness,
+lock the session, take screenshots, and save notes. Arbitrary shell text is not
+accepted as a workflow step. Dangerous operations continue to require the
+normal Hyusk confirmation path when invoked through the model.
+
+Each `steps` item is one command; a semicolon can also separate commands in a
+single item. The supported forms include `open <app-or-site>`, `launch
+<app>`, `go to <site>`, `switch to <window>`, `play`/`pause`/`next song`,
+`volume up`/`volume down`/`set volume to <0-100>`, `set timer for <number>
+<seconds|minutes|hours>`, `brightness up`/`brightness down`, `lock the screen`,
+`screenshot`, and `remember that <text>`. App and site aliases from the same
+file are available inside workflows, so add an alias before using a custom
+application or site.
+
+Hyusk validates a workflow before executing it and never runs only part of a
+broken workflow. Entries without a usable name are ignored when the
+configuration is loaded; a named empty or malformed workflow stays addressable
+so Hyusk can say what needs fixing. Exact duplicate entries are ignored, while
+duplicate triggers use the first complete workflow.
+
+#### Hyusk Workflows desktop app
+
+Install the native GTK4/libadwaita editor for the current user:
+
+```bash
+./scripts/install-workflow-app.sh
+```
+
+Open **Hyusk Workflows** from the GNOME app grid, run
+`hyusk-workflows`, or choose **Workflows** from the Hyusk top-bar menu.
+The app provides a searchable workflow library, voice-trigger editing,
+installed-app discovery and search, custom application commands, a website
+builder with browser choice, ordered steps with move/remove controls,
+validation, atomic saves, delete confirmation, one-time workflow/reminder
+scheduling, and direct execution through the running Hyusk service. It
+preserves the existing `apps`, `sites`, and other keys in
+`~/.config/hyusk/commands.json`.
+
+The app and voice path use the same version-one workflow format. Editing and
+running workflows does not require an LLM or API key.
+
 Anything the router does not recognize goes to the model as before.
 
 **`window` tool.** Native window control on GNOME via the
@@ -312,9 +430,10 @@ apps on Wayland. Install/refresh the extension with
 
 ### `memory`
 
-Persistent local memory that survives restarts. Data is stored under
-`$XDG_DATA_HOME/hyusk/` (or `~/.local/share/hyusk/`) as `memory.json` and a
-human-readable `memory.md`.
+Persistent local memory that survives restarts. SQLite `memory.db` is the
+source of truth under `$XDG_DATA_HOME/hyusk/` (or `~/.local/share/hyusk/`), and
+`memory.md` is a generated human-readable view. Existing `memory.json` data is
+imported transactionally on first use and kept unchanged as a backup.
 
 ```json
 { "action": "remember", "text": "User prefers dark mode", "tags": ["preference"] }
@@ -344,9 +463,46 @@ LiveKit tensor names). Both are auto-discovered from `models/`, so you can say
 and are downloaded on demand.
 
 Multiple classifiers can be loaded with `WAKE_WORD_MODELS`; the highest score
-wins. The detector also tracks an adaptive noise floor, runs RNNoise denoising
-before scoring (set `WAKE_WORD_DENOISE=0` to disable), and peak-normalizes each
-window, so quiet or distant speech is still scored.
+wins. The detector also tracks an adaptive noise floor and peak-normalizes each
+window. Runtime preprocessing should match training: personal models made by
+the bundled trainer should normally use `WAKE_WORD_DENOISE=0`.
+
+For a personal model, record plenty of *hard negatives*: phrases that resemble
+the target (`hey Siri`, `hey Google`, `Alexa`, `hey you`, `hi Hyusk`, `hey
+Musk`) plus the television, music, keyboard, and room noise that causes real
+false wakes. Recordings are checkpointed, so increasing `--negatives` resumes
+the existing set instead of asking for the positive clips again:
+
+```bash
+python3 scripts/train-wake-word.py --word "hey hyusk" \
+  --output models/hey_hyusk.onnx --positives 60 --negatives 180
+```
+
+You can also add a bounded public speech set instead of manually recording all
+general negatives. This downloads TensorFlow Mini Speech Commands (about 182
+MB compressed, 8,000 short clips from many speakers), while the trainer samples
+only 2,000 clips by default:
+
+```bash
+./scripts/download-wake-negatives.sh
+
+.venv-wake/bin/python scripts/train-wake-word.py \
+  --word "hey hyusk" \
+  --output models/hey_hyusk.onnx \
+  --positives-dir models/wake_recordings/hey_hyusk/positives \
+  --negatives-dir models/wake_recordings/hey_hyusk/negatives \
+  --extra-negatives-dir models/public_negatives/mini_speech_commands \
+  --extra-negative-limit 2000 \
+  --skip-install
+```
+
+Keep the personal negatives in the mix: public files provide broad voices and
+words, while your own false activations represent the laptop microphone, room,
+speakers, and confusing phrases the deployed detector actually hears.
+
+One qualifying score is required by default, so command recording starts as
+soon as the detector crosses the threshold. Increase `WAKE_WORD_MIN_HITS` only
+if your microphone produces too many isolated false positives.
 
 ## Interruptions and UI
 

@@ -43,7 +43,13 @@ const COOLDOWN: Duration = Duration::from_secs(2);
 /// Default confidence threshold.
 ///
 /// Start here. Tune this using real recordings from your microphone.
-const DEFAULT_THRESHOLD: f32 = 0.65;
+const DEFAULT_THRESHOLD: f32 = 0.93;
+
+/// Accept one qualifying inference window. This keeps wake latency low and
+/// avoids cutting off a spoken command while waiting for a second overlap.
+const DEFAULT_MIN_HITS: u32 = 1;
+const DEFAULT_HIT_WINDOW: Duration = Duration::from_millis(1_000);
+const DEFAULT_STRONG_THRESHOLD: f32 = 0.94;
 
 /// Extra confidence required to accept a wake word while the agent is speaking.
 ///
@@ -157,6 +163,9 @@ const MAX_PAUSE: Duration = Duration::from_secs(120);
 pub struct WakeWordDetector {
     model_paths: Vec<PathBuf>,
     threshold: f32,
+    strong_threshold: f32,
+    min_hits: u32,
+    hit_window: Duration,
     cooldown: Duration,
     min_rms: f32,
     denoise: bool,
@@ -187,6 +196,9 @@ impl WakeWordDetector {
         Ok(Self {
             model_paths,
             threshold: DEFAULT_THRESHOLD,
+            strong_threshold: DEFAULT_STRONG_THRESHOLD,
+            min_hits: DEFAULT_MIN_HITS,
+            hit_window: DEFAULT_HIT_WINDOW,
             cooldown: COOLDOWN,
             min_rms: MIN_RMS,
             denoise: true,
@@ -199,6 +211,17 @@ impl WakeWordDetector {
 
     pub fn with_threshold(mut self, threshold: f32) -> Self {
         self.threshold = threshold.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn with_confirmation(mut self, min_hits: u32, hit_window: Duration) -> Self {
+        self.min_hits = min_hits.clamp(1, 5);
+        self.hit_window = hit_window.clamp(Duration::from_millis(200), Duration::from_secs(3));
+        self
+    }
+
+    pub fn with_strong_threshold(mut self, threshold: f32) -> Self {
+        self.strong_threshold = threshold.clamp(self.threshold, 1.0);
         self
     }
 
@@ -279,6 +302,9 @@ impl WakeWordDetector {
         let config = WakeConfig {
             model_paths: self.model_paths.clone(),
             threshold: self.threshold,
+            strong_threshold: self.strong_threshold,
+            min_hits: self.min_hits,
+            hit_window: self.hit_window,
             cooldown: self.cooldown,
             min_rms: self.min_rms,
             denoise: self.denoise,
@@ -302,6 +328,9 @@ impl WakeWordDetector {
 struct WakeConfig {
     model_paths: Vec<PathBuf>,
     threshold: f32,
+    strong_threshold: f32,
+    min_hits: u32,
+    hit_window: Duration,
     cooldown: Duration,
     min_rms: f32,
     denoise: bool,
@@ -309,6 +338,74 @@ struct WakeConfig {
     clap_enabled: bool,
     clap_sensitivity: f32,
     clap_min_peak: f32,
+}
+
+struct WakeEvidence {
+    min_hits: u32,
+    window: Duration,
+    label: String,
+    hits: u32,
+    started: Option<Instant>,
+}
+
+impl WakeEvidence {
+    fn new(min_hits: u32, window: Duration) -> Self {
+        Self {
+            min_hits: min_hits.max(1),
+            window,
+            label: String::new(),
+            hits: 0,
+            started: None,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.label.clear();
+        self.hits = 0;
+        self.started = None;
+    }
+
+    fn observe(
+        &mut self,
+        label: &str,
+        score: f32,
+        threshold: f32,
+        strong_threshold: f32,
+        now: Instant,
+    ) -> bool {
+        if score >= strong_threshold {
+            self.reset();
+            return true;
+        }
+
+        if score < threshold {
+            if self
+                .started
+                .is_some_and(|started| now.duration_since(started) > self.window)
+            {
+                self.reset();
+            }
+            return false;
+        }
+
+        let expired = self
+            .started
+            .is_some_and(|started| now.duration_since(started) > self.window);
+        if self.started.is_none() || expired || self.label != label {
+            self.label = label.to_string();
+            self.hits = 1;
+            self.started = Some(now);
+        } else {
+            self.hits += 1;
+        }
+
+        if self.hits < self.min_hits {
+            return false;
+        }
+
+        self.reset();
+        true
+    }
 }
 
 fn run_microphone_loop(
@@ -321,6 +418,9 @@ fn run_microphone_loop(
     let WakeConfig {
         model_paths,
         threshold,
+        strong_threshold,
+        min_hits,
+        hit_window,
         cooldown,
         min_rms,
         denoise,
@@ -524,6 +624,11 @@ fn run_microphone_loop(
     let mut warned_clipping = false;
 
     let mut output_was_active = false;
+    // Require the classifier to return to a quiet/low-confidence state before
+    // accepting another wake. This prevents the same trailing audio window
+    // from retriggering after the cooldown expires.
+    let mut wake_armed = true;
+    let mut evidence = WakeEvidence::new(min_hits, hit_window);
 
     let debug = wake_debug_enabled();
 
@@ -567,6 +672,7 @@ fn run_microphone_loop(
             drop(buffer);
 
             clap_scanner = ClapScanner::new(min_rms);
+            evidence.reset();
             last_detection = Instant::now();
         }
 
@@ -594,6 +700,8 @@ fn run_microphone_loop(
                 }
 
                 last_detection = Instant::now();
+                wake_armed = false;
+                evidence.reset();
 
                 /*
                  * Release the microphone while the runtime records the
@@ -744,6 +852,11 @@ fn run_microphone_loop(
         } else {
             threshold
         };
+        let effective_strong_threshold = if output_suppressed {
+            (strong_threshold + BARGE_IN_THRESHOLD_BOOST).min(0.99)
+        } else {
+            strong_threshold.max(effective_threshold)
+        };
 
         if debug {
             let scores = predictions
@@ -753,7 +866,7 @@ fn run_microphone_loop(
                 .join(" ");
 
             println!(
-                "[Wake][debug] level {level:.4} gate {gate:.4} threshold {effective_threshold:.2} | {scores}"
+                "[Wake][debug] level {level:.4} gate {gate:.4} threshold {effective_threshold:.2} strong {effective_strong_threshold:.2} | {scores}"
             );
         }
 
@@ -767,7 +880,22 @@ fn run_microphone_loop(
             })
             .unwrap_or(("wake word", 0.0));
 
-        if confidence < effective_threshold {
+        if !wake_armed {
+            evidence.reset();
+            let quiet_reset = confidence < effective_threshold * 0.5 && level < gate * 1.5;
+            if quiet_reset {
+                wake_armed = true;
+            }
+            continue;
+        }
+
+        if !evidence.observe(
+            label,
+            confidence,
+            effective_threshold,
+            effective_strong_threshold,
+            Instant::now(),
+        ) {
             continue;
         }
 
@@ -776,6 +904,7 @@ fn run_microphone_loop(
         }
 
         last_detection = Instant::now();
+        wake_armed = false;
 
         // Release the microphone for the recording (see the clap path).
         let _ = stream.pause();
@@ -1290,7 +1419,40 @@ fn rms(audio: &[f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClapScanner, LinearResampler, WakeResume};
+    use super::{ClapScanner, LinearResampler, WakeEvidence, WakeResume};
+
+    #[test]
+    fn wake_evidence_rejects_isolated_spikes_and_accepts_two_hits() {
+        let start = std::time::Instant::now();
+        let mut evidence = WakeEvidence::new(2, std::time::Duration::from_secs(1));
+
+        assert!(!evidence.observe("hey_hyusk", 0.95, 0.6, 0.99, start));
+        assert!(!evidence.observe(
+            "hey_hyusk",
+            0.20,
+            0.6,
+            0.99,
+            start + std::time::Duration::from_millis(200)
+        ));
+        assert!(evidence.observe(
+            "hey_hyusk",
+            0.80,
+            0.6,
+            0.99,
+            start + std::time::Duration::from_millis(600)
+        ));
+
+        assert!(!evidence.observe("hey_hyusk", 0.95, 0.6, 0.99, start));
+        assert!(!evidence.observe(
+            "hey_hyusk",
+            0.95,
+            0.6,
+            0.99,
+            start + std::time::Duration::from_millis(1_100)
+        ));
+
+        assert!(evidence.observe("hey_hyusk", 0.762, 0.6, 0.75, start));
+    }
 
     /// Manual probe: scores a raw 16 kHz i16 clip (e.g. a TTS-generated
     /// "alexa") through the classifier. Run with:

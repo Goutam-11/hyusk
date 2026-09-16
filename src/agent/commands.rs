@@ -5,7 +5,7 @@
 //! through the model costs seconds; this module recognizes them directly and
 //! turns them into tool calls, falling back to the model for anything else.
 //!
-//! Aliases can be extended in `~/.config/hyusk/commands.json`:
+//! Aliases and native workflows can be extended in `~/.config/hyusk/commands.json`:
 //!
 //! ```json
 //! {
@@ -13,11 +13,24 @@
 //!   "sites": { "hn": "https://news.ycombinator.com" }
 //! }
 //! ```
+//!
+//! A workflow is a named sequence of the same deterministic commands:
+//!
+//! ```json
+//! {
+//!   "workflows": [{
+//!     "name": "start work",
+//!     "phrases": ["start my workday", "begin work"],
+//!     "steps": ["open code", "open slack", "set timer for 25 minutes"]
+//!   }]
+//! }
+//! ```
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::Deserialize;
+use serde_json::Value;
 
 /// One concrete action the router can take without the model.
 #[derive(Debug, Clone, PartialEq)]
@@ -49,6 +62,11 @@ pub enum Action {
         action: String,
         seconds: Option<u64>,
     },
+    Schedule {
+        kind: String,
+        value: String,
+        seconds: u64,
+    },
 }
 
 impl Action {
@@ -63,6 +81,7 @@ impl Action {
             Action::Screenshot => "computer",
             Action::Remember { .. } => "memory",
             Action::Timer { .. } => "timer",
+            Action::Schedule { .. } => "scheduler",
         }
     }
 
@@ -121,6 +140,24 @@ impl Action {
                 "seconds": seconds,
             })
             .to_string(),
+
+            Action::Schedule {
+                kind,
+                value,
+                seconds,
+            } => {
+                let mut input = serde_json::json!({
+                    "action": "schedule",
+                    "type": kind,
+                    "after_seconds": seconds,
+                });
+                input[if kind == "workflow" {
+                    "workflow"
+                } else {
+                    "text"
+                }] = serde_json::json!(value);
+                input.to_string()
+            }
         }
     }
 
@@ -163,7 +200,32 @@ impl Action {
                 "Showing the time.".to_string()
             }
             Action::Timer { .. } => "Done.".to_string(),
+            Action::Schedule {
+                kind,
+                value,
+                seconds,
+            } if kind == "workflow" => {
+                format!("Scheduled {value} in {}.", spoken_duration(*seconds))
+            }
+            Action::Schedule { value, seconds, .. } => {
+                format!(
+                    "I’ll remind you to {value} in {}.",
+                    spoken_duration(*seconds)
+                )
+            }
         }
+    }
+}
+
+fn spoken_duration(seconds: u64) -> String {
+    if seconds.is_multiple_of(3600) {
+        let hours = seconds / 3600;
+        format!("{hours} hour{}", if hours == 1 { "" } else { "s" })
+    } else if seconds.is_multiple_of(60) {
+        let minutes = seconds / 60;
+        format!("{minutes} minute{}", if minutes == 1 { "" } else { "s" })
+    } else {
+        format!("{seconds} second{}", if seconds == 1 { "" } else { "s" })
     }
 }
 
@@ -184,12 +246,19 @@ impl Plan {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default)]
 struct Config {
-    #[serde(default)]
     apps: HashMap<String, Vec<String>>,
-    #[serde(default)]
     sites: HashMap<String, String>,
+    workflows: Vec<Workflow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct Workflow {
+    name: String,
+    #[serde(default)]
+    phrases: Vec<String>,
+    steps: Vec<String>,
 }
 
 fn config_path() -> PathBuf {
@@ -202,10 +271,122 @@ fn config_path() -> PathBuf {
 }
 
 fn load_config() -> Config {
-    std::fs::read_to_string(config_path())
-        .ok()
-        .and_then(|contents| serde_json::from_str(&contents).ok())
-        .unwrap_or_default()
+    let Ok(contents) = std::fs::read_to_string(config_path()) else {
+        return Config::default();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&contents) else {
+        return Config::default();
+    };
+    let Some(object) = value.as_object() else {
+        return Config::default();
+    };
+
+    // Parse each top-level section independently. One malformed workflow must
+    // not hide otherwise valid app/site aliases (or other workflows).
+    let apps = object
+        .get("apps")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default();
+    let sites = object
+        .get("sites")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default();
+    let mut workflows = Vec::new();
+    if let Some(entries) = object.get("workflows").and_then(Value::as_array) {
+        for workflow in entries.iter().filter_map(parse_workflow) {
+            // Ignore exact duplicate records while preserving distinct
+            // workflows that happen to share a trigger (the first valid one
+            // wins at execution time).
+            if !workflows
+                .iter()
+                .any(|existing: &Workflow| existing == &workflow)
+            {
+                workflows.push(workflow);
+            }
+        }
+    }
+
+    Config {
+        apps,
+        sites,
+        workflows,
+    }
+}
+
+fn parse_workflow(value: &Value) -> Option<Workflow> {
+    let object = value.as_object()?;
+    let name = object.get("name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    let steps = object
+        .get("steps")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|step| !step.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut phrases = Vec::new();
+    if let Some(values) = object.get("phrases").and_then(Value::as_array) {
+        for phrase in values.iter().filter_map(Value::as_str) {
+            let phrase = clean(phrase);
+            if !phrase.is_empty() && !phrases.contains(&phrase) {
+                phrases.push(phrase);
+            }
+        }
+    }
+
+    Some(Workflow {
+        name: name.to_string(),
+        phrases,
+        steps,
+    })
+}
+
+fn workflow_matches(text: &str, workflow: &Workflow) -> bool {
+    let candidates = [
+        text,
+        text.strip_prefix("run ").unwrap_or(text),
+        text.strip_prefix("execute ").unwrap_or(text),
+        text.strip_prefix("start ").unwrap_or(text),
+        text.strip_prefix("shortcut ").unwrap_or(text),
+    ];
+
+    std::iter::once(workflow.name.as_str())
+        .chain(workflow.phrases.iter().map(String::as_str))
+        .map(clean)
+        .any(|name| candidates.iter().any(|candidate| *candidate == name))
+}
+
+#[cfg(test)]
+fn workflow_for<'a>(text: &str, config: &'a Config) -> Option<&'a Workflow> {
+    config
+        .workflows
+        .iter()
+        .find(|workflow| workflow_matches(text, workflow))
+}
+
+fn workflow_actions(workflow: &Workflow, config: &Config) -> Result<Vec<Action>, String> {
+    let clauses = workflow
+        .steps
+        .iter()
+        .flat_map(|step| split_commands(&clean(step)))
+        .collect::<Vec<_>>();
+    let actions = parse_actions(clauses, config)?;
+
+    if actions.is_empty() {
+        return Err("it has no steps".to_string());
+    }
+
+    Ok(actions)
 }
 
 fn builtin_sites() -> HashMap<&'static str, &'static str> {
@@ -436,6 +617,8 @@ fn looks_like_action_start(text: &str) -> bool {
         "tell me the time",
         "set a timer",
         "set timer",
+        "remind me ",
+        "schedule workflow ",
         "screenshot",
         "take a note",
         "note that",
@@ -448,7 +631,7 @@ fn looks_like_action_start(text: &str) -> bool {
 fn split_commands(text: &str) -> Vec<String> {
     let mut parts: Vec<String> = vec![text.to_string()];
 
-    for separator in [" and then ", " then ", " and "] {
+    for separator in [";", " and then ", " then ", " and "] {
         let mut next = Vec::new();
 
         for part in parts {
@@ -589,6 +772,24 @@ fn parse_clause(clause: &str, config: &Config) -> Option<Action> {
             return None;
         }
 
+        // Keep browser choice inside the deterministic command path. This is
+        // especially useful in workflows: `open Brave; go to example.com`
+        // should not silently fall back to xdg-open's default browser.
+        if let Some((url_target, browser_target)) = target.rsplit_once(" in ") {
+            let url_target = url_target.trim();
+            let browser_target = browser_target.trim();
+            if let Some(url) = resolve_site(url_target, config) {
+                if let Some((program, mut args, label)) = resolve_app(browser_target, config) {
+                    args.push(url);
+                    return Some(Action::Launch {
+                        program,
+                        args,
+                        label: format!("{} in {}", title_case(url_target), title_case(&label)),
+                    });
+                }
+            }
+        }
+
         if let Some(url) = resolve_site(target, config) {
             return Some(Action::OpenUrl {
                 url,
@@ -608,6 +809,60 @@ fn parse_clause(clause: &str, config: &Config) -> Option<Action> {
     }
 
     None
+}
+
+fn browser_label(label: &str) -> bool {
+    matches!(
+        label.trim().to_ascii_lowercase().as_str(),
+        "brave" | "chrome" | "chromium" | "firefox" | "edge" | "browser"
+    )
+}
+
+fn parse_actions(
+    clauses: impl IntoIterator<Item = String>,
+    config: &Config,
+) -> Result<Vec<Action>, String> {
+    let mut actions = Vec::new();
+    let mut browser: Option<(String, Vec<String>, String)> = None;
+
+    for clause in clauses {
+        let clause = clause.trim();
+        if clause.is_empty() {
+            continue;
+        }
+        let mut action =
+            parse_clause(clause, config).ok_or_else(|| format!("unsupported step \"{clause}\""))?;
+
+        if let (
+            Some((program, args, label)),
+            Action::OpenUrl {
+                url,
+                label: url_label,
+            },
+        ) = (browser.as_ref(), &action)
+        {
+            let mut browser_args = args.clone();
+            browser_args.push(url.clone());
+            action = Action::Launch {
+                program: program.clone(),
+                args: browser_args,
+                label: format!("{} in {}", url_label, title_case(label)),
+            };
+        }
+
+        browser = match &action {
+            Action::Launch {
+                program,
+                args,
+                label,
+            } if browser_label(label) => Some((program.clone(), args.clone(), label.clone())),
+            Action::OpenUrl { .. } => browser,
+            _ => None,
+        };
+        actions.push(action);
+    }
+
+    Ok(actions)
 }
 
 fn parse_media(clause: &str) -> Option<Action> {
@@ -678,6 +933,48 @@ fn parse_media(clause: &str) -> Option<Action> {
 }
 
 fn parse_shell(clause: &str) -> Option<Action> {
+    if let Some(rest) = clause.strip_prefix("remind me in ") {
+        if let Some((duration, text)) = rest.split_once(" to ") {
+            if let Some(seconds) = parse_duration(duration) {
+                if !text.trim().is_empty() {
+                    return Some(Action::Schedule {
+                        kind: "reminder".to_string(),
+                        value: text.trim().to_string(),
+                        seconds,
+                    });
+                }
+            }
+        }
+    }
+
+    if let Some(rest) = clause.strip_prefix("remind me to ") {
+        if let Some((text, duration)) = rest.rsplit_once(" in ") {
+            if let Some(seconds) = parse_duration(duration) {
+                if !text.trim().is_empty() {
+                    return Some(Action::Schedule {
+                        kind: "reminder".to_string(),
+                        value: text.trim().to_string(),
+                        seconds,
+                    });
+                }
+            }
+        }
+    }
+
+    if let Some(rest) = clause.strip_prefix("schedule workflow ") {
+        if let Some((name, duration)) = rest.rsplit_once(" in ") {
+            if let Some(seconds) = parse_duration(duration) {
+                if !name.trim().is_empty() {
+                    return Some(Action::Schedule {
+                        kind: "workflow".to_string(),
+                        value: name.trim().to_string(),
+                        seconds,
+                    });
+                }
+            }
+        }
+    }
+
     if matches!(
         clause,
         "what time is it" | "tell me the time" | "show the time" | "show time"
@@ -757,6 +1054,32 @@ fn parse_shell(clause: &str) -> Option<Action> {
     None
 }
 
+fn parse_duration(text: &str) -> Option<u64> {
+    let mut parts = text.split_whitespace();
+    let amount = match parts.next()? {
+        "a" | "an" | "one" => 1,
+        "two" => 2,
+        "three" => 3,
+        "four" => 4,
+        "five" => 5,
+        "ten" => 10,
+        "fifteen" => 15,
+        "twenty" => 20,
+        "thirty" => 30,
+        value => value.parse::<u64>().ok()?,
+    };
+    let multiplier = match parts.next().unwrap_or("seconds") {
+        unit if unit.starts_with("hour") => 3_600,
+        unit if unit.starts_with("minute") || unit == "min" || unit == "mins" => 60,
+        unit if unit.starts_with("second") || unit == "sec" || unit == "secs" => 1,
+        _ => return None,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(amount.saturating_mul(multiplier))
+}
+
 fn title_case(text: &str) -> String {
     text.split_whitespace()
         .map(|word| {
@@ -780,17 +1103,52 @@ pub fn parse(raw: &str) -> Option<Plan> {
     }
 
     let config = load_config();
-    let mut actions = Vec::new();
 
-    for clause in split_commands(&cleaned) {
-        let clause = clause.trim();
+    let matching_workflows: Vec<_> = config
+        .workflows
+        .iter()
+        .filter(|workflow| workflow_matches(&cleaned, workflow))
+        .collect();
 
-        if clause.is_empty() {
-            continue;
+    if !matching_workflows.is_empty() {
+        let mut error = "it has no valid steps".to_string();
+
+        // If duplicate entries share a trigger, use the first complete one;
+        // a stale/broken duplicate must not prevent a valid one from running.
+        for workflow in matching_workflows {
+            match workflow_actions(workflow, &config) {
+                Ok(actions) => {
+                    let spoken = format!(
+                        "Running {}. {}",
+                        title_case(&workflow.name),
+                        actions
+                            .iter()
+                            .map(Action::spoken)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
+
+                    return Some(Plan { actions, spoken });
+                }
+                Err(reason) => error = reason,
+            }
         }
 
-        actions.push(parse_clause(clause, &config)?);
+        let workflow = config
+            .workflows
+            .iter()
+            .find(|workflow| workflow_matches(&cleaned, workflow))
+            .expect("matching_workflows is not empty");
+        return Some(Plan {
+            actions: Vec::new(),
+            spoken: format!(
+                "I couldn't run {} because {error}. Edit the workflow and try again.",
+                title_case(&workflow.name)
+            ),
+        });
     }
+
+    let actions = parse_actions(split_commands(&cleaned), &config).ok()?;
     if actions.is_empty() {
         return None;
     }
@@ -810,6 +1168,113 @@ mod tests {
 
     fn tool(action: &Action) -> &'static str {
         action.tool_name()
+    }
+
+    #[test]
+    fn matches_named_workflow_and_alias_phrase() {
+        let config = Config {
+            apps: HashMap::new(),
+            sites: HashMap::new(),
+            workflows: vec![Workflow {
+                name: "focus mode".to_string(),
+                phrases: vec!["start my focus session".to_string()],
+                steps: vec!["mute".to_string()],
+            }],
+        };
+
+        assert_eq!(
+            workflow_for("start my focus session", &config).map(|workflow| workflow.name.as_str()),
+            Some("focus mode")
+        );
+        assert_eq!(
+            workflow_for("run focus mode", &config).map(|workflow| workflow.name.as_str()),
+            Some("focus mode")
+        );
+    }
+
+    #[test]
+    fn malformed_workflow_entries_are_ignored_individually() {
+        let malformed = serde_json::json!({
+            "name": "",
+            "steps": []
+        });
+        let valid = serde_json::json!({
+            "name": "focus mode",
+            "phrases": ["focus", 42, "focus"],
+            "steps": ["mute", "", 42]
+        });
+
+        assert!(parse_workflow(&malformed).is_none());
+        assert_eq!(
+            parse_workflow(&valid),
+            Some(Workflow {
+                name: "focus mode".to_string(),
+                phrases: vec!["focus".to_string()],
+                steps: vec!["mute".to_string()],
+            })
+        );
+
+        let empty_named = serde_json::json!({
+            "name": "empty workflow",
+            "steps": []
+        });
+        let workflow = parse_workflow(&empty_named).expect("named empty workflow is retained");
+        assert_eq!(
+            workflow_actions(&workflow, &Config::default()),
+            Err("it has no steps".to_string())
+        );
+    }
+
+    #[test]
+    fn workflow_steps_are_atomic_and_support_semicolon_chains() {
+        let config = Config::default();
+        let workflow = Workflow {
+            name: "morning".to_string(),
+            phrases: Vec::new(),
+            steps: vec!["open terminal; set timer for 25 minutes".to_string()],
+        };
+        let actions = workflow_actions(&workflow, &config).expect("valid workflow");
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(actions[0], Action::Launch { .. }));
+        assert!(matches!(actions[1], Action::Timer { .. }));
+
+        let broken = Workflow {
+            steps: vec!["mute".to_string(), "do something unknown".to_string()],
+            ..workflow
+        };
+        assert_eq!(
+            workflow_actions(&broken, &config),
+            Err("unsupported step \"do something unknown\"".to_string())
+        );
+    }
+
+    #[test]
+    fn duplicate_trigger_can_use_the_first_valid_workflow() {
+        let config = Config {
+            workflows: vec![
+                Workflow {
+                    name: "broken focus".to_string(),
+                    phrases: vec!["focus".to_string()],
+                    steps: vec!["not a command".to_string()],
+                },
+                Workflow {
+                    name: "working focus".to_string(),
+                    phrases: vec!["focus".to_string()],
+                    steps: vec!["mute".to_string()],
+                },
+            ],
+            ..Config::default()
+        };
+        let matching: Vec<_> = config
+            .workflows
+            .iter()
+            .filter(|workflow| workflow_matches("focus", workflow))
+            .collect();
+        let selected = matching
+            .into_iter()
+            .find_map(|workflow| workflow_actions(workflow, &config).ok())
+            .expect("second duplicate is valid");
+        assert_eq!(selected.len(), 1);
     }
 
     #[test]
@@ -853,6 +1318,64 @@ mod tests {
 
         match &plan.actions[0] {
             Action::OpenUrl { url, .. } => assert_eq!(url, "https://github.com"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn schedules_relative_reminders_without_a_model() {
+        let plan = parse("remind me in ten minutes to stretch").expect("parses");
+
+        assert_eq!(plan.actions.len(), 1);
+        assert_eq!(tool(&plan.actions[0]), "scheduler");
+        assert!(matches!(
+            &plan.actions[0],
+            Action::Schedule { kind, value, seconds }
+                if kind == "reminder" && value == "stretch" && *seconds == 600
+        ));
+
+        let alternate = parse("remind me to drink water in 30 minutes").expect("parses");
+        assert!(matches!(
+            &alternate.actions[0],
+            Action::Schedule { value, seconds, .. }
+                if value == "drink water" && *seconds == 1_800
+        ));
+    }
+
+    #[test]
+    fn schedules_named_workflows_without_a_model() {
+        let plan = parse("schedule workflow focus mode in an hour").expect("parses");
+
+        assert!(matches!(
+            &plan.actions[0],
+            Action::Schedule { kind, value, seconds }
+                if kind == "workflow" && value == "focus mode" && *seconds == 3_600
+        ));
+    }
+
+    #[test]
+    fn opens_url_in_requested_browser() {
+        let plan = parse("open https://example.com in brave").expect("parses");
+
+        match &plan.actions[0] {
+            Action::Launch { program, args, .. } => {
+                assert_eq!(program, "flatpak");
+                assert_eq!(args.last().map(String::as_str), Some("https://example.com"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chained_url_uses_the_previous_browser() {
+        let plan = parse("open brave and go to example.com").expect("parses");
+
+        assert_eq!(plan.actions.len(), 2);
+        match &plan.actions[1] {
+            Action::Launch { program, args, .. } => {
+                assert_eq!(program, "flatpak");
+                assert_eq!(args.last().map(String::as_str), Some("https://example.com"));
+            }
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -925,7 +1448,7 @@ mod tests {
 
         assert_eq!(plan.actions.len(), 2);
         assert!(matches!(plan.actions[0], Action::Launch { .. }));
-        assert!(matches!(plan.actions[1], Action::OpenUrl { .. }));
+        assert!(matches!(plan.actions[1], Action::Launch { .. }));
     }
 
     #[test]

@@ -16,3 +16,6 @@ hyusk-status.json
 hyusk-state
 
 models/*
+.venv-wake/
+__pycache__/
+*.ses

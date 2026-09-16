@@ -50,7 +50,11 @@ impl ProcessTool {
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::null())
+            // GUI applications must outlive this short-lived launcher future.
+            // Keep this explicit so a later refactor cannot accidentally make
+            // dropping the Tokio child handle terminate the application.
+            .kill_on_drop(false);
 
         let mut child = match command.spawn().context("Failed to spawn process") {
             Ok(child) => child,

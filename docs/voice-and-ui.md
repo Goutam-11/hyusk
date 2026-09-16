@@ -44,8 +44,8 @@ when the voice models are missing.
 `WakeWordDetector` uses CPAL to capture the default microphone, converts input
 to mono, resamples it to 16 kHz, and runs `livekit-wakeword` inference in a
 blocking worker. The detector keeps roughly 2.5 seconds of audio, runs
-predictions periodically, applies a confidence threshold of 0.65, and uses a
-two-second cooldown.
+predictions every two hundred milliseconds and applies a confidence threshold
+of `0.93`. A score of `0.94` or higher satisfies the strong single-hit path.
 
 The constructor requires a LiveKit-compatible ONNX classifier. The model should
 produce a prediction named `hey_hyusk`; the code falls back to the highest
@@ -59,17 +59,21 @@ Wake detection is optional. It is controlled by:
 | `WAKE_WORD_ENABLED` | `1` | `0`, `false`, `off`, or `no` skips wake detection. |
 | `WAKE_WORD_MODEL` | `models/hey_hyusk.onnx`, then fallbacks | Path to a LiveKit-compatible classifier. |
 | `WAKE_WORD_MODELS` | - | Comma-separated classifiers; all are scored and the highest confidence wins. |
-| `WAKE_WORD_THRESHOLD` | `0.4` | Detection confidence threshold. Lower is more sensitive. |
+| `WAKE_WORD_THRESHOLD` | `0.93` | Detection confidence threshold. Lower is more sensitive. |
+| `WAKE_WORD_STRONG_THRESHOLD` | `0.94` | A single score at or above this level wakes immediately. |
+| `WAKE_WORD_MIN_HITS` | `1` | Qualifying inference windows needed to wake. |
+| `WAKE_WORD_HIT_WINDOW_MS` | `1000` | Window used when more than one hit is configured. |
 | `WAKE_WORD_MIN_RMS` | `0.003` | Adaptive noise-gate floor. Lower accepts quieter speech. |
 | `WAKE_WORD_COOLDOWN_MS` | `1500` | Minimum time between detections. |
-| `WAKE_WORD_DENOISE` | `1` | Run RNNoise denoising before scoring. Set `0` to disable. |
+| `WAKE_WORD_DENOISE` | `0` | Optional RNNoise preprocessing; training and runtime preprocessing must match. |
+| `WAKE_WORD_STEP_MS` | `200` | Interval between inference passes. |
 
-The detector tracks a slowly-moving noise floor, runs RNNoise denoising on each
-inference window, peak-normalizes the result, and scores up to three default
-model candidates (`hey_hyusk.onnx`, `hey_livekit.onnx`, `nihao_livekit.onnx`)
-when they are present. A configured `WAKE_WORD_MODELS` list overrides that
-discovery. RNNoise is particularly effective against stationary fan and hiss
-noise; disable it with `WAKE_WORD_DENOISE=0` if it removes too much signal.
+The detector tracks a slowly-moving noise floor, peak-normalizes each inference
+window, and scores the configured model candidates. A configured
+`WAKE_WORD_MODELS` list overrides automatic discovery. RNNoise can suppress
+stationary fan and hiss noise, but it should be enabled only when the wake model
+was trained with matching preprocessing. Personal models produced by the
+bundled trainer normally use `WAKE_WORD_DENOISE=0`.
 
 The repository does not bundle `models/hey_hyusk.onnx`. Run
 `scripts/download-wake-word.sh` to fetch the temporary LiveKit `hey_livekit.onnx`
