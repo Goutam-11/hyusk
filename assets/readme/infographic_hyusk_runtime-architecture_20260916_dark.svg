@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-labelledby="title description">
+  <title id="title">How Hyusk works</title>
+  <desc id="description">Voice or typed input flows through the Hyusk runtime to local workflows, computer tools, memory, and an optional language model.</desc>
+  <rect width="1200" height="360" rx="24" fill="#0f1528"/>
+  <text x="60" y="61" fill="#f8faff" font-family="Inter, system-ui, sans-serif" font-size="26" font-weight="720">One request, the fastest reliable path</text>
+  <text x="60" y="91" fill="#8d99ba" font-family="Inter, system-ui, sans-serif" font-size="15">Deterministic actions stay local. Open-ended work reaches the model only when needed.</text>
+  <g font-family="Inter, system-ui, sans-serif">
+    <rect x="60" y="137" width="190" height="128" rx="18" fill="#19213c" stroke="#344066"/>
+    <circle cx="98" cy="176" r="15" fill="#78e6aa"/>
+    <text x="126" y="183" fill="#f8faff" font-size="18" font-weight="700">Speak or type</text>
+    <text x="86" y="220" fill="#9eabc9" font-size="14">Wake word · STT</text>
+    <text x="86" y="243" fill="#9eabc9" font-size="14">Extension · Terminal</text>
+    <path d="M262 201H316" stroke="#59688f" stroke-width="3"/>
+    <path d="M307 192L318 201 307 210" fill="none" stroke="#59688f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="330" y="137" width="210" height="128" rx="18" fill="#1d2645" stroke="#b4a0ff"/>
+    <circle cx="368" cy="176" r="15" fill="#b4a0ff"/>
+    <text x="396" y="183" fill="#f8faff" font-size="18" font-weight="700">Hyusk runtime</text>
+    <text x="356" y="220" fill="#aeb8d5" font-size="14">Intent routing</text>
+    <text x="356" y="243" fill="#aeb8d5" font-size="14">Safety · task loop</text>
+    <path d="M552 201H606" stroke="#59688f" stroke-width="3"/>
+    <path d="M597 192L608 201 597 210" fill="none" stroke="#59688f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="620" y="115" width="240" height="82" rx="18" fill="#19213c" stroke="#344066"/>
+    <circle cx="657" cy="156" r="10" fill="#ffaa6e"/>
+    <text x="680" y="153" fill="#f8faff" font-size="17" font-weight="700">Local actions</text>
+    <text x="680" y="176" fill="#9eabc9" font-size="13">Workflows · apps · timers</text>
+    <rect x="620" y="211" width="240" height="82" rx="18" fill="#19213c" stroke="#344066"/>
+    <circle cx="657" cy="252" r="10" fill="#82d2ff"/>
+    <text x="680" y="249" fill="#f8faff" font-size="17" font-weight="700">Agent tools</text>
+    <text x="680" y="272" fill="#9eabc9" font-size="13">Accessibility · web · tasks</text>
+    <path d="M872 201H926" stroke="#59688f" stroke-width="3"/>
+    <path d="M917 192L928 201 917 210" fill="none" stroke="#59688f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="940" y="137" width="200" height="128" rx="18" fill="#19213c" stroke="#344066"/>
+    <circle cx="978" cy="176" r="15" fill="#ff82c8"/>
+    <text x="1006" y="183" fill="#f8faff" font-size="18" font-weight="700">Result</text>
+    <text x="966" y="220" fill="#9eabc9" font-size="14">Voice + response card</text>
+    <text x="966" y="243" fill="#9eabc9" font-size="14">SQLite memory update</text>
+  </g>
+</svg>

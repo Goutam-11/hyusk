@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" role="img" aria-labelledby="title description">
+  <title id="title">Hyusk</title>
+  <desc id="description">Hyusk is a voice-first, local-first desktop agent for Linux.</desc>
+  <rect width="1200" height="420" rx="28" fill="#0b1020"/>
+  <path d="M0 326C221 249 367 367 567 305S924 219 1200 301V420H0Z" fill="#111831"/>
+  <circle cx="1057" cy="72" r="150" fill="#151d3a"/>
+  <circle cx="1057" cy="72" r="88" fill="#1c2649"/>
+  <g transform="translate(126 86) scale(.86)">
+    <rect width="256" height="256" rx="56" fill="#151d3a"/>
+    <path fill="#b4a0ff" d="M128 120C104 48 41 44 52 111 24 137 77 165 128 137Z"/>
+    <path fill="#b4a0ff" d="M128 120C152 48 215 44 204 111 232 137 179 165 128 137Z"/>
+    <path fill="#7c67e8" d="M128 136C91 148 62 194 104 180 111 197 126 166 128 143Z"/>
+    <path fill="#7c67e8" d="M128 136C165 148 194 194 152 180 145 197 130 166 128 143Z"/>
+    <rect x="122" y="111" width="12" height="62" rx="6" fill="#f8faff"/>
+    <circle cx="128" cy="111" r="9" fill="#f8faff"/>
+    <path d="M124 106C115 89 108 82 99 78M132 106C141 89 148 82 157 78" fill="none" stroke="#b4a0ff" stroke-width="6" stroke-linecap="round"/>
+  </g>
+  <text x="418" y="157" fill="#f8faff" font-family="Inter, system-ui, sans-serif" font-size="82" font-weight="760" letter-spacing="-3">Hyusk</text>
+  <text x="422" y="210" fill="#aeb8d5" font-family="Inter, system-ui, sans-serif" font-size="25">Your voice-first desktop agent for Linux</text>
+  <g font-family="Inter, system-ui, sans-serif" font-size="15" font-weight="650">
+    <rect x="422" y="250" width="150" height="42" rx="21" fill="#202a4c"/>
+    <circle cx="447" cy="271" r="6" fill="#78e6aa"/>
+    <text x="463" y="277" fill="#e9edff">Native control</text>
+    <rect x="586" y="250" width="148" height="42" rx="21" fill="#202a4c"/>
+    <circle cx="611" cy="271" r="6" fill="#82d2ff"/>
+    <text x="627" y="277" fill="#e9edff">Local memory</text>
+    <rect x="748" y="250" width="137" height="42" rx="21" fill="#202a4c"/>
+    <circle cx="773" cy="271" r="6" fill="#ffaa6e"/>
+    <text x="789" y="277" fill="#e9edff">Workflows</text>
+  </g>
+  <text x="422" y="338" fill="#7783a8" font-family="ui-monospace, SFMono-Regular, monospace" font-size="15">FEDORA · GNOME · WAYLAND · RUST</text>
+</svg>

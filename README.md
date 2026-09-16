@@ -1,4 +1,16 @@
-# hyusk_agent
+<p align="center">
+  <img src="assets/readme/banner_hyusk_readme-hero_20260916_dark.svg" width="100%" alt="Hyusk — your voice-first desktop agent for Linux">
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#tools">Tools</a> ·
+  <a href="#native-voice-workflows-no-llm">Workflows</a> ·
+  <a href="#memory">Memory</a> ·
+  <a href="docs/development.md">Development</a>
+</p>
+
+# Hyusk Agent
 
 `hyusk_agent` is an experimental single-binary agent runtime for the Hyusk
 project. It combines an OpenRouter-compatible chat model, structured function
@@ -8,6 +20,10 @@ status overlay, and optional voice components.
 This directory is a member of the parent Hyusk workspace. It is separate from
 the main `hyusk` CLI in `../crates/hyusk-cli`; see the workspace
 [`README.md`](../README.md) for the broader project.
+
+<p align="center">
+  <img src="assets/readme/infographic_hyusk_runtime-architecture_20260916_dark.svg" width="100%" alt="Hyusk request routing architecture">
+</p>
 
 ## Current status
 
