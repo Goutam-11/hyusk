@@ -19,3 +19,16 @@ models/*
 .venv-wake/
 __pycache__/
 *.ses
+
+# Android local state, generated packages, and signing material
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/**/build/
+android/captures/
+android/.idea/
+android/*.iml
+android/**/*.jks
+android/**/*.keystore
+android/app/src/personal/assets/wake/
+android/app/src/main/assets/wake/

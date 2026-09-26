@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">Hyusk</string>
+    <string name="accessibility_service_description">Hyusk can read structured screen content and perform approved UI actions on your behalf.</string>
+    <string name="notification_listener_description">Hyusk uses notifications to offer an explicit reply action.</string>
+    <string name="voice_interaction_label">Hyusk voice interaction</string>
+</resources>
