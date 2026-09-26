@@ -80,8 +80,9 @@ impl Tool for WindowTool {
     fn description(&self) -> &str {
         "List, inspect, switch, and close desktop windows natively on GNOME \
          through the Hyusk shell extension. Use `list` for open windows (app, \
-         title, active flag), `active` for the focused window, `activate` with \
-         a `query` (app name or title substring) to raise a window, and `close` \
+         title, stable ID, bounds, active flag), `active` for the focused window, \
+         `activate` with a `query` (prefer `id:<number>` from `list`; app name \
+         or title substring also works) to raise a window, and `close` \
          (empty `query` closes the focused window). This is the reliable way to \
          manage windows on Wayland; prefer it over blind alt+tab or \
          accessibility, which cannot raise windows."
@@ -98,7 +99,7 @@ impl Tool for WindowTool {
                 },
                 "query": {
                     "type": "string",
-                    "description": "App name or window-title substring for `activate`/`close`. Empty closes the focused window."
+                    "description": "Prefer an exact `id:<number>` from `list` for `activate`/`close`; app name or window-title substring also works. Empty closes the focused window."
                 }
             },
             "required": ["action"]
@@ -129,12 +130,31 @@ impl Tool for WindowTool {
                         .get("active")
                         .and_then(Value::as_bool)
                         .unwrap_or(false);
+                    let bounds = window.get("bounds").and_then(|value| {
+                        Some(format!(
+                            " at {},{} {}x{}",
+                            value.get("x")?.as_i64()?,
+                            value.get("y")?.as_i64()?,
+                            value.get("width")?.as_u64()?,
+                            value.get("height")?.as_u64()?,
+                        ))
+                    });
 
                     lines.push(format!(
-                        "{}{} — {}",
+                        "{}[id:{}] {} — {}{}{}",
                         if active { "* " } else { "  " },
+                        window
+                            .get("id")
+                            .and_then(Value::as_u64)
+                            .map_or_else(|| "?".to_string(), |id| id.to_string()),
                         window.get("app").and_then(Value::as_str).unwrap_or(""),
-                        window.get("title").and_then(Value::as_str).unwrap_or("")
+                        window.get("title").and_then(Value::as_str).unwrap_or(""),
+                        bounds.unwrap_or_default(),
+                        if window.get("minimized").and_then(Value::as_bool) == Some(true) {
+                            " (minimized)"
+                        } else {
+                            ""
+                        }
                     ));
                 }
 

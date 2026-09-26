@@ -19,17 +19,23 @@ main.rs
   +-- WakeWordDetector -> WakeWordDetected -> SpeechToText -> UserInput
   |
   +-- eframe UI <- state/tool/response events
+  |
+  +-- optional TLS WebSocket LinkServer <-> Android companion
+       (challenge auth, replay-safe JSON-RPC, typed phone actions)
 ```
 
 ## Current boundaries
 
-- `agent/runner.rs` owns in-memory chat history and the structured tool-call
-  loop.
+- `agent/runner.rs` owns restart-safe recent chat history, bounded history
+  compaction, and the structured tool-call loop.
 - `agent/runtime.rs` consumes `HyuskEvent`s, cancels the previous turn, and
   spawns each turn as a separate task.
 - `model/openrouter.rs` handles the HTTP protocol and transient retries.
 - `tools/` contains the tool trait, registry, and four local tools.
 - `speech/`, `wake/`, and `ui/` are audio and desktop refinement components.
+- `link/` is an opt-in TLS-only mobile transport. It feeds authenticated phone
+  turns into the same event loop, exposes the phone as the `mobile` tool, and
+  broadcasts status and approval events to the companion.
 
 The voice path is connected when the wake model and Whisper model are available:
 `WakeWordDetector` pauses after `WakeWordDetected`, `run_agent_task` records and
@@ -43,12 +49,19 @@ a black circular orb but does not render response text. See
 ## Runtime characteristics
 
 The agent uses structured OpenAI-compatible function calling, preserves the
-assistant `tool_calls` message before each `role: "tool"` result, and keeps the
-conversation in memory for the life of the process. Turns are cancellable, but
-there is no persistence, streaming response, permission system, or process
-monitor in this crate.
+assistant `tool_calls` message before each `role: "tool"` result, compacts old
+complete turns without splitting the active tool protocol, and persists a
+bounded plain user/assistant session snapshot across restarts. Turns are
+cancellable; dangerous actions use one-shot approval and completed tool state
+remains available for an explicit continuation.
 
 The `shell` tool runs arbitrary commands as the current user. The `computer`
 tool controls the real pointer and keyboard and attempts screenshots through
 local backends. See [`docs/tools.md`](docs/tools.md) before exposing this binary
 to untrusted prompts or accounts.
+
+The Android companion uses native intents first, Accessibility semantic
+actions second, and optional Shizuku templates third. It never receives laptop
+API keys; pairing, encrypted local storage, and wire details are documented in
+[`docs/android-agent.md`](docs/android-agent.md) and
+[`docs/mobile-link-protocol.md`](docs/mobile-link-protocol.md).

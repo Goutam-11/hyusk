@@ -12,6 +12,24 @@ fn table() -> HashMap<&'static str, Vec<&'static str>> {
         ("firefox", vec!["firefox"]),
         ("brave", vec!["flatpak", "run", "com.brave.Browser"]),
         ("brave browser", vec!["flatpak", "run", "com.brave.Browser"]),
+        (
+            "youtube music",
+            vec![
+                "flatpak",
+                "run",
+                "com.brave.Browser",
+                "https://music.youtube.com",
+            ],
+        ),
+        (
+            "youtube-music",
+            vec![
+                "flatpak",
+                "run",
+                "com.brave.Browser",
+                "https://music.youtube.com",
+            ],
+        ),
         ("chrome", vec!["flatpak", "run", "com.google.Chrome"]),
         ("google chrome", vec!["flatpak", "run", "com.google.Chrome"]),
         ("chromium", vec!["chromium"]),
@@ -107,5 +125,16 @@ mod tests {
 
         assert_eq!(program, "/usr/bin/something");
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn youtube_music_opens_in_brave() {
+        let (program, args) = resolve("youtube-music");
+        assert_eq!(program, "flatpak");
+        assert_eq!(
+            args,
+            vec!["run", "com.brave.Browser", "https://music.youtube.com"]
+        );
+        assert!(resolves("youtube-music"));
     }
 }

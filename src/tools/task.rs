@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     model::codex::CodexClient,
-    model::openrouter::OpenRouterClient,
+    model::SharedActiveModel,
     types::{HyuskEvent, Message},
 };
 
@@ -24,8 +24,7 @@ use super::{Tool, ToolResult};
 /// state, personal memory, or credentials from the main agent.
 pub struct TaskTool {
     events: Sender<HyuskEvent>,
-    client: OpenRouterClient,
-    model: String,
+    active_model: SharedActiveModel,
     slots: Arc<Semaphore>,
     next_id: AtomicU64,
     active: Arc<Mutex<HashMap<u64, ActiveTask>>>,
@@ -67,11 +66,10 @@ enum TaskProfile {
 }
 
 impl TaskTool {
-    pub fn new(events: Sender<HyuskEvent>, client: OpenRouterClient, model: String) -> Self {
+    pub fn new(events: Sender<HyuskEvent>, active_model: SharedActiveModel) -> Self {
         Self {
             events,
-            client,
-            model,
+            active_model,
             slots: Arc::new(Semaphore::new(2)),
             next_id: AtomicU64::new(1),
             active: Arc::new(Mutex::new(HashMap::new())),
@@ -160,15 +158,29 @@ impl Tool for TaskTool {
             ));
         }
 
+        // Capture the current desktop provider/model at delegation time. A
+        // later model switch affects future tasks but does not reroute work
+        // that is already in flight.
+        let active_model = match self.active_model.snapshot() {
+            Ok(active_model) => active_model,
+            Err(error) => return Ok(ToolResult::failure(error.to_string())),
+        };
+
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let label = if label.trim().is_empty() {
             format!("task {id}")
         } else {
             label.trim().to_string()
         };
+        if profile == TaskProfile::Research {
+            println!(
+                "[Task] #{id} research using {}: {}",
+                active_model.provider, active_model.model
+            );
+        }
         let events = self.events.clone();
-        let client = self.client.clone();
-        let model = self.model.clone();
+        let client = active_model.client;
+        let model = active_model.model;
         let slots = Arc::clone(&self.slots);
         let active = Arc::clone(&self.active);
         let completion_label = label.clone();

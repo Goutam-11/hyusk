@@ -12,6 +12,7 @@ use enigo::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::sleep;
 
@@ -119,6 +120,19 @@ enum ComputerAction {
         include_cursor: bool,
         #[serde(default = "default_true")]
         inline_image: bool,
+    },
+
+    AppState {
+        #[serde(default)]
+        region: Option<Region>,
+        #[serde(default)]
+        include_cursor: bool,
+        #[serde(default = "default_true")]
+        inline_image: bool,
+        #[serde(default = "default_app_state_depth")]
+        max_depth: u8,
+        #[serde(default = "default_app_state_nodes")]
+        max_nodes: usize,
     },
 
     Ocr {
@@ -1766,6 +1780,95 @@ async fn screenshot(
     Ok(ToolResult::success(output))
 }
 
+fn default_app_state_depth() -> u8 {
+    5
+}
+fn default_app_state_nodes() -> usize {
+    2000
+}
+
+async fn app_state(
+    region: Option<Region>,
+    include_cursor: bool,
+    inline_image: bool,
+    max_depth: u8,
+    max_nodes: usize,
+) -> Result<ToolResult> {
+    let request = json!({"action":"app_state", "max_depth":max_depth, "max_nodes":max_nodes});
+    let child_result = Command::new("python3")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/atspi_bridge.py"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn();
+    let accessibility = match child_result {
+        Ok(mut child) => match tokio::time::timeout(Duration::from_secs(60), async {
+            let sent = if let Some(mut stdin) = child.stdin.take() {
+                stdin
+                    .write_all(format!("{}\n", request).as_bytes())
+                    .await
+                    .is_ok()
+            } else {
+                false
+            };
+            (sent, child.wait_with_output().await)
+        })
+        .await
+        {
+            Ok((true, Ok(output))) if output.status.success() => {
+                serde_json::from_slice(&output.stdout).unwrap_or_else(
+                    |error| json!({"ok":false,"error":format!("Invalid AT-SPI response: {error}")}),
+                )
+            }
+            Err(_) => json!({"ok":false,"error":"AT-SPI app state timed out after 60 seconds"}),
+            _ => json!({"ok":false,"error":"AT-SPI bridge unavailable"}),
+        },
+        Err(error) => json!({"ok":false,"error":format!("AT-SPI bridge unavailable: {error}")}),
+    };
+    let screenshot_result = match tokio::time::timeout(
+        Duration::from_secs(30),
+        capture_screenshot(region, include_cursor),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!("Screenshot capture timed out after 30 seconds")),
+    };
+    let screenshot = match screenshot_result {
+        Ok((path, backend)) => {
+            let bytes = tokio::fs::metadata(&path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0);
+            json!({"ok":true,"path":path,"backend":backend,"bytes":bytes})
+        }
+        Err(error) => json!({"ok":false,"error":format!("{error:#}")}),
+    };
+    let snapshot = json!({
+        "screenshot": screenshot,
+        "active_window": {
+            "application": accessibility["active"]["app_name"],
+            "title": accessibility["active"]["name"],
+            "path": accessibility["active"]["path"],
+        },
+        "accessibility": accessibility,
+        "consistency": "sequential observations; screenshot is the full desktop, not cropped to the active window; UI changes between reads may make them differ; AT-SPI paths are valid only for this fresh tree snapshot",
+        "fallback": "If the accessibility tree is unavailable or empty, inspect the screenshot (or OCR it when vision is unavailable).",
+    });
+    let mut output =
+        serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| snapshot.to_string());
+    if let Some(path) = snapshot["screenshot"]["path"].as_str() {
+        if model_vision_enabled() || inline_image {
+            output.push_str(&format!("\nHYUSK_IMAGE:{path}"));
+        }
+    }
+    if snapshot["screenshot"]["ok"] != true && snapshot["accessibility"]["ok"] != true {
+        return Ok(ToolResult::failure(output));
+    }
+    Ok(ToolResult::success(output))
+}
+
 async fn ocr(
     path: Option<PathBuf>,
     region: Option<Region>,
@@ -2069,7 +2172,9 @@ impl Tool for ComputerTool {
 
     fn description(&self) -> &str {
         "Control the local desktop: inspect the screen with screenshots/OCR, \
-         locate labeled UI elements with find_text, click them with click_text, \
+         combine a full-desktop screenshot with the active window's bounded \
+         AT-SPI tree using `app_state`, locate labeled UI elements with find_text, \
+         click them with click_text, \
          read the pointer with cursor, move and click the mouse, drag, scroll, \
          type text, press keys, and wait. Coordinates are global screen pixels \
          with the origin at the top-left. When MODEL_VISION=1, a `screenshot` is \
@@ -2097,6 +2202,7 @@ impl Tool for ComputerTool {
                         "open_url",
                         "focus_window",
                         "screenshot",
+                        "app_state",
                         "ocr",
                         "mouse_move",
                         "mouse_click",
@@ -2191,6 +2297,8 @@ impl Tool for ComputerTool {
                     "type": "boolean",
                     "description": "Only used when MODEL_VISION=0. When vision is enabled, screenshots are attached to the model automatically regardless of this flag."
                 },
+                "max_depth": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Maximum active-window AT-SPI tree depth for `app_state` (default 5)." },
+                "max_nodes": { "type": "integer", "minimum": 1, "maximum": 2000, "description": "Maximum active-window AT-SPI nodes for `app_state` (default 2000)." },
                 "path": {
                     "type": "string",
                     "description": "Existing image path for `ocr`, `find_text`, or `click_text`. When omitted, a fresh screenshot is taken."
@@ -2242,7 +2350,22 @@ impl ComputerTool {
         let mut output = Vec::new();
 
         for (index, step) in steps.into_iter().enumerate() {
-            let result = Box::pin(self.run_action(step)).await?;
+            let result = match Box::pin(self.run_action(step)).await {
+                Ok(result) => result,
+                Err(error) => {
+                    output.push(format!(
+                        "step {}/{}: execution error\n{}",
+                        index + 1,
+                        total,
+                        error
+                    ));
+                    return Ok(ToolResult::failure(format!(
+                        "Batch stopped after {} completed step(s); later steps were not run.\n{}",
+                        index,
+                        output.join("\n---\n")
+                    )));
+                }
+            };
             let success = result.success;
 
             let body = if success {
@@ -2349,6 +2472,23 @@ impl ComputerTool {
                 include_cursor,
                 inline_image,
             } => screenshot(region, include_cursor, inline_image).await,
+
+            ComputerAction::AppState {
+                region,
+                include_cursor,
+                inline_image,
+                max_depth,
+                max_nodes,
+            } => {
+                app_state(
+                    region,
+                    include_cursor,
+                    inline_image,
+                    max_depth.clamp(1, 12),
+                    max_nodes.clamp(1, 2000),
+                )
+                .await
+            }
 
             ComputerAction::Ocr {
                 path,
@@ -2510,6 +2650,7 @@ mod tests {
             "open_url",
             "focus_window",
             "screenshot",
+            "app_state",
             "ocr",
             "mouse_move",
             "mouse_click",

@@ -185,16 +185,20 @@ def describe(accessible, include_text=True):
     return item
 
 
-def children_of(accessible):
+def indexed_children_of(accessible, limit=None):
     count = safe(lambda: accessible.childCount, 0) or 0
     output = []
 
-    for index in range(count):
+    for index in range(min(count, limit) if limit is not None else count):
         child = safe(lambda index=index: accessible.getChildAtIndex(index))
         if child is not None:
-            output.append(child)
+            output.append((index, child))
 
     return output
+
+
+def children_of(accessible):
+    return [child for _, child in indexed_children_of(accessible)]
 
 
 def desktop():
@@ -224,7 +228,7 @@ def find_focused(root, start_path, max_nodes=4000):
             item["path"] = path
             return item
 
-        for index, child in enumerate(children_of(accessible)):
+        for index, child in indexed_children_of(accessible):
             queue.append((child, path + [index]))
 
     return None
@@ -240,10 +244,12 @@ def active_context():
     actives = []
     focused_only = None
 
-    for app_index, app in enumerate(children_of(desktop())):
+    for app_index, app in indexed_children_of(desktop()):
         app_name = name_of(app) or f"app {app_index}"
 
-        for window_index, window in enumerate(windows_of(app)):
+        for window_index, window in indexed_children_of(app):
+            if role_name(window) not in WINDOW_ROLES:
+                continue
             states = states_of(window)
             lowered = [state.lower() for state in states]
 
@@ -328,7 +334,7 @@ def find_matches(name_query, role_query, app_index, limit, max_nodes, text_query
             item["path"] = path
             matches.append(item)
 
-        for index, child in enumerate(children_of(accessible)):
+        for index, child in indexed_children_of(accessible):
             queue.append((child, path + [index], depth + 1))
 
     return matches
@@ -337,7 +343,7 @@ def find_matches(name_query, role_query, app_index, limit, max_nodes, text_query
 def handle_apps(_request):
     output = []
 
-    for index, child in enumerate(children_of(desktop())):
+    for index, child in indexed_children_of(desktop()):
         windows = windows_of(child)
 
         entry = {
@@ -361,13 +367,20 @@ def handle_apps(_request):
 
 def handle_tree(request):
     app_index = request.get("app")
-    max_depth = int(request.get("max_depth", 5))
-    max_nodes = int(request.get("max_nodes", 2000))
+    max_depth = max(0, min(int(request.get("max_depth", 5)), 12))
+    max_nodes = max(1, min(int(request.get("max_nodes", 2000)), 20000))
 
     root = desktop()
     start_path = []
 
-    if app_index is not None:
+    path = request.get("path")
+    if isinstance(path, list) and path:
+        root = resolve(path)
+        if root is None:
+            return {"ok": False, "error": f"accessibility path {path} not found"}
+        start_path = path
+
+    elif app_index is not None:
         child = safe(lambda: root.getChildAtIndex(app_index))
         if child is None:
             return {"ok": False, "error": f"app index {app_index} not found"}
@@ -377,6 +390,7 @@ def handle_tree(request):
     queue = deque([(root, start_path, 0)])
     nodes = []
     visited = 0
+    truncated = False
 
     while queue and visited < max_nodes:
         accessible, path, depth = queue.popleft()
@@ -389,12 +403,17 @@ def handle_tree(request):
         nodes.append(node)
 
         if depth >= max_depth:
+            truncated |= node["children_count"] > 0
             continue
 
-        for index, child in enumerate(children_of(accessible)):
+        remaining = max_nodes - visited - len(queue)
+        truncated |= node["children_count"] > remaining
+        if remaining <= 0:
+            continue
+        for index, child in indexed_children_of(accessible, remaining):
             queue.append((child, path + [index], depth + 1))
 
-    return {"ok": True, "nodes": nodes}
+    return {"ok": True, "nodes": nodes, "truncated": truncated or bool(queue)}
 
 
 def handle_find(request):
@@ -433,7 +452,17 @@ def element_from_request(request):
     return resolve(match["path"]), match["path"]
 
 
-PREFERRED_ACTIONS = ["click", "press", "activate", "toggle", "open", "jump"]
+CLICK_EQUIVALENT_ACTIONS = ("click", "press", "toggle")
+
+
+def select_click_action(names, requested=""):
+    lowered = [name.lower() for name in names]
+    if requested:
+        return lowered.index(requested.lower()) if requested.lower() in lowered else None
+    for preferred in CLICK_EQUIVALENT_ACTIONS:
+        if preferred in lowered:
+            return lowered.index(preferred)
+    return None
 
 
 def handle_click(request):
@@ -458,47 +487,29 @@ def handle_click(request):
         return {"ok": False, "error": hint}
 
     count = safe(lambda: action.nActions, 0) or 0
-    chosen = None
-
-    # An explicit action name from the request wins.
-    requested_action = (request.get("action_name") or "").lower()
-
-    if requested_action:
-        for index in range(count):
-            if (safe(lambda index=index: action.getActionName(index), "") or "").lower() == requested_action:
-                chosen = index
-                break
-
-        if chosen is None:
-            return {
-                "ok": False,
-                "error": (
-                    f"element has no action named {request.get('action_name')!r} "
-                    f"(available: {[safe(lambda index=index: action.getActionName(index), '') for index in range(count)]})"
-                ),
-            }
-
-    for preferred in PREFERRED_ACTIONS:
-        for index in range(count):
-            if (safe(lambda index=index: action.getActionName(index), "") or "").lower() == preferred:
-                chosen = index
-                break
-        if chosen is not None:
-            break
-
-    if chosen is None and count > 0:
-        chosen = 0
-
+    names = [safe(lambda index=index: action.getActionName(index), "") or "" for index in range(count)]
+    requested_action = (request.get("action_name") or "").strip()
+    chosen = select_click_action(names, requested_action)
     if chosen is None:
-        return {"ok": False, "error": "element has no actions"}
+        if requested_action:
+            return {"ok": False, "error": f"element has no action named {requested_action!r} (available: {names})"}
+        return {
+            "ok": False,
+            "error": (
+                f"element has no click/press/toggle action (available: {names}). "
+                "Use action_name explicitly for other actions, or mouse_click at its bounds."
+            ),
+        }
 
     # doAction failures were silently swallowed before (they were passed to
     # safe(), which returns None on any exception), so the tool reported
     # success while nothing happened on screen. Surface real errors.
     try:
-        action.doAction(chosen)
+        result = action.doAction(chosen)
     except Exception as error:
         return {"ok": False, "error": f"click action failed: {error}"}
+    if result is False:
+        return {"ok": False, "error": f"AT-SPI action {names[chosen]!r} returned false; verify the app state"}
 
     return {
         "ok": True,
@@ -608,7 +619,7 @@ def handle_read(request):
         else:
             queue = deque()
 
-            for index, child in enumerate(children_of(root)):
+            for index, child in indexed_children_of(root):
                 queue.append((child, [index], 0))
 
         queue = deque([(root, start_path, 0)]) if start_path or app_index is not None else queue
@@ -634,7 +645,7 @@ def handle_read(request):
             lines.append(f"[{'>'.join(map(str, path))}] {role} '{name}'")
             used += len(name) + 24
 
-        for index, child in enumerate(children_of(accessible)):
+        for index, child in indexed_children_of(accessible):
             queue.append((child, path + [index], depth + 1))
 
     return {"ok": True, "lines": lines, "visited": visited}
@@ -644,10 +655,10 @@ def handle_windows(request):
     """List top-level windows across all apps with their active state."""
     output = []
 
-    for app_index, app in enumerate(children_of(desktop())):
+    for app_index, app in indexed_children_of(desktop()):
         app_name = name_of(app) or f"app {app_index}"
 
-        for window_index, window in enumerate(children_of(app)):
+        for window_index, window in indexed_children_of(app):
             role = role_name(window)
 
             if role not in ("frame", "window", "dialog", "alert"):
@@ -721,9 +732,53 @@ def handle_active(request):
     return response
 
 
+def handle_app_state(request):
+    """Return active-window context and its bounded accessibility subtree."""
+    window = active_context()
+    warnings = environment_warnings()
+    if window is None:
+        response = {
+            "ok": False,
+            "error": "no active window is exposed through accessibility",
+            "active": None,
+            "focused": None,
+            "nodes": [],
+            "truncated": False,
+        }
+        if warnings:
+            response["warnings"] = warnings
+        return response
+
+    accessible = resolve(window["path"])
+    focused = find_focused(accessible, window["path"]) if accessible is not None else None
+    # Walk from the active window path so returned paths remain usable by the
+    # existing accessibility actions.
+    tree_request = {
+        "path": window["path"],
+        "max_depth": request.get("max_depth", 5),
+        "max_nodes": request.get("max_nodes", 2000),
+    }
+    tree = handle_tree(tree_request)
+    response = {
+        "ok": True,
+        "active": window,
+        "focused": focused,
+        "nodes": tree.get("nodes", []),
+        "truncated": tree.get("truncated", False),
+    }
+    if tree.get("ok") is not True:
+        response["tree_error"] = tree.get("error", "active-window tree could not be read")
+    if response["truncated"]:
+        warnings.append("active-window accessibility tree is partial because a depth or node limit was reached")
+    if warnings:
+        response["warnings"] = warnings
+    return response
+
+
 HANDLERS = {
     "apps": handle_apps,
     "active": handle_active,
+    "app_state": handle_app_state,
     "tree": handle_tree,
     "find": handle_find,
     "click": handle_click,

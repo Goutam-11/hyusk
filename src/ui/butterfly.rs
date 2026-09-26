@@ -173,7 +173,7 @@ impl Butterfly {
 
         Self::gradient_shape(painter, &points, time, lower, right);
 
-        Self::wing_outline(painter, &points, right, lower);
+        Self::wing_outline(painter, &points, lower);
     }
 
     // ============================================================
@@ -238,15 +238,7 @@ impl Butterfly {
         for i in 1..points.len() {
             let p = points[i];
 
-            let phase = (time * 0.8 + i as f32 * 0.8).sin() * 0.5 + 0.5;
-
-            let color = if phase < 0.33 {
-                egui::Color32::from_rgba_unmultiplied(40, 210, 255, 135)
-            } else if phase < 0.66 {
-                egui::Color32::from_rgba_unmultiplied(150, 100, 255, 145)
-            } else {
-                egui::Color32::from_rgba_unmultiplied(255, 105, 205, 150)
-            };
+            let color = egui::Color32::from_rgba_unmultiplied(244, 242, 237, 178);
 
             let index = mesh.vertices.len() as u32;
 
@@ -269,13 +261,11 @@ impl Butterfly {
     // Wing outline
     // ============================================================
 
-    fn wing_outline(painter: &egui::Painter, points: &[egui::Pos2], right: bool, lower: bool) {
+    fn wing_outline(painter: &egui::Painter, points: &[egui::Pos2], lower: bool) {
         let color = if lower {
-            egui::Color32::from_rgba_unmultiplied(90, 220, 255, 110)
-        } else if right {
-            egui::Color32::from_rgba_unmultiplied(255, 135, 225, 150)
+            egui::Color32::from_rgba_unmultiplied(244, 242, 237, 125)
         } else {
-            egui::Color32::from_rgba_unmultiplied(90, 210, 255, 150)
+            egui::Color32::from_rgba_unmultiplied(244, 242, 237, 165)
         };
 
         let mut outline = points.to_vec();
@@ -304,7 +294,7 @@ impl Butterfly {
         painter.circle_filled(
             egui::pos2(center.x, center.y - size * 0.16),
             size * 0.09,
-            egui::Color32::from_rgb(12, 18, 30),
+            egui::Color32::from_rgb(244, 242, 237),
         );
 
         let body_center = egui::pos2(center.x, center.y + size * 0.08);
@@ -320,7 +310,7 @@ impl Butterfly {
 
         painter.add(egui::Shape::convex_polygon(
             body_points,
-            egui::Color32::from_rgb(8, 13, 24),
+            egui::Color32::from_rgb(244, 242, 237),
             egui::Stroke::NONE,
         ));
 
@@ -328,7 +318,7 @@ impl Butterfly {
         painter.circle_filled(
             egui::pos2(center.x, center.y + size * 0.01),
             size * 0.035,
-            egui::Color32::from_rgb(225, 245, 255),
+            egui::Color32::from_rgb(244, 242, 237),
         );
     }
 
@@ -351,7 +341,7 @@ impl Butterfly {
             [left_start, left_end],
             egui::Stroke::new(
                 0.8_f32,
-                egui::Color32::from_rgba_unmultiplied(190, 225, 255, 180),
+                egui::Color32::from_rgba_unmultiplied(244, 242, 237, 190),
             ),
         );
 
@@ -359,13 +349,13 @@ impl Butterfly {
             [right_start, right_end],
             egui::Stroke::new(
                 0.8_f32,
-                egui::Color32::from_rgba_unmultiplied(255, 175, 235, 180),
+                egui::Color32::from_rgba_unmultiplied(244, 242, 237, 190),
             ),
         );
 
-        painter.circle_filled(left_end, 1.4, egui::Color32::from_rgb(180, 230, 255));
+        painter.circle_filled(left_end, 1.4, egui::Color32::from_rgb(244, 242, 237));
 
-        painter.circle_filled(right_end, 1.4, egui::Color32::from_rgb(255, 170, 230));
+        painter.circle_filled(right_end, 1.4, egui::Color32::from_rgb(244, 242, 237));
     }
 
     // ============================================================
@@ -399,7 +389,7 @@ impl Butterfly {
             painter.circle_filled(
                 egui::pos2(x, y),
                 0.8 + flicker * 1.2,
-                egui::Color32::from_rgba_unmultiplied(130, 210, 255, alpha),
+                egui::Color32::from_rgba_unmultiplied(244, 242, 237, alpha),
             );
         }
     }

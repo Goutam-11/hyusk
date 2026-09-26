@@ -56,6 +56,8 @@ struct AppState {
 
 #[derive(Clone, Debug)]
 struct DesktopApp {
+    /// Stable desktop-file identity; labels can change with locale.
+    id: String,
     name: String,
     command: Vec<String>,
 }
@@ -187,18 +189,25 @@ fn read_steps(ui: &Ui) -> Vec<String> {
         let Ok(row) = widget.downcast::<gtk::Box>() else {
             continue;
         };
-        let Some(entry_widget) = row.first_child() else {
-            continue;
-        };
-        let Ok(entry) = entry_widget.downcast::<gtk::Entry>() else {
-            continue;
-        };
-        let value = entry.text().trim().to_string();
-        if !value.is_empty() {
-            result.push(value);
+        if let Some(entry) = row_entry(&row) {
+            let value = entry.text().trim().to_string();
+            if !value.is_empty() {
+                result.push(value);
+            }
         }
     }
     result
+}
+
+fn row_entry(row: &gtk::Box) -> Option<gtk::Entry> {
+    let mut child = row.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if let Ok(entry) = widget.downcast::<gtk::Entry>() {
+            return Some(entry);
+        }
+    }
+    None
 }
 
 fn set_status(ui: &Ui, message: &str, error: bool) {
@@ -210,22 +219,122 @@ fn set_status(ui: &Ui, message: &str, error: bool) {
 }
 
 fn desktop_app_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![PathBuf::from("/usr/share/applications")];
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        dirs.push(home.join(".local/share/applications"));
-        dirs.push(home.join(".local/share/flatpak/exports/share/applications"));
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home.as_ref().map(|path| path.join(".local/share")));
+    let data_dirs = std::env::var_os("XDG_DATA_DIRS")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .filter(|dirs| !dirs.is_empty())
+        .unwrap_or_else(|| {
+            vec![
+                PathBuf::from("/usr/local/share"),
+                PathBuf::from("/usr/share"),
+            ]
+        });
+
+    let mut dirs = Vec::new();
+    if let Some(data_home) = data_home {
+        dirs.push(data_home.join("applications"));
+        dirs.push(data_home.join("flatpak/exports/share/applications"));
     }
+    for data_dir in data_dirs {
+        dirs.push(data_dir.join("applications"));
+        dirs.push(data_dir.join("flatpak/exports/share/applications"));
+    }
+    // System-wide Flatpak exports are not always below XDG_DATA_DIRS.
     dirs.push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
     dirs
 }
 
 fn desktop_exec_command(raw: &str) -> Vec<String> {
-    raw.split_whitespace()
+    // Desktop Entry Exec keys use a small quoting language rather than shell
+    // syntax. Quoted paths may contain spaces and field codes are ignored.
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for character in raw.chars() {
+        if escaped {
+            token.push(character);
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            character if character.is_whitespace() && !quoted => {
+                if !token.is_empty() {
+                    tokens.push(std::mem::take(&mut token));
+                }
+            }
+            character => token.push(character),
+        }
+    }
+    if escaped {
+        token.push('\\');
+    }
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+    tokens
+        .into_iter()
         .filter(|token| !token.starts_with('%'))
-        .map(|token| token.trim_matches('"').trim_matches('\'').to_string())
-        .filter(|token| !token.is_empty())
         .collect()
+}
+
+fn desktop_entry_id(path: &std::path::Path) -> Option<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| name.ends_with(".desktop"))
+        .map(ToOwned::to_owned)
+}
+
+fn desktop_entry_bool(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
+}
+
+fn preferred_locale() -> Option<String> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .find_map(|key| std::env::var(key).ok())
+        .filter(|locale| !locale.is_empty() && locale != "C" && locale != "POSIX")
+        .map(|locale| locale.split('.').next().unwrap_or(&locale).to_string())
+}
+
+fn localized_name(names: &[(String, String)]) -> Option<String> {
+    let locale = preferred_locale();
+    let mut candidates = Vec::new();
+    if let Some(locale) = locale.as_deref() {
+        candidates.push(format!("Name[{locale}]"));
+        if let Some(language) = locale.split('_').next() {
+            candidates.push(format!("Name[{language}]"));
+        }
+    }
+    candidates.push("Name".to_string());
+    candidates.into_iter().find_map(|key| {
+        names
+            .iter()
+            .find(|(known, _)| known == &key)
+            .map(|(_, value)| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn executable_available(command: &str) -> bool {
+    let command = command.trim();
+    if command.is_empty() {
+        return false;
+    }
+    let path = PathBuf::from(command);
+    if path.components().count() > 1 {
+        return path.is_file();
+    }
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .map(|directory| directory.join(command))
+        .any(|candidate| candidate.is_file())
 }
 
 fn installed_apps() -> Vec<DesktopApp> {
@@ -241,27 +350,57 @@ fn installed_apps() -> Vec<DesktopApp> {
             if path.extension().and_then(|value| value.to_str()) != Some("desktop") {
                 continue;
             }
-            let Ok(contents) = fs::read_to_string(path) else {
+            let Some(id) = desktop_entry_id(&path) else {
                 continue;
             };
-            let mut name = None;
+            if seen.contains(&id) {
+                continue;
+            }
+            let Ok(contents) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let mut names = Vec::new();
             let mut exec = None;
+            let mut try_exec = None;
+            let mut hidden = None;
+            let mut no_display = None;
+            let mut entry_type = None;
             let mut in_desktop_entry = false;
             for line in contents.lines() {
+                let line = line.trim();
                 if line.starts_with('[') {
                     in_desktop_entry = line == "[Desktop Entry]";
                     continue;
                 }
-                if !in_desktop_entry {
+                if !in_desktop_entry || line.starts_with('#') {
                     continue;
                 }
-                if let Some(value) = line.strip_prefix("Name=") {
-                    name = Some(value.trim().to_string());
-                } else if let Some(value) = line.strip_prefix("Exec=") {
-                    exec = Some(value.trim().to_string());
+                let Some((key, value)) = line.split_once('=') else {
+                    continue;
+                };
+                match key {
+                    key if key == "Name" || key.starts_with("Name[") => {
+                        names.push((key.to_string(), value.to_string()))
+                    }
+                    "Exec" => exec = Some(value.trim().to_string()),
+                    "TryExec" => try_exec = Some(value.trim().to_string()),
+                    "Hidden" => hidden = Some(value),
+                    "NoDisplay" => no_display = Some(value),
+                    "Type" => entry_type = Some(value.trim()),
+                    _ => {}
                 }
             }
-            let Some(name) = name.filter(|value| !value.is_empty()) else {
+            if entry_type != Some("Application")
+                || desktop_entry_bool(hidden)
+                || desktop_entry_bool(no_display)
+                || !try_exec
+                    .as_deref()
+                    .map(executable_available)
+                    .unwrap_or(true)
+            {
+                continue;
+            }
+            let Some(name) = localized_name(&names) else {
                 continue;
             };
             let Some(command) = exec.map(|value| desktop_exec_command(&value)) else {
@@ -270,9 +409,8 @@ fn installed_apps() -> Vec<DesktopApp> {
             if command.is_empty() {
                 continue;
             }
-            let key = name.to_lowercase();
-            if seen.insert(key) {
-                apps.push(DesktopApp { name, command });
+            if seen.insert(id.clone()) {
+                apps.push(DesktopApp { id, name, command });
             }
         }
     }
@@ -311,7 +449,7 @@ fn append_app_step(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>, app: &DesktopApp)
 
 fn rebuild_app_rows(
     list: &gtk::ListBox,
-    apps: &Rc<Vec<DesktopApp>>,
+    apps: &Rc<RefCell<Vec<DesktopApp>>>,
     query: &str,
     ui: &Rc<Ui>,
     state: &Rc<RefCell<AppState>>,
@@ -319,10 +457,12 @@ fn rebuild_app_rows(
 ) {
     clear_children_list(list);
     let query = query.trim().to_lowercase();
+    let apps = apps.borrow().clone();
     let mut visible = 0;
     for app in apps.iter() {
         if !query.is_empty()
             && !app.name.to_lowercase().contains(&query)
+            && !app.id.to_lowercase().contains(&query)
             && !app.command.join(" ").to_lowercase().contains(&query)
         {
             continue;
@@ -396,6 +536,17 @@ fn show_app_picker(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
     search.set_tooltip_text(Some("Filter installed desktop applications"));
     root.append(&search);
 
+    let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let catalog_status = gtk::Label::new(None);
+    catalog_status.set_xalign(0.0);
+    catalog_status.add_css_class("dim-label");
+    catalog_status.set_hexpand(true);
+    let refresh_button = gtk::Button::with_label("Refresh");
+    refresh_button.set_tooltip_text(Some("Rescan installed desktop applications"));
+    toolbar.append(&catalog_status);
+    toolbar.append(&refresh_button);
+    root.append(&toolbar);
+
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::Single);
     list.add_css_class("boxed-list");
@@ -428,7 +579,8 @@ fn show_app_picker(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
     root.append(&close_button);
     dialog.set_child(Some(&root));
 
-    let apps = Rc::new(installed_apps());
+    let apps = Rc::new(RefCell::new(installed_apps()));
+    catalog_status.set_text(&format!("{} installed apps", apps.borrow().len()));
     rebuild_app_rows(&list, &apps, "", ui, state, &dialog);
     let list_for_search = list.clone();
     let apps_for_search = Rc::clone(&apps);
@@ -443,6 +595,28 @@ fn show_app_picker(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
             &ui_for_search,
             &state_for_search,
             &dialog_for_search,
+        );
+    });
+
+    let apps_for_refresh = Rc::clone(&apps);
+    let list_for_refresh = list.clone();
+    let search_for_refresh = search.clone();
+    let ui_for_refresh = Rc::clone(ui);
+    let state_for_refresh = Rc::clone(state);
+    let dialog_for_refresh = dialog.clone();
+    let catalog_status_for_refresh = catalog_status.clone();
+    refresh_button.connect_clicked(move |_| {
+        let refreshed = installed_apps();
+        let count = refreshed.len();
+        apps_for_refresh.replace(refreshed);
+        catalog_status_for_refresh.set_text(&format!("{count} installed apps"));
+        rebuild_app_rows(
+            &list_for_refresh,
+            &apps_for_refresh,
+            &search_for_refresh.text(),
+            &ui_for_refresh,
+            &state_for_refresh,
+            &dialog_for_refresh,
         );
     });
 
@@ -461,6 +635,7 @@ fn show_app_picker(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
             return;
         }
         let app = DesktopApp {
+            id: format!("custom-{}", command[0]),
             name: command[0].clone(),
             command,
         };
@@ -649,6 +824,34 @@ fn clear_children(container: &gtk::Box) {
     }
 }
 
+fn step_kind(value: &str) -> &'static str {
+    let value = value.trim().to_lowercase();
+    if value.starts_with("open ") || value.starts_with("go to ") {
+        "Open"
+    } else if value.starts_with("switch ") {
+        "Window"
+    } else if value.starts_with("set timer") || value.starts_with("timer") {
+        "Timer"
+    } else if value.starts_with("set volume") || value.starts_with("volume") {
+        "Audio"
+    } else if matches!(
+        value.as_str(),
+        "play" | "pause" | "next" | "previous" | "stop"
+    ) {
+        "Media"
+    } else if value.starts_with("remember ") {
+        "Memory"
+    } else if value.contains("screenshot") {
+        "Screenshot"
+    } else if value.contains("lock") {
+        "System"
+    } else if value.is_empty() {
+        "Action"
+    } else {
+        "Custom"
+    }
+}
+
 fn rebuild_steps(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>, values: &[String]) {
     clear_children(&ui.steps_box);
     let total = values.len();
@@ -657,10 +860,27 @@ fn rebuild_steps(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>, values: &[String]) 
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         row.add_css_class("step-row");
 
+        let number = gtk::Label::new(Some(&format!("{}", index + 1)));
+        number.set_width_chars(2);
+        number.set_xalign(0.5);
+        number.add_css_class("dim-label");
+        number.set_tooltip_text(Some("Step number"));
+        row.append(&number);
+
+        let kind = gtk::Label::new(Some(step_kind(value)));
+        kind.set_width_chars(11);
+        kind.set_xalign(0.0);
+        kind.add_css_class("dim-label");
+        row.append(&kind);
+
         let entry = gtk::Entry::new();
         entry.set_text(value);
         entry.set_hexpand(true);
         entry.set_placeholder_text(Some("e.g. open Firefox"));
+        let kind_for_entry = kind.clone();
+        entry.connect_changed(move |entry| {
+            kind_for_entry.set_text(step_kind(&entry.text()));
+        });
         row.append(&entry);
 
         let up = gtk::Button::from_icon_name("go-up-symbolic");
@@ -967,11 +1187,10 @@ fn add_step_with_value(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>, value: &str) 
     rebuild_steps(ui, state, &steps);
     let mut child = ui.steps_box.last_child();
     if let Some(row) = child.take() {
-        if let Some(entry) = row
-            .first_child()
-            .and_then(|widget| widget.downcast::<gtk::Entry>().ok())
-        {
-            entry.grab_focus();
+        if let Ok(row) = row.downcast::<gtk::Box>() {
+            if let Some(entry) = row_entry(&row) {
+                entry.grab_focus();
+            }
         }
     }
 }
@@ -1283,4 +1502,70 @@ fn main() {
         .build();
     app.connect_activate(build_ui);
     app.run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_exec_preserves_quoted_arguments_and_removes_field_codes() {
+        assert_eq!(
+            desktop_exec_command("/opt/Example App/bin/run \"--profile=Work Space\" %U --safe"),
+            vec![
+                "/opt/Example".to_string(),
+                "App/bin/run".to_string(),
+                "--profile=Work Space".to_string(),
+                "--safe".to_string()
+            ]
+        );
+        assert_eq!(
+            desktop_exec_command("example \"--profile=Work Space\" %U --safe"),
+            vec![
+                "example".to_string(),
+                "--profile=Work Space".to_string(),
+                "--safe".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn desktop_exec_handles_escaped_quotes_inside_quoted_argument() {
+        assert_eq!(
+            desktop_exec_command("example \"say \\\"hello\\\"\" %F"),
+            vec!["example".to_string(), "say \"hello\"".to_string()]
+        );
+    }
+
+    #[test]
+    fn desktop_entry_flags_and_names_are_normalized() {
+        assert!(desktop_entry_bool(Some(" TRUE ")));
+        assert!(!desktop_entry_bool(Some("false")));
+        assert_eq!(
+            localized_name(&[("Name".to_string(), "Fallback".to_string())]),
+            Some("Fallback".to_string())
+        );
+    }
+
+    #[test]
+    fn desktop_ids_are_based_on_file_names() {
+        assert_eq!(
+            desktop_entry_id(std::path::Path::new(
+                "/usr/share/applications/org.example.App.desktop"
+            )),
+            Some("org.example.App.desktop".to_string())
+        );
+        assert_eq!(
+            desktop_entry_id(std::path::Path::new("not-an-app.txt")),
+            None
+        );
+    }
+
+    #[test]
+    fn workflow_step_kinds_are_readable() {
+        assert_eq!(step_kind("open Firefox"), "Open");
+        assert_eq!(step_kind("set timer for 10 minutes"), "Timer");
+        assert_eq!(step_kind("remember that lunch is at noon"), "Memory");
+        assert_eq!(step_kind("run a custom command"), "Custom");
+    }
 }

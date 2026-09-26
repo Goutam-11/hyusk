@@ -13,11 +13,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dotenvy = "0.15"
 anyhow = "1"
+thiserror = "1"
 async-trait = "0.1"
 tokio-util = "0.7"
 base64 = "0.22"
 chrono = "0.4"
 futures-util = "0.3"
+tokio-tungstenite = { workspace = true }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+hmac = "0.12"
+sha2 = "0.10"
+rand = "0.8"
 whisper-rs = "0.5"
 cpal = "0.15"       # Audio input/output
 eframe = "0.33"
@@ -25,6 +32,8 @@ egui = "0.33"
 livekit-wakeword = "0.1.3"
 nnnoiseless = { version = "0.5", default-features = false }
 sqlx = { workspace = true }
+aws-config = { version = "1.8", features = ["behavior-version-latest", "credentials-login"] }
+aws-sdk-bedrockruntime = "1.143"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 enigo = { version = "0.6.1", features = ["wayland"] }

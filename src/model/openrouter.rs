@@ -35,6 +35,9 @@ struct ChatResponse {
 #[derive(Debug, Deserialize)]
 struct Choice {
     message: Message,
+
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 /// Carries an HTTP error response through the retry loop so the
@@ -73,7 +76,11 @@ pub struct OpenRouterClient {
 impl OpenRouterClient {
     pub fn new(api_key: String, base_url: String) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .connect_timeout(Duration::from_secs(15))
+                .timeout(Duration::from_secs(150))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
             api_key,
             base_url,
         }
@@ -237,7 +244,28 @@ impl OpenRouterClient {
             .next()
             .context("Model returned no choices")?;
 
-        Ok(choice.message)
+        let mut message = choice.message;
+
+        if choice
+            .finish_reason
+            .as_deref()
+            .is_some_and(is_truncated_finish_reason)
+        {
+            return Err(anyhow!("Model response truncated (finish_reason=length)"));
+        }
+
+        let has_tool_calls = message
+            .tool_calls
+            .as_ref()
+            .is_some_and(|calls| !calls.is_empty());
+        if message.text().trim().is_empty() && !has_tool_calls {
+            if let Some(refusal) = message.refusal.take() {
+                return Ok(Message::assistant(refusal));
+            }
+            return Err(anyhow!("Model returned an empty response"));
+        }
+
+        Ok(message)
     }
 
     /// Stream a chat completion, invoking `on_delta` for each text delta.
@@ -312,6 +340,7 @@ where
     let mut tool_calls: std::collections::BTreeMap<usize, ToolCall> =
         std::collections::BTreeMap::new();
     let mut done = false;
+    let mut finish_reason = None;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("Model stream error")?;
@@ -336,6 +365,13 @@ where
             let Ok(value) = serde_json::from_str::<Value>(data) else {
                 continue;
             };
+
+            if let Some(reason) = value
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str)
+            {
+                finish_reason = Some(reason.to_string());
+            }
 
             let Some(delta) = value.pointer("/choices/0/delta") else {
                 continue;
@@ -385,6 +421,21 @@ where
         }
     }
 
+    if !done {
+        return Err(anyhow!("Model stream ended before [DONE]"));
+    }
+
+    if finish_reason
+        .as_deref()
+        .is_some_and(is_truncated_finish_reason)
+    {
+        return Err(anyhow!("Model response truncated (finish_reason=length)"));
+    }
+
+    if content.trim().is_empty() && tool_calls.is_empty() {
+        return Err(anyhow!("Model returned an empty streamed response"));
+    }
+
     let mut message = Message::assistant(content.clone());
 
     if !tool_calls.is_empty() {
@@ -425,6 +476,14 @@ fn classify_error(error: &anyhow::Error) -> bool {
     msg.contains("failed to reach model provider")
         || msg.contains("failed to parse model response")
         || msg.contains("model returned no choices")
+        || msg.contains("model returned an empty response")
+        || msg.contains("model returned an empty streamed response")
+        || msg.contains("model response truncated")
+        || msg.contains("model stream ended before [done]")
+}
+
+fn is_truncated_finish_reason(reason: &str) -> bool {
+    matches!(reason, "length" | "max_tokens" | "max_output_tokens")
 }
 
 fn is_transient_status(status: StatusCode) -> bool {

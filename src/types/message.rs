@@ -18,6 +18,12 @@ pub struct Message {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+
+    /// Some OpenAI-compatible providers put a refusal here when `content` is
+    /// null. Preserve it at the wire boundary so the caller can surface it
+    /// instead of misreporting an empty response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
 }
 
 /// OpenAI-compatible message content.
@@ -74,6 +80,7 @@ impl Message {
             content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: None,
+            refusal: None,
         }
     }
 
@@ -92,6 +99,7 @@ impl Message {
             ])),
             tool_calls: None,
             tool_call_id: None,
+            refusal: None,
         }
     }
 
@@ -101,6 +109,7 @@ impl Message {
             content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: None,
+            refusal: None,
         }
     }
 
@@ -110,6 +119,7 @@ impl Message {
             content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: None,
+            refusal: None,
         }
     }
 
@@ -119,6 +129,7 @@ impl Message {
             content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            refusal: None,
         }
     }
 

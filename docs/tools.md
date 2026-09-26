@@ -47,6 +47,7 @@ native `enigo` backend is used.
 ```json
 { "action": "status" }
 { "action": "screenshot", "include_cursor": false }
+{ "action": "app_state", "max_depth": 5, "max_nodes": 300 }
 { "action": "screenshot", "region": { "x": 0, "y": 0, "width": 640, "height": 360 } }
 { "action": "ocr", "path": "/tmp/shot.png" }
 { "action": "mouse_move", "x": 640, "y": 360 }
@@ -74,6 +75,7 @@ native `enigo` backend is used.
 | `open_url` | `url` | Opens an `http`, `https`, or `file` URL with `xdg-open`, `open`, or `start`. |
 | `focus_window` | `title` | Best-effort window focus through `hyprctl`, `wmctrl`, or `xdotool`. GNOME Wayland has no generic API and returns a clear failure. |
 | `screenshot` | none | Optional `region` and `include_cursor`. With `MODEL_VISION=1`, the image is attached to the next model turn automatically; `inline_image` only matters for text-only models. |
+| `app_state` | none | Returns a bounded AT-SPI tree for the active window plus a desktop screenshot. Reports each result separately, including truncation/failure. The observations are sequential; the image is not cropped to the active window. |
 | `ocr` | none | Optional `path`; when omitted, captures a screenshot first. Requires `tesseract`. |
 | `mouse_move` | `x`, `y` | Absolute by default; set `relative: true` for offsets. Negative absolute coordinates are rejected. |
 | `mouse_click` | none | Optional `button`, `x`, `y`, and `count`. |
@@ -197,7 +199,7 @@ is much faster than screenshots for apps that expose an accessible tree.
 | `windows` | none | Every top-level window with title, bounds, `active` flag, and `path`. |
 | `tree` | `app`, optional `max_depth`/`max_nodes` | Flat list of accessible nodes with `path`, role, name, bounds, states, actions. |
 | `find` | `name`/`role`/`text`, optional `app`, `limit` | Matching nodes with exact `path` values. |
-| `click` | `path` or `name`/`role`/`text` | Performs the preferred action (`click`, `press`, `activate`, ...), or `action_name`. |
+| `click` | `path` or `name`/`role`/`text` | Defaults only to `click`, `press`, or `toggle`; use explicit `action_name` for other actions. |
 | `focus` | `path` or `name`/`role`/`text` | Grabs keyboard focus. |
 | `set_text` | `path` or `name`/`role`/`text`, `text` | Sets editable text. |
 | `get_text` | `path` or `name`/`role`/`text` | Reads text from a text interface. |
@@ -230,17 +232,26 @@ way to switch applications on Wayland, where AT-SPI cannot raise windows.
 { "action": "list" }
 { "action": "active" }
 { "action": "activate", "query": "code" }
+{ "action": "activate", "query": "id:123" }
 ```
 
 | Action | Input | Notes |
 | --- | --- | --- |
-| `list` | none | Open windows with app name, title, and an active flag. |
+| `list` | none | Open windows with stable ID, app name, title, bounds, and an active flag. |
 | `active` | none | The focused window. |
-| `activate` | `query` | Raises the first window whose app or title matches. |
+| `activate` | `query` | Prefer exact `id:<number>` from `list`; app/title substring is a fallback. |
 
 Prerequisite: install the extension with `scripts/install-gnome-indicator.sh`
 and log out/in once so `org.hyusk.Shell` is on the session bus. Without it the
 tool returns a failure and the agent falls back to `accessibility`/`computer`.
+
+## GNOME readiness
+
+`gnome_doctor` takes `{}` and returns structured, read-only capability checks,
+issues, next steps, and limitations. It does not request portal permission or
+prove that a specific click or screenshot will succeed. Use it when GNOME
+control fails repeatedly; a missing backend only affects its own path, not
+necessarily all desktop control.
 
 ## Instant commands
 

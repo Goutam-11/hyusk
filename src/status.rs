@@ -8,8 +8,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Default, Serialize)]
-struct Status {
+#[derive(Clone, Default, Serialize)]
+pub struct Status {
     revision: u64,
     state: String,
     active_provider: String,
@@ -20,14 +20,14 @@ struct Status {
     timer: Option<Timer>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct Card {
     kind: String,
     text: String,
     persistent: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct Timer {
     label: String,
     ends_at_ms: u64,
@@ -50,6 +50,15 @@ fn store() -> &'static Mutex<Status> {
     static STORE: OnceLock<Mutex<Status>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(Status::default()))
 }
+
+fn publisher() -> &'static tokio::sync::broadcast::Sender<Status> {
+    static PUBLISHER: OnceLock<tokio::sync::broadcast::Sender<Status>> = OnceLock::new();
+    PUBLISHER.get_or_init(|| tokio::sync::broadcast::channel(32).0)
+}
+
+pub fn subscribe() -> tokio::sync::broadcast::Receiver<Status> {
+    publisher().subscribe()
+}
 pub fn path() -> PathBuf {
     PathBuf::from(std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string()))
         .join("hyusk-status.json")
@@ -64,6 +73,7 @@ fn save(status: &mut Status) {
     if let Ok(json) = serde_json::to_vec(status) {
         let _ = std::fs::write(path(), json);
     }
+    let _ = publisher().send(status.clone());
 }
 pub fn state(value: &str) {
     if let Ok(mut s) = store().lock() {

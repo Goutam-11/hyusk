@@ -352,6 +352,32 @@ fn parse_workflow(value: &Value) -> Option<Workflow> {
 }
 
 fn workflow_matches(text: &str, workflow: &Workflow) -> bool {
+    let mut invocation = clean(text);
+    for prefix in [
+        "run workflow ",
+        "run shortcut ",
+        "execute workflow ",
+        "start workflow ",
+        "run ",
+        "execute ",
+        "start ",
+        "shortcut ",
+    ] {
+        if let Some(rest) = invocation.strip_prefix(prefix) {
+            invocation = rest.trim().to_string();
+            break;
+        }
+    }
+    if let Some(rest) = invocation.strip_prefix("my ") {
+        invocation = rest.trim().to_string();
+    }
+    for suffix in [" workflow", " shortcut"] {
+        if let Some(rest) = invocation.strip_suffix(suffix) {
+            invocation = rest.trim().to_string();
+            break;
+        }
+    }
+
     let candidates = [
         text,
         text.strip_prefix("run ").unwrap_or(text),
@@ -363,7 +389,7 @@ fn workflow_matches(text: &str, workflow: &Workflow) -> bool {
     std::iter::once(workflow.name.as_str())
         .chain(workflow.phrases.iter().map(String::as_str))
         .map(clean)
-        .any(|name| candidates.iter().any(|candidate| *candidate == name))
+        .any(|name| invocation == name || candidates.iter().any(|candidate| *candidate == name))
 }
 
 #[cfg(test)]
@@ -1188,6 +1214,11 @@ mod tests {
         );
         assert_eq!(
             workflow_for("run focus mode", &config).map(|workflow| workflow.name.as_str()),
+            Some("focus mode")
+        );
+        assert_eq!(
+            workflow_for("run my focus mode workflow", &config)
+                .map(|workflow| workflow.name.as_str()),
             Some("focus mode")
         );
     }

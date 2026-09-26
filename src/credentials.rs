@@ -4,7 +4,7 @@ use std::process::Command;
 
 pub fn lookup(provider: &str) -> Option<String> {
     let output = Command::new("secret-tool")
-        .args(["lookup", "hyusk", "provider", provider])
+        .args(["lookup", "application", "hyusk", "provider", provider])
         .output()
         .ok()?;
     if !output.status.success() {

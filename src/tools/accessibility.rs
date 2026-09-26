@@ -21,6 +21,13 @@ use super::{Tool, ToolResult};
  */
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
+fn action_may_change_ui(request: &Value) -> bool {
+    matches!(
+        request.get("action").and_then(Value::as_str),
+        Some("click" | "set_text" | "focus")
+    )
+}
+
 struct Bridge {
     _child: Child,
     stdin: ChildStdin,
@@ -95,6 +102,11 @@ impl AccessibilityTool {
 
     async fn send(&self, request: Value) -> Result<Value> {
         let mut guard = self.bridge.lock().await;
+        let action = request.get("action").and_then(Value::as_str).unwrap_or("");
+        // A timeout says nothing about whether an input reached the target app.
+        // Replaying it after restarting the bridge can click twice or overwrite
+        // a field twice, so only retry operations that are observational.
+        let may_change_ui = action_may_change_ui(&request);
 
         for attempt in 0..2 {
             if guard.is_none() {
@@ -119,6 +131,11 @@ impl AccessibilityTool {
                 Err(error) => {
                     eprintln!("[Accessibility] Bridge error: {error}; restarting");
                     *guard = None;
+                    if may_change_ui {
+                        return Err(error.context(format!(
+                            "Accessibility `{action}` outcome is unknown; it was not retried to avoid duplicating a possible UI action"
+                        )));
+                    }
                 }
             }
         }
@@ -197,7 +214,7 @@ impl Tool for AccessibilityTool {
                 },
                 "action_name": {
                     "type": "string",
-                    "description": "Optional exact AT-SPI action name for `click` (e.g. 'press', 'open'). Defaults to a preferred-name search."
+                    "description": "Optional exact AT-SPI action name for `click` (e.g. 'press', 'open'). Without it, only click/press/toggle actions are selected."
                 },
                 "read": {
                     "type": "boolean",
@@ -270,6 +287,15 @@ impl Tool for AccessibilityTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identifies_accessibility_requests_that_must_not_be_replayed() {
+        assert!(action_may_change_ui(&json!({"action":"click"})));
+        assert!(action_may_change_ui(&json!({"action":"set_text"})));
+        assert!(action_may_change_ui(&json!({"action":"focus"})));
+        assert!(!action_may_change_ui(&json!({"action":"tree"})));
+        assert!(!action_may_change_ui(&json!({"action":"read"})));
+    }
 
     #[tokio::test]
     async fn bridge_lists_apps_when_available() {
