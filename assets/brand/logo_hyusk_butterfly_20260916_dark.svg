@@ -1,12 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title description">
   <title id="title">Hyusk butterfly</title>
-  <desc id="description">A violet butterfly on a dark rounded square, based on the Hyusk GNOME indicator.</desc>
-  <rect width="256" height="256" rx="56" fill="#0b1020"/>
-  <path fill="#b4a0ff" d="M128 120C104 48 41 44 52 111 24 137 77 165 128 137Z"/>
-  <path fill="#b4a0ff" d="M128 120C152 48 215 44 204 111 232 137 179 165 128 137Z"/>
-  <path fill="#7c67e8" d="M128 136C91 148 62 194 104 180 111 197 126 166 128 143Z"/>
-  <path fill="#7c67e8" d="M128 136C165 148 194 194 152 180 145 197 130 166 128 143Z"/>
-  <rect x="122" y="111" width="12" height="62" rx="6" fill="#f8faff"/>
-  <circle cx="128" cy="111" r="9" fill="#f8faff"/>
-  <path d="M124 106C115 89 108 82 99 78M132 106C141 89 148 82 157 78" fill="none" stroke="#b4a0ff" stroke-width="6" stroke-linecap="round"/>
+  <desc id="description">A pearl-white butterfly on a near-black rounded square.</desc>
+  <rect width="256" height="256" rx="56" fill="#050607"/>
+  <path fill="#f4f2ed" d="M124 120C108 78 68 60 57 93 48 120 78 137 115 133 91 148 88 181 111 194 124 180 128 151 126 132Z"/>
+  <path fill="#f4f2ed" d="M132 120C148 78 188 60 199 93 208 120 178 137 141 133 165 148 168 181 145 194 132 180 128 151 130 132Z"/>
+  <path fill="#050607" d="M128 112C121 133 122 158 128 177 134 158 135 133 128 112Z"/>
+  <path d="M126 111C116 91 107 80 94 73M130 111C140 91 149 80 162 73" fill="none" stroke="#f4f2ed" stroke-width="5" stroke-linecap="round"/>
 </svg>

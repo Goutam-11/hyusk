@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hyusk mobile voice overlay</title>
+  <link rel="stylesheet" href="../tokens/colors_and_type.css" />
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; color: var(--text-primary); font-family: var(--font-body); background: #20262c; }
+    .phone { width: 390px; height: 820px; position: relative; overflow: hidden; border-radius: 48px; background: radial-gradient(circle at 65% 24%, #364852, #172025 58%, #101417); box-shadow: 0 28px 90px #000b; }
+    .context { padding: 70px 28px; color: #fff7; font-size: 64px; font-weight: 500; }
+    .panel { position: absolute; left: 14px; right: 14px; bottom: 18px; padding: 20px; border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); background: color-mix(in srgb, var(--surface-primary) 97%, transparent); box-shadow: 0 22px 70px #000c; }
+    .brand { display: flex; align-items: center; gap: 10px; font-size: 12px; letter-spacing: .28em; }
+    .signal { width: 8px; height: 8px; border-radius: 50%; background: var(--signal-active); box-shadow: 0 0 18px var(--signal-active); }
+    .mode { margin-left: auto; color: var(--text-muted); letter-spacing: .12em; }
+    .hero { height: 156px; display: grid; place-items: center; position: relative; }
+    .halo { position: absolute; width: 128px; height: 128px; border-radius: 50%; border: 1px solid #6fe7d433; box-shadow: 0 0 52px #6fe7d440, inset 0 0 34px #6fe7d416; animation: breathe 1.35s ease-in-out infinite alternate; }
+    .hero img { width: 98px; filter: drop-shadow(0 0 18px #6fe7d466); animation: breathe 1.35s ease-in-out infinite alternate; }
+    .status { min-height: 42px; text-align: center; font-size: 17px; line-height: 1.4; }
+    .input { height: 52px; display: flex; align-items: center; margin-top: 12px; padding: 5px; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--surface-input); }
+    .input span { padding-left: 12px; color: var(--text-muted); font-size: 15px; }
+    .send { width: 42px; height: 42px; margin-left: auto; display: grid; place-items: center; border-radius: 50%; background: var(--fg-1); color: var(--bg-1); font-size: 24px; }
+    @keyframes breathe { to { transform: scale(1.045); opacity: .88; } }
+  </style>
+</head>
+<body>
+  <main class="phone" aria-label="Voice assistant overlay preview">
+    <div class="context">02:16</div>
+    <section class="panel">
+      <header class="brand"><i class="signal"></i><span>HYUSK</span><span class="mode">VOICE</span></header>
+      <div class="hero"><div class="halo"></div><img src="../assets/logos/hyusk_butterfly_mark.png" alt="Hyusk butterfly" /></div>
+      <div class="status">Listening…</div>
+      <div class="input"><span>Ask Hyusk…</span><b class="send">↑</b></div>
+    </section>
+  </main>
+</body>
+</html>

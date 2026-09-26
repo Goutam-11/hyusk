@@ -64,6 +64,10 @@ function controlPath() {
     return GLib.build_filenamev([GLib.get_user_runtime_dir(), 'hyusk-control.json']);
 }
 
+function pairingPath() {
+    return GLib.build_filenamev([GLib.get_user_runtime_dir(), 'hyusk-pairing.json']);
+}
+
 function commandsConfigPath() {
     return GLib.build_filenamev([GLib.get_user_config_dir(), 'hyusk', 'commands.json']);
 }
@@ -94,36 +98,47 @@ function lerp(current, target, amount) {
 }
 
 const HyuskDrawing = GObject.registerClass(
-class HyuskDrawing extends St.DrawingArea {
-    _init() {
+class HyuskDrawing extends St.Widget {
+    _init(iconPath) {
         super._init({
             style_class: 'hyusk-indicator',
             reactive: false,
+            layout_manager: new Clutter.BinLayout(),
         });
 
-        this.set_size(24, 24);
-
+        this.set_size(28, 28);
         this._state = 'Hidden';
         this._phase = 0;
         this._color = [...STATE_COLORS.Hidden];
-
-        this.connect('repaint', () => this._draw());
-
-        this._animationId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 33, () => {
-            const speed = this._state === 'Working' ? 0.35
-                : this._state === 'Waking' ? 0.30
-                : this._state === 'Speaking' ? 0.22
-                : 0.12;
-
-            this._phase += speed;
-
-            const target = STATE_COLORS[this._state] ?? STATE_COLORS.Hidden;
-            for (let index = 0; index < 3; index++)
-                this._color[index] = lerp(this._color[index], target[index], 0.12);
-
-            this.queue_repaint();
-            return GLib.SOURCE_CONTINUE;
+        this._animationsEnabled = true;
+        this._settings = new Gio.Settings({ schema_id: 'org.gnome.desktop.interface' });
+        this._animationsEnabled = this._settings.get_boolean('enable-animations');
+        this._settingsChangedId = this._settings.connect('changed::enable-animations', () => {
+            this._animationsEnabled = this._settings.get_boolean('enable-animations');
+            if (!this._animationsEnabled)
+                this._color = [...(STATE_COLORS[this._state] ?? STATE_COLORS.Hidden)];
+            this._syncAnimation();
+            this._aura.queue_repaint();
         });
+
+        this._aura = new St.DrawingArea({
+            reactive: false,
+            x_expand: true,
+            y_expand: true,
+        });
+        this._aura.connect('repaint', () => this._drawAura());
+        this.add_child(this._aura);
+
+        this._mark = new St.Icon({
+            gicon: new Gio.FileIcon({ file: Gio.File.new_for_path(iconPath) }),
+            icon_size: 22,
+            reactive: false,
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this.add_child(this._mark);
+        this._mark.opacity = 190;
+        this.accessible_name = 'Hyusk: idle';
     }
 
     setState(state) {
@@ -132,11 +147,44 @@ class HyuskDrawing extends St.DrawingArea {
 
         this._state = state;
         this.accessible_name = `Hyusk: ${STATE_LABELS[state] ?? state}`;
+        this._mark.opacity = state === 'Hidden' ? 190 : 255;
+
+        if (!this._animationsEnabled || state === 'Hidden')
+            this._color = [...STATE_COLORS[state]];
+
+        this._syncAnimation();
+        this._aura.queue_repaint();
     }
 
-    _draw() {
-        const context = this.get_context();
-        const [width, height] = this.get_surface_size();
+    _syncAnimation() {
+        const shouldAnimate = this._animationsEnabled && this._state !== 'Hidden';
+        if (shouldAnimate && !this._animationId) {
+            this._animationId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
+                if (this._state === 'Hidden' || !this._animationsEnabled) {
+                    this._animationId = 0;
+                    return GLib.SOURCE_REMOVE;
+                }
+
+                this._phase += this._state === 'Working' ? 0.22
+                    : this._state === 'Waking' ? 0.18
+                    : this._state === 'Speaking' ? 0.15
+                    : 0.09;
+                const target = STATE_COLORS[this._state] ?? STATE_COLORS.Hidden;
+                for (let index = 0; index < 3; index++)
+                    this._color[index] = lerp(this._color[index], target[index], 0.18);
+
+                this._aura.queue_repaint();
+                return GLib.SOURCE_CONTINUE;
+            });
+        } else if (!shouldAnimate && this._animationId) {
+            GLib.source_remove(this._animationId);
+            this._animationId = 0;
+        }
+    }
+
+    _drawAura() {
+        const context = this._aura.get_context();
+        const [width, height] = this._aura.get_surface_size();
 
         const red = this._color[0] / 255;
         const green = this._color[1] / 255;
@@ -146,75 +194,19 @@ class HyuskDrawing extends St.DrawingArea {
 
         const centerX = width / 2;
         const centerY = height / 2;
+        const pulse = this._animationsEnabled && this._state !== 'Hidden'
+            ? 1 + Math.sin(this._phase) * (this._state === 'Waking' ? 0.16 : 0.09)
+            : 1;
+        const alpha = this._state === 'Hidden' ? 0.16 : 0.3;
 
-        const speaking = this._state === 'Speaking';
-        const thinking = this._state === 'Thinking';
-        const waking = this._state === 'Waking';
-
-        const bounce = speaking ? Math.sin(this._phase) * 1.4 : 0;
-        const tilt = thinking ? Math.sin(this._phase) * 0.18 : 0;
-        const pulse = 1 + Math.sin(this._phase * (waking ? 2 : 1)) * (waking ? 0.12 : 0.05);
-        const flap = 1 + Math.sin(this._phase) * (this._state === 'Working' ? 0.30 : 0.18);
-
-        context.translate(centerX, centerY + bounce);
-        context.rotate(tilt);
+        context.translate(centerX, centerY);
         context.scale(pulse, pulse);
-
-        const alpha = this._state === 'Hidden' ? 0.55 : 1.0;
-
-        // Upper wings.
-        context.setSourceRGBA(red, green, blue, alpha);
-
-        context.newPath();
-        context.moveTo(0, -0.5);
-        context.curveTo(-3 * flap, -10 * flap, -13, -10 * flap, -9.5, -1);
-        context.curveTo(-14, 2, -6, 4, 0, 1);
-        context.closePath();
-        context.fill();
-
-        context.newPath();
-        context.moveTo(0, -0.5);
-        context.curveTo(3 * flap, -10 * flap, 13, -10 * flap, 9.5, -1);
-        context.curveTo(14, 2, 6, 4, 0, 1);
-        context.closePath();
-        context.fill();
-
-        // Lower wings, slightly darker.
-        context.setSourceRGBA(red * 0.78, green * 0.78, blue * 0.78, alpha);
-
-        context.newPath();
-        context.moveTo(0, 1);
-        context.curveTo(-4, 5, -9, 8, -5.5, 3.5);
-        context.curveTo(-6.5, 1.5, -3, 1, 0, 1.5);
-        context.closePath();
-        context.fill();
-
-        context.newPath();
-        context.moveTo(0, 1);
-        context.curveTo(4, 5, 9, 8, 5.5, 3.5);
-        context.curveTo(6.5, 1.5, 3, 1, 0, 1.5);
-        context.closePath();
-        context.fill();
-
-        // Body.
-        context.setSourceRGBA(1, 1, 1, alpha);
-        context.newPath();
-        context.arc(0, 0, 1.8, 0, 2 * Math.PI);
-        context.fill();
-
-        // Antennae.
-        context.setSourceRGBA(red, green, blue, alpha);
-        context.setLineWidth(0.9);
-
-        context.newPath();
-        context.moveTo(-0.8, -1.5);
-        context.curveTo(-2.4, -4, -3.2, -5.5, -1.8, -6.5);
-        context.stroke();
-
-        context.newPath();
-        context.moveTo(0.8, -1.5);
-        context.curveTo(2.4, -4, 3.2, -5.5, 1.8, -6.5);
-        context.stroke();
+        for (let layer = 5; layer >= 1; layer--) {
+            const glowAlpha = (alpha / layer) * (1 - layer / 8);
+            context.setSourceRGBA(red, green, blue, glowAlpha);
+            context.arc(0, 0, 2 + layer * 2.2, 0, 2 * Math.PI);
+            context.fill();
+        }
 
         context.restore();
         context.$dispose();
@@ -224,6 +216,11 @@ class HyuskDrawing extends St.DrawingArea {
         if (this._animationId) {
             GLib.source_remove(this._animationId);
             this._animationId = 0;
+        }
+
+        if (this._settingsChangedId) {
+            this._settings.disconnect(this._settingsChangedId);
+            this._settingsChangedId = 0;
         }
 
         super.destroy();
@@ -439,7 +436,7 @@ class HyuskResponseCard extends St.BoxLayout {
 
 const HyuskIndicator = GObject.registerClass(
 class HyuskIndicator extends PanelMenu.Button {
-    _init() {
+    _init(iconPath) {
         super._init(0.0, 'Hyusk', false);
         this.reactive = true;
         this.can_focus = true;
@@ -448,7 +445,7 @@ class HyuskIndicator extends PanelMenu.Button {
             return Clutter.EVENT_STOP;
         });
 
-        this._drawing = new HyuskDrawing();
+        this._drawing = new HyuskDrawing(iconPath);
         this.add_child(this._drawing);
         this._lastState = '';
         this._lastRevision = -1;
@@ -477,10 +474,59 @@ class HyuskIndicator extends PanelMenu.Button {
         });
         this.menu.addMenuItem(this._workflowMenu);
         this._refreshWorkflowLabel();
+        this._phoneMenu = new PopupMenu.PopupSubMenuMenuItem('Connect phone');
+        this.menu.addMenuItem(this._phoneMenu);
+        this._phoneStatus = new PopupMenu.PopupMenuItem('Checking laptop link…', { reactive: false });
+        this._phoneMenu.menu.addMenuItem(this._phoneStatus);
+        const codeRow = new PopupMenu.PopupBaseMenuItem({ reactive: false, can_focus: false });
+        this._phoneCode = new St.Entry({ hint_text: 'Pairing code', can_focus: true, x_expand: true,
+            style: 'min-width: 245px;' });
+        this._phoneCode.clutter_text.set_editable(false);
+        codeRow.add_child(this._phoneCode);
+        this._phoneMenu.menu.addMenuItem(codeRow);
+        this._phoneCodeRow = codeRow;
+        this._phoneCopy = this._phoneMenu.menu.addAction('Copy pairing code', () => {
+            const code = this._phoneCode.get_text();
+            if (code)
+                St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, code);
+        });
+        this._phoneSetup = this._phoneMenu.menu.addAction('Enable laptop link', () => {
+            const script = GLib.build_filenamev([GLib.path_get_dirname(iconPath), 'setup-mobile-link.sh']);
+            if (!GLib.file_test(script, GLib.FileTest.EXISTS)) {
+                this._phoneStatus.label.text = 'Install the latest Hyusk extension first';
+                return;
+            }
+            this._phoneStatus.label.text = 'Enabling secure laptop link…';
+            let process;
+            try {
+                process = Gio.Subprocess.new(['/usr/bin/bash', script, '--enable'],
+                    Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
+            } catch (error) {
+                this._phoneStatus.label.text = `Could not start setup: ${error.message}`;
+                return;
+            }
+            process.communicate_utf8_async(null, null, (proc, result) => {
+                try {
+                    const [, , stderr] = proc.communicate_utf8_finish(result);
+                    if (!proc.get_successful())
+                        this._phoneStatus.label.text = (stderr || 'Could not enable laptop link').trim();
+                    else
+                        this._phoneStatus.label.text = 'Link enabled · generating code…';
+                } catch (_error) {
+                    this._phoneStatus.label.text = 'Could not enable laptop link';
+                }
+            });
+        });
+        this._phoneMenu.menu.addAction('Generate fresh code', () => this._writeControl('pair_phone'));
+        this._phoneMenu.menu.connect('open-state-changed', (_menu, open) => {
+            if (open)
+                this._refreshPairing();
+        });
         this.menu.addAction('Refresh models', () => this._writeControl('refresh_models'));
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addMenuItem(this._credentialMenu('openai', 'OpenAI API key'));
         this.menu.addMenuItem(this._credentialMenu('openrouter', 'OpenRouter API key'));
+        this.menu.addMenuItem(this._credentialMenu('bedrock', 'Amazon Bedrock API key'));
         this.menu.addAction('Stop Hyusk', () => {
             try {
                 GLib.file_set_contents(
@@ -494,6 +540,8 @@ class HyuskIndicator extends PanelMenu.Button {
 
         this._stateTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
             this._refresh();
+            if (this._phoneMenu.menu.isOpen)
+                this._refreshPairing();
             return GLib.SOURCE_CONTINUE;
         });
 
@@ -525,6 +573,28 @@ class HyuskIndicator extends PanelMenu.Button {
         } catch (_error) {
             // The state file is optional; ignore transient read errors.
         }
+    }
+
+    _refreshPairing() {
+        const pairing = readJson(pairingPath());
+        const valid = pairing?.protocol === 'hyusk.link.v1' &&
+            Number(pairing.expires_at) > Math.floor(Date.now() / 1000) &&
+            typeof pairing.secret === 'string';
+        this._phoneCodeRow.visible = valid;
+        this._phoneCopy.visible = valid;
+        this._phoneSetup.visible = !pairing;
+        if (!valid) {
+            this._phoneCode.set_text('');
+            this._phoneStatus.label.text = pairing
+                ? 'Code expired · generate a fresh one'
+                : 'Link is off · run scripts/setup-mobile-link.sh once';
+            return;
+        }
+        const code = JSON.stringify(pairing);
+        if (this._phoneCode.get_text() !== code)
+            this._phoneCode.set_text(code);
+        const minutes = Math.max(1, Math.ceil((Number(pairing.expires_at) * 1000 - Date.now()) / 60000));
+        this._phoneStatus.label.text = `One-time code · expires in ${minutes} min`;
     }
 
     _applyStatus(status) {
@@ -1067,30 +1137,40 @@ class HyuskIndicator extends PanelMenu.Button {
         const item = new PopupMenu.PopupSubMenuMenuItem(title);
         const row = new PopupMenu.PopupBaseMenuItem({ reactive: false, can_focus: false });
         const entry = new St.Entry({ hint_text: 'Paste key', can_focus: true, x_expand: true });
+        entry.clutter_text.set_password_char('•');
+        const status = new PopupMenu.PopupMenuItem('Not changed', { reactive: false });
         const save = new St.Button({ child: new St.Label({ text: 'Save' }), reactive: true, can_focus: true,
             style: 'padding: 5px 8px; margin-left: 6px; border-radius: 7px; background-color: rgba(255,255,255,0.12);' });
-        save.connect('clicked', () => {
+        const storeKey = () => {
             const key = entry.get_text().trim();
-            if (!key) return;
+            if (!key) {
+                status.label.text = 'Paste a key before saving';
+                return;
+            }
+            status.label.text = 'Saving securely…';
             const process = Gio.Subprocess.new(
-                ['secret-tool', 'store', `--label=Hyusk ${title}`, 'hyusk', 'provider', provider],
+                ['secret-tool', 'store', `--label=Hyusk ${title}`, 'application', 'hyusk', 'provider', provider],
                 Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDERR_PIPE
             );
             process.communicate_utf8_async(`${key}\n`, null, (proc, result) => {
                 try {
                     const [, , stderr] = proc.communicate_utf8_finish(result);
                     if (proc.get_successful()) {
-                        entry.set_text('Saved — restarting Hyusk');
+                        entry.set_text('');
+                        status.label.text = 'Saved securely · restarting Hyusk…';
                         GLib.spawn_command_line_async('systemctl --user restart hyusk.service');
                     } else {
-                        entry.set_text(stderr || 'Could not save key');
+                        status.label.text = (stderr || 'Could not save key').trim();
                     }
-                } catch (_error) { entry.set_text('Could not save key'); }
+                } catch (_error) { status.label.text = 'Could not save key'; }
             });
-        });
+        };
+        save.connect('clicked', storeKey);
+        entry.clutter_text.connect('activate', storeKey);
         row.add_child(entry);
         row.add_child(save);
         item.menu.addMenuItem(row);
+        item.menu.addMenuItem(status);
         return item;
     }
 
@@ -1140,7 +1220,9 @@ class HyuskIndicator extends PanelMenu.Button {
 
 export default class HyuskIndicatorExtension extends Extension {
     enable() {
-        this._indicator = new HyuskIndicator();
+        this._indicator = new HyuskIndicator(
+            GLib.build_filenamev([this.path, 'hyusk_butterfly_mark.png'])
+        );
         Main.panel.addToStatusArea('hyusk-indicator', this._indicator, 0, 'right');
 
         this._exportShell();
@@ -1193,7 +1275,14 @@ export default class HyuskIndicatorExtension extends Extension {
                     return false;
 
                 try {
-                    return win.get_window_type() === Meta.WindowType.NORMAL;
+                    // File pickers, permission prompts, and other dialogs
+                    // need to be targetable just like ordinary app windows.
+                    return [
+                        Meta.WindowType.NORMAL,
+                        Meta.WindowType.DIALOG,
+                        Meta.WindowType.MODAL_DIALOG,
+                        Meta.WindowType.UTILITY,
+                    ].includes(win.get_window_type());
                 } catch (_error) {
                     return false;
                 }
@@ -1201,11 +1290,7 @@ export default class HyuskIndicatorExtension extends Extension {
     }
 
     _listWindows() {
-        const windows = this._normalWindows().map(win => ({
-            title: this._title(win),
-            app: this._app(win),
-            active: this._focused(win),
-        }));
+        const windows = this._normalWindows().map(win => this._windowInfo(win));
 
         return JSON.stringify(windows);
     }
@@ -1216,11 +1301,25 @@ export default class HyuskIndicatorExtension extends Extension {
         if (!win)
             return JSON.stringify({});
 
-        return JSON.stringify({
+        return JSON.stringify(this._windowInfo(win));
+    }
+
+    _windowInfo(win) {
+        let bounds = null;
+        try {
+            const rect = win.get_frame_rect();
+            bounds = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        } catch (_error) { /* Some transient windows have no frame yet. */ }
+
+        return {
+            id: win.get_id(),
             title: this._title(win),
             app: this._app(win),
-            active: true,
-        });
+            pid: win.get_pid?.() ?? null,
+            bounds,
+            minimized: win.minimized ?? false,
+            active: this._focused(win),
+        };
     }
 
     _matchWindow(query) {
@@ -1229,6 +1328,13 @@ export default class HyuskIndicatorExtension extends Extension {
 
         if (!needle)
             return global.display.focus_window ?? windows[0] ?? null;
+
+        // Stable IDs from list/active avoid selecting the wrong window when
+        // several windows share an app name or title.
+        if (/^id:\d+$/.test(needle)) {
+            const id = Number(needle.slice(3));
+            return windows.find(win => win.get_id() === id) ?? null;
+        }
 
         // Prefer an exact application-name match, then app substring, then
         // window-title substring.
@@ -1246,10 +1352,19 @@ export default class HyuskIndicatorExtension extends Extension {
         if (!match)
             return JSON.stringify({ ok: false, error: `no window matching '${query}'` });
 
-        Main.activateWindow(match, global.get_current_time());
+        try {
+            if (Main.overview.visible)
+                Main.overview.hide();
+            if (match.minimized)
+                match.unminimize();
+            Main.activateWindow(match, global.get_current_time());
+        } catch (error) {
+            return JSON.stringify({ ok: false, error: `could not activate window: ${error.message}` });
+        }
 
         return JSON.stringify({
             ok: true,
+            id: match.get_id(),
             title: this._title(match),
             app: this._app(match),
         });
@@ -1266,7 +1381,7 @@ export default class HyuskIndicatorExtension extends Extension {
 
         match.delete(global.get_current_time());
 
-        return JSON.stringify({ ok: true, title, app });
+        return JSON.stringify({ ok: true, id: match.get_id(), title, app });
     }
 
     _title(win) {

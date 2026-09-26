@@ -1,0 +1,27 @@
+{
+  "generated": "2026-09-22T14:30:00+05:30",
+  "sections": [
+    {
+      "id": "mockups",
+      "label": "Mockups",
+      "groups": []
+    },
+    {
+      "id": "design-systems",
+      "label": "Design Systems",
+      "groups": [
+        {
+          "slug": "hyusk-mobile",
+          "files": [
+            { "label": "README.md", "path": "design-systems/hyusk-mobile/README.md" },
+            { "label": "SKILL.md", "path": "design-systems/hyusk-mobile/SKILL.md" },
+            { "label": "Butterfly mark", "path": "design-systems/hyusk-mobile/assets/logos/hyusk_butterfly_mark.png" },
+            { "label": "Style notes", "path": "design-systems/hyusk-mobile/brand/style-notes.md" },
+            { "label": "Color and type tokens", "path": "design-systems/hyusk-mobile/tokens/colors_and_type.css" },
+            { "label": "Mobile UI kit", "path": "design-systems/hyusk-mobile/ui-kit-mobile/index.html" }
+          ]
+        }
+      ]
+    }
+  ]
+}

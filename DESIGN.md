@@ -70,7 +70,7 @@ The visual language is calm, direct, and inspectable. Blue-violet is the recogni
 - Native Adwaita surfaces, selection behavior, dialogs, and system typography.
 - Searchable library rail paired with a spacious, full-width action editor.
 - Explicit status feedback and destructive confirmation.
-- Small, state-colored butterfly indicator for at-a-glance runtime status.
+- Small pearl-white butterfly indicator with a restrained state-colored aura for at-a-glance runtime status.
 
 ## Colors
 
@@ -173,7 +173,7 @@ The native application follows Adwaita’s default control radii and silhouettes
 
 - **GTK navigation:** `NavigationSplitView` with “Workflows” and “Edit workflow” navigation pages.
 - **Shell navigation:** The panel menu exposes Model, Workflows (with count), Refresh models, credential entries, and Stop Hyusk.
-- **Indicator:** A 24×24 custom butterfly animates subtly and changes through Hidden, Waking, Listening, Thinking, Working, and Speaking colors. Its accessible name reports the current state (for example, “Hyusk: listening”).
+- **Indicator:** A 24×24 pearl-white butterfly animates subtly while a restrained aura changes through Hidden, Waking, Listening, Thinking, Working, and Speaking colors. Its accessible name reports the current state (for example, “Hyusk: listening”).
 
 ## Do's and Don'ts
 

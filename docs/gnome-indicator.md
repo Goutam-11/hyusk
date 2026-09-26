@@ -1,7 +1,8 @@
 # GNOME top-bar indicator
 
 `gnome-extension/hyusk@hyusk.local` is a small GNOME Shell extension that shows
-the Hyusk agent state in the top bar as an animated, color-coded butterfly.
+the Hyusk agent state in the top bar as an animated pearl-white butterfly with a
+state-colored aura.
 
 ## How it works
 
@@ -29,10 +30,21 @@ those files, smoothly interpolates the color, and animates the wings. Animation
 speed changes by state: working flaps fastest, speaking bounces, thinking tilts,
 idle stays calm.
 
-The indicator menu includes a Model picker, Refresh models, and Stop Hyusk.
+The indicator menu includes a Model picker, Connect phone, Refresh models, and Stop Hyusk.
 The model picker sends a small control JSON file back to the running agent; it
 does not store API keys. A compact response card appears below the top bar near
-the butterfly, with More, Copy, and Dismiss actions.
+the pearl-white butterfly, with More, Copy, and Dismiss actions. The wings stay
+recognizable across themes; runtime state is communicated by its subtle colored
+aura and motion.
+
+For phone pairing, open **Connect phone → Enable laptop link** once. This
+creates a local TLS identity, configures the Hyusk user service, and restarts it.
+Then choose **Generate fresh code** and **Copy pairing code**. Transfer the code
+privately to the phone's Devices page and tap **Pair and connect**. Codes expire
+after five minutes and work once; generating another invalidates the previous
+code. The secret is kept in an owner-only runtime file, not printed in the
+service journal. Both devices must be able to reach the laptop's advertised LAN
+address and port 4488; a firewall may need a trusted-network rule.
 
 ## Install
 

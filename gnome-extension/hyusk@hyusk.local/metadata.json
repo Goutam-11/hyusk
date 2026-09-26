@@ -1,7 +1,7 @@
 {
   "uuid": "hyusk@hyusk.local",
   "name": "Hyusk Agent Indicator",
-  "description": "Shows the Hyusk agent state as a color-coded butterfly in the top bar and exposes native window list/switch over D-Bus.",
+  "description": "Shows the Hyusk agent state as a pearl-white animated butterfly with a state-colored aura and exposes native window list/switch over D-Bus.",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
-  "version": 3
+  "version": 4
 }

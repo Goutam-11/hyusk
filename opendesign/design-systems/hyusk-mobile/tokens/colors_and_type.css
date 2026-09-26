@@ -1,0 +1,27 @@
+:root {
+  --bg-1: #050607;
+  --bg-2: #111317;
+  --bg-3: #171a1f;
+  --fg-1: #f4f2ed;
+  --fg-2: #92969d;
+  --line-1: #2a2d33;
+  --accent-live: #6fe7d4;
+  --accent-error: #ee8164;
+  --font-display: "DM Sans", "Noto Sans", sans-serif;
+  --font-body: "Noto Sans", sans-serif;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --step-caption: 0.75rem;
+  --step-body: 0.9375rem;
+  --step-status: 1.0625rem;
+  --surface-primary: var(--bg-1);
+  --surface-input: var(--bg-2);
+  --text-primary: var(--fg-1);
+  --text-muted: var(--fg-2);
+  --border-subtle: var(--line-1);
+  --signal-active: var(--accent-live);
+  --radius-panel: 2rem;
+  --radius-control: 1.5rem;
+  --motion-breathe: 1350ms;
+  --motion-state: 240ms;
+}

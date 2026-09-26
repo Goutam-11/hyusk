@@ -31,7 +31,7 @@ the main `hyusk` CLI in `../crates/hyusk-cli`; see the workspace
 | --- | --- |
 | OpenRouter chat and structured tool calling | Implemented |
 | Shell, process, media, and computer tools | Implemented |
-| Event-driven agent runtime and in-memory history | Implemented |
+| Event-driven agent runtime and restart-safe recent history | Implemented; bounded compaction plus private `session.json` persistence |
 | Animated desktop status overlay | Implemented, visual only |
 | Desktop/GUI control | Implemented; GNOME/Wayland uses the desktop portal with a one-time approval |
 | Accessibility control | Implemented; AT-SPI2 via a `pyatspi` bridge for fast app control |
@@ -46,6 +46,8 @@ the main `hyusk` CLI in `../crates/hyusk-cli`; see the workspace
 | Guarded long-running model/tool loops | Implemented; configurable round/time limits, cancellation, and no-progress detection |
 | Background model/Codex tasks | Implemented; bounded concurrency with list, cancel, completion cards, and announcements |
 | Persistent reminders and workflow schedules | Implemented; one-shot jobs survive service restarts |
+| Android companion link | Implemented; opt-in TLS WebSocket pairing over LAN/Tailscale with typed remote phone actions |
+| Android companion app | Implemented under `android/`; Material 3 command deck, Accessibility control, voice session, notification replies, encrypted local settings/cache |
 
 The `models/` directory currently contains Whisper and Piper assets plus the
 downloaded temporary `hey_livekit.onnx` classifier. The detector is optional:
@@ -103,20 +105,29 @@ or times out, the wake event is ignored and the terminal input path still works.
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `OPENROUTER_API_KEY` | Yes | - | Bearer token for the chat provider. |
+| `OPENROUTER_API_KEY` | No* | - | OpenRouter bearer token. |
 | `OPENROUTER_MODEL` | No | `openai/gpt-4o-mini` | Model identifier sent to the provider. |
 | `OPENROUTER_BASE_URL` | No | `https://openrouter.ai/api/v1` | Base URL; `/chat/completions` is appended. |
 | `OPENAI_API_KEY` | No | - | Separate OpenAI API credential; API usage is billed separately from a ChatGPT subscription. |
+| `BEDROCK_API_KEY` | No | - | Amazon Bedrock API key for the OpenAI-compatible Mantle endpoint. `AWS_BEARER_TOKEN_BEDROCK` and `AWS_API_KEY` are also accepted. |
+| `BEDROCK_REGION` | No | `us-east-1` | AWS Region used for the Bedrock Mantle endpoint and model list. |
+| `BEDROCK_MODEL` | No | `openai.gpt-oss-20b` | Initial model for the Bedrock Mantle endpoint; choose an available model in the menu. |
+| `AWS_PROFILE` | No* | AWS default profile | AWS CLI profile used by the Nova Sonic speech-to-speech provider. |
+| `AWS_REGION` / `AWS_DEFAULT_REGION` | No* | Profile region | Region for Nova Sonic's signed Bedrock Runtime stream. |
+| `BEDROCK_SONIC_MODEL` | No | `amazon.nova-2-sonic-v1:0` | Bedrock Nova Sonic model ID. Uses AWS SDK credentials, not a Bedrock API key. |
 | `BRAVE_SEARCH_API_KEY` | No | DuckDuckGo fallback | Optional token for Brave's structured Search API. |
+
 | `HYUSK_WORKSPACE` | No | Current directory | Workspace root for Codex CLI coding mode. |
 | `MODEL_VISION` | No | `1` | Attach screenshots as image content for vision-capable models. Set `0` for text-only models, then use `ocr` instead. |
 | `ORB_STEAL_FOCUS` | No | `0` | Let the orb take keyboard focus while active. Default is off so portal keyboard input goes to the controlled app. |
 | `HYUSK_ORB` | No | auto | Set `0` to disable the orb, `1` to force it. By default the orb is skipped when the GNOME indicator extension is enabled. |
 | `HYUSK_SCREENSHOT_RETENTION_SECS` | No | `900` | Delete temporary screenshots older than this. |
 | `HYUSK_SCREENSHOT_MAX_FILES` | No | `30` | Maximum temporary screenshots retained. |
-| `HYUSK_AGENT_MAX_TOOL_ROUNDS` | No | `24` | Maximum model/tool rounds in one foreground turn. |
-| `HYUSK_AGENT_MAX_TURN_SECS` | No | `600` | Wall-clock limit for one foreground turn, including tools. |
+| `HYUSK_AGENT_MAX_TOOL_ROUNDS` | No | `128` | Safety ceiling for model/tool rounds; progressing work retains its checkpoint. |
+| `HYUSK_AGENT_MAX_TURN_SECS` | No | `1800` | Wall-clock safety ceiling for one progressing turn, including tools. |
 | `HYUSK_AGENT_MAX_REPEATED_TOOL_ROUNDS` | No | `3` | Stop after this many identical tool-call/result rounds. |
+| `HYUSK_AGENT_MAX_HISTORY_BYTES` | No | `120000` | Compact old complete turns and verbose tool results above this serialized history size. |
+| `HYUSK_SESSION_PATH` | No | `$XDG_DATA_HOME/hyusk/session.json` | Override the private recent-conversation snapshot path. |
 | Background subagents | No configuration | At most two workers. Research is read-only; workspace tasks use local Codex CLI with a 15-minute limit. |
 | `WAKE_CLAP_ENABLED` | No | `0` | Enable hand-clap wake (off by default; noise triggers it). |
 | `WAKE_CLAP_SENSITIVITY` | No | `6.0` | How many times louder than background a clap must be. |
@@ -139,6 +150,8 @@ or times out, the wake event is ignored and the terminal input path still works.
 | `PIPER_MODEL` | No | `models/en_US-lessac-medium.onnx` | Piper voice model used by Linux TTS. |
 | `PIPER_SPEAKER` | No | - | Speaker name or numeric ID for a multi-speaker Piper model. |
 
+*Configure at least one of OpenRouter, OpenAI API, Bedrock Mantle, or an AWS CLI profile with Nova Sonic access before starting Hyusk. API provider keys can also be saved in the GNOME indicator's keyring menu.
+
 The base URL must not include the trailing `/chat/completions` path.
 
 ## Start automatically and view logs
@@ -160,6 +173,39 @@ journalctl --user -u hyusk.service -b       # this boot
 ```
 
 Disable it with `./scripts/uninstall-autostart.sh`.
+
+## Android companion
+
+The personal Android controller lives in [`android/`](android/README.md). It
+uses native intents and Accessibility actions for deterministic phone control,
+with optional Shizuku templates and on-phone confirmation for consequential
+operations. The app can submit turns to this laptop, execute safe structured
+actions requested by Hyusk, and reconnect over a trusted LAN or Tailscale
+address.
+
+Install the Android prerequisites and check the environment:
+
+```bash
+./scripts/check-android-env.sh
+```
+
+Open the GNOME butterfly menu → **Connect phone → Enable laptop link**. Or run
+the equivalent one-time command:
+
+```bash
+./scripts/setup-mobile-link.sh --enable
+```
+
+Then choose **Generate fresh code** and **Copy pairing code** in the extension.
+Transfer the code privately to the Android app's Devices page and tap
+**Pair and connect**. The code expires after five minutes and works once; it is
+not printed in the service journal.
+
+The link is disabled by default. Restrict TCP port 4488 to a trusted Fedora
+firewall zone, never commit the TLS key, pairing payload, API keys, or ignored
+personal wake models. See [`docs/android-agent.md`](docs/android-agent.md) and
+the [versioned protocol](docs/mobile-link-protocol.md) for permissions,
+security boundaries, reconnect behavior, and troubleshooting.
 
 ## Tools
 
@@ -249,6 +295,7 @@ origin at the top-left.
 
 ```json
 { "action": "screenshot" }
+{ "action": "app_state", "max_nodes": 300 }
 { "action": "screens" }
 { "action": "find_text", "text": "Search" }
 { "action": "click_text", "text": "Search" }
@@ -293,6 +340,9 @@ GNOME Shell D-Bus, and the Screenshot portal for Wayland, then ImageMagick
 real image content, so a vision model can inspect them directly; `ocr` remains
 available as a fallback. Set `MODEL_VISION=0` for text-only models. See
 [docs/tools.md](docs/tools.md) for the full action list.
+`app_state` pairs a bounded accessibility tree for the active window with a
+desktop screenshot. These are sequential observations, not an atomic or
+window-cropped capture; its output reports partial failures and truncation.
 
 ### `accessibility`
 
@@ -339,10 +389,27 @@ code inspection and edits. Starting either profile requires explicit user
 confirmation.
 
 The GNOME indicator displays the latest response, completion, or error in a
-small card even when audio is muted. Its Model menu uses a cached provider
-catalog (refreshed every 24 hours or manually) to switch OpenRouter, OpenAI API,
-or Codex CLI workspace mode. Switching starts a fresh conversation; the choice
-is stored in `$XDG_CONFIG_HOME/hyusk/config.json`.
+small card even when audio is muted. Its Model menu lists OpenRouter, OpenAI
+API, Amazon Bedrock Mantle, Amazon Nova Sonic speech-to-speech, and Codex CLI workspace mode. Catalogs refresh at startup
+and on **Refresh models**; a failed refresh retains the cached list. Choose a
+provider's model to switch immediately and start a fresh conversation. The
+selection is stored in `$XDG_CONFIG_HOME/hyusk/config.json`; matching history
+is restored after restart. To add or replace an API key, use that provider's
+key entry in the indicator; the user service restarts to load the new key.
+New background research tasks use the selected API provider and model; an
+already-running task keeps the model it started with. Codex workspace tasks
+remain on the local Codex CLI.
+Bedrock Mantle uses `https://bedrock-mantle.<region>.api.aws/v1` because this endpoint
+exposes `/models`; set `BEDROCK_REGION` before starting the service to change
+regions. Use Mantle model IDs such as `openai.gpt-oss-20b`, not the
+`-1:0` Bedrock Runtime foundation-model ID. A separate Bedrock API key is
+required; a ChatGPT subscription is not an AWS credential.
+
+Nova Sonic is selected separately as **Bedrock Sonic**. It uses the AWS SDK's
+credential chain (including `AWS_PROFILE`, shared AWS CLI credentials, and
+SSO), needs a configured AWS region and Bedrock model access, and uses a
+bidirectional speech stream rather than the Mantle chat endpoint. See
+[`docs/bedrock-nova-sonic.md`](docs/bedrock-nova-sonic.md) for setup and testing.
 
 The GNOME top-bar indicator includes **Stop Hyusk**, which cancels the active
 foreground turn and listening session.
@@ -440,9 +507,16 @@ Anything the router does not recognize goes to the model as before.
 
 **`window` tool.** Native window control on GNOME via the
 `org.hyusk.Shell` D-Bus interface in the extension: `list`, `active`, and
-`activate` (by app or title substring). This is the reliable way to switch
+`activate` (prefer an exact `id:<number>` from `list`; app or title substring
+also works). This is the reliable way to switch
 apps on Wayland. Install/refresh the extension with
 `scripts/install-gnome-indicator.sh`, then log out and back in.
+
+**`gnome_doctor` tool.** Returns read-only, structured checks for GNOME
+window control, accessibility, screenshot prerequisites, and the portal.
+It distinguishes a responding but outdated extension from one exposing
+stable window IDs. Availability checks do not grant portal input permission
+or prove a screenshot/action will succeed.
 
 ### `memory`
 
@@ -571,12 +645,18 @@ OpenRouter /chat/completions
                                   +-> request another model turn
 ```
 
-`OpenRouterClient` sends the complete in-memory message history and the tool
-specs on every turn. It retries network failures, HTTP 408, HTTP 429, and 5xx
+`OpenRouterClient` sends the bounded active message history and the tool specs
+on every turn. Complete old turns and verbose tool output are compacted before
+the request, while recent plain user/assistant messages are saved with mode
+`0600` in `$XDG_DATA_HOME/hyusk/session.json` and restored after a service
+restart. It retries network failures, HTTP 408, HTTP 429, and 5xx
 responses up to three retries with exponential backoff. It honors a numeric
 `Retry-After` header and fails fast for ordinary 4xx responses.
 
-Message history is process-local. It is not persisted across restarts.
+Persistent memory and conversation history have different jobs: durable facts
+belong in SQLite memory and are retrieved by relevance; the session snapshot
+preserves recent conversational continuity. The current user message remains
+authoritative over both.
 
 ## Project layout
 
