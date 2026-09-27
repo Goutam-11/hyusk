@@ -88,6 +88,25 @@ Mantle model ID such as `openai.gpt-oss-20b`. The `-1:0` foundation-model ID
 belongs to the separate Bedrock Runtime endpoint; saved profiles with that
 suffix should be changed in Settings before testing.
 
+### Optional Nova Sonic live voice
+
+Settings → **Nova live voice** configures a separate, phone-only AWS-signed
+Bedrock Runtime stream. Enter the region, `amazon.nova-2-sonic-v1:0` (or a
+supported Nova Sonic model), and a dedicated IAM access key ID/secret; then
+enable the microphone option and save. This does not use the OpenAI-compatible
+Bedrock Mantle API key and does not require the laptop. Credentials are
+Keystore-encrypted on the phone. The home mic and default-assistant overlay
+then use continuous 16 kHz PCM input and 24 kHz Nova audio output, with
+software echo cancellation when supported, local playback interruption, a
+spoken “go away” stop command, and a 30-second idle close. Nova's `phone_task`
+tool invokes the existing checkpointed phone agent for device operations.
+The older Android STT/TTS path remains available when Nova is disabled.
+
+Build success does not establish live Bedrock access or acoustic performance:
+test those on a connected phone with the chosen region and model enabled in
+your AWS account. A long-lived IAM key on a personal phone remains a security
+risk despite encryption at rest; restrict its policy and rotate it regularly.
+
 ### Optional Alexa background wake
 
 Settings → **Enable Alexa in background** starts an opt-in foreground service.

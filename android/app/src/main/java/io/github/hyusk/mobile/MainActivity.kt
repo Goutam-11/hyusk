@@ -118,11 +118,14 @@ import io.github.hyusk.mobile.security.ProviderSettings
 import io.github.hyusk.mobile.security.ProviderSettingsStore
 import io.github.hyusk.mobile.security.LocalModelSettingsStore
 import io.github.hyusk.mobile.security.LocalModelSettings
+import io.github.hyusk.mobile.security.NovaSonicSettings
+import io.github.hyusk.mobile.security.NovaSonicSettingsStore
 import io.github.hyusk.mobile.network.HyuskRpcClient
 import io.github.hyusk.mobile.network.PairingState
 import io.github.hyusk.mobile.services.EmergencyStop
 import io.github.hyusk.mobile.services.HyuskAccessibilityService
 import io.github.hyusk.mobile.voice.VoiceController
+import io.github.hyusk.mobile.voice.NovaSonicVoiceSession
 import io.github.hyusk.mobile.voice.isVoiceStopCommand
 import io.github.hyusk.mobile.network.LocalModelClient
 import io.github.hyusk.mobile.network.ModelCatalogRepository
@@ -401,6 +404,10 @@ private fun CommandDeck(
     val context = LocalContext.current
     val voice = remember { VoiceController(context) }
     val voiceState by voice.state.collectAsState()
+    val nova = remember { NovaSonicVoiceSession(context) }
+    val novaState by nova.state.collectAsState()
+    val novaSettingsStore = remember { NovaSonicSettingsStore(context) }
+    val novaSettings by novaSettingsStore.settings.collectAsState(initial = NovaSonicSettings())
     var command by remember { mutableStateOf("") }
     var resultMessage by remember { mutableStateOf(phoneTasks.state.value.message.takeIf(String::isNotBlank)) }
     var processing by remember { mutableStateOf(phoneTasks.state.value.phase == PhoneTaskPhase.Working) }
@@ -411,7 +418,7 @@ private fun CommandDeck(
     var ownsPhoneTask by remember { mutableStateOf(false) }
     var listenAfterReply by remember { mutableStateOf(false) }
     var replySpeechStarted by remember { mutableStateOf(false) }
-    DisposableEffect(voice) { onDispose { voice.close() } }
+    DisposableEffect(voice, nova) { onDispose { voice.close(); nova.close() } }
     val stopped by EmergencyStop.engaged.collectAsState()
     val connection by rpc.state.collectAsState()
     LaunchedEffect(rpc) {
@@ -450,6 +457,7 @@ private fun CommandDeck(
         val text = raw.trim()
         val normalized = text.lowercase().replace(Regex("\\s+"), " ")
         if (isVoiceStopCommand(text)) {
+            nova.stop()
             if (connection is PairingState.Paired) runCatching { rpc.submit("go away") }
             phoneTasks.stop()
             voice.stopAll()
@@ -458,6 +466,9 @@ private fun CommandDeck(
             replySpeechStarted = false
             command = ""
             resultMessage = "Conversation ended."
+        } else if (novaSettings.enabled && novaState.listening) {
+            nova.submitText(text)
+            command = ""
         } else {
             val now = SystemClock.elapsedRealtime()
             val duplicate = normalized == lastSubmittedCommand && now - lastSubmittedAt < 4_000L
@@ -509,12 +520,21 @@ private fun CommandDeck(
     LaunchedEffect(wakeRequest) {
         if (wakeRequest != null) {
             resultMessage = null
-            if (wakeRequest.isBlank()) voice.start() else submitCommand(wakeRequest)
+            if (wakeRequest.isBlank()) {
+                if (novaSettings.enabled) nova.start(novaSettings, { request ->
+                    val before = phoneTasks.state.value.revision
+                    phoneTasks.submit(request)
+                    phoneTasks.state.first { it.revision > before && it.phase !in setOf(PhoneTaskPhase.Working, PhoneTaskPhase.Idle) }.message
+                }, onStopTask = { phoneTasks.stop() }) else voice.start()
+            } else submitCommand(wakeRequest)
             onWakeHandled()
         }
     }
     val phase = when {
         stopped -> VoicePhase.Stopped
+        novaSettings.enabled && novaState.error != null -> VoicePhase.Error
+        novaSettings.enabled && novaState.speaking -> VoicePhase.Speaking
+        novaSettings.enabled && novaState.listening -> VoicePhase.Listening
         voiceState.error != null -> VoicePhase.Error
         voiceState.listening -> VoicePhase.Listening
         processing -> VoicePhase.Thinking
@@ -523,18 +543,31 @@ private fun CommandDeck(
     }
     VoiceHomeScreen(
         phase = phase,
-        transcript = voiceState.transcript,
-        response = resultMessage ?: voiceState.error,
+        transcript = if (novaSettings.enabled) novaState.transcript else voiceState.transcript,
+        response = if (novaSettings.enabled) novaState.error ?: novaState.transcript.ifBlank { resultMessage.orEmpty() } else resultMessage ?: voiceState.error,
         command = command,
-        connectionLabel = if (connection is PairingState.Paired) "Laptop linked" else "Phone agent",
+        connectionLabel = if (novaSettings.enabled) "Nova live voice · phone" else if (connection is PairingState.Paired) "Laptop linked" else "Phone agent",
         onCommandChange = { command = it },
         onMic = {
             if (stopped) Unit
+            else if (novaSettings.enabled) {
+                if (novaState.listening) nova.stop()
+                else {
+                    voice.stopAll()
+                    resultMessage = null
+                    nova.start(novaSettings, { request ->
+                        val before = phoneTasks.state.value.revision
+                        phoneTasks.submit(request)
+                        phoneTasks.state.first { it.revision > before && it.phase !in setOf(PhoneTaskPhase.Working, PhoneTaskPhase.Idle) }.message
+                    }, onStopTask = { phoneTasks.stop() })
+                }
+            }
             else if (voiceState.listening) voice.stop()
             else { resultMessage = null; voice.start() }
         },
         onSubmit = { submitCommand(command) },
         onStop = {
+            nova.stop()
             phoneTasks.stop()
             processing = false
             listenAfterReply = false
@@ -1228,6 +1261,21 @@ private fun RunCard(run: RunSummary) {
     val modelCatalog = remember { ModelCatalogRepository(context.applicationContext) }
     val catalogState by modelCatalog.state.collectAsState()
     val settingsScope = rememberCoroutineScope()
+    val novaStore = remember { NovaSonicSettingsStore(context) }
+    val savedNova by novaStore.settings.collectAsState(initial = NovaSonicSettings())
+    var novaRegion by remember { mutableStateOf("us-east-1") }
+    var novaModel by remember { mutableStateOf("amazon.nova-2-sonic-v1:0") }
+    var novaAccessKey by remember { mutableStateOf("") }
+    var novaSecretKey by remember { mutableStateOf("") }
+    var novaEnabled by remember { mutableStateOf(false) }
+    var novaMessage by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(savedNova) {
+        novaRegion = savedNova.region
+        novaModel = savedNova.modelId
+        novaAccessKey = savedNova.accessKeyId
+        novaSecretKey = savedNova.secretAccessKey
+        novaEnabled = savedNova.enabled
+    }
     val bottomClearance = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 108.dp
     LaunchedEffect(localModelStore) {
         localModelStore.settings.collect {
@@ -1330,6 +1378,23 @@ private fun RunCard(run: RunSummary) {
         } }, modifier = Modifier.fillMaxWidth()) { Text("Save phone model") }
         OutlinedButton(onClick = { settingsScope.launch { testMessage = runCatching { LocalModelClient().testConnection(LocalModelSettings(localBaseUrl, localModel, localApiKey)) }.fold({ "Model replied: ${it.take(80)}" }, { "Model test failed: ${it.message}" }) } }, modifier = Modifier.fillMaxWidth()) { Text("Test selected model") }
         testMessage?.let { Text(it, color = if (it.startsWith("Model replied")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
+        HorizontalDivider()
+        Text("Nova live voice", color = UiPearl, style = MaterialTheme.typography.titleLarge)
+        Text("Phone-only bidirectional speech uses AWS IAM credentials and may incur Bedrock charges. Use a dedicated, least-privilege key. The secret stays encrypted on this phone; it is never shared with the laptop.", color = UiMuted)
+        OutlinedTextField(novaRegion, { novaRegion = it }, Modifier.fillMaxWidth(), label = { Text("AWS region") }, singleLine = true, colors = hyuskTextFieldColors())
+        OutlinedTextField(novaModel, { novaModel = it }, Modifier.fillMaxWidth(), label = { Text("Nova Sonic model ID") }, singleLine = true, colors = hyuskTextFieldColors())
+        OutlinedTextField(novaAccessKey, { novaAccessKey = it }, Modifier.fillMaxWidth(), label = { Text("AWS access key ID") }, singleLine = true, colors = hyuskTextFieldColors())
+        OutlinedTextField(novaSecretKey, { novaSecretKey = it }, Modifier.fillMaxWidth(), label = { Text("AWS secret access key") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), colors = hyuskTextFieldColors())
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(novaEnabled, { novaEnabled = it })
+            Text("Use Nova live voice for the microphone", color = UiPearl)
+        }
+        Button(onClick = { settingsScope.launch {
+            runCatching { novaStore.save(NovaSonicSettings(novaEnabled, novaRegion, novaModel, novaAccessKey, novaSecretKey)) }
+                .onSuccess { novaMessage = "Nova voice settings saved on this phone." }
+                .onFailure { novaMessage = it.message ?: "Could not save Nova settings" }
+        } }, modifier = Modifier.fillMaxWidth()) { Text("Save Nova voice") }
+        novaMessage?.let { Text(it, color = UiMuted) }
         HorizontalDivider()
         Text("Permissions", color = UiPearl, style = MaterialTheme.typography.titleLarge)
         PermissionRow("Accessibility actions", accessibilityConnected) { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }

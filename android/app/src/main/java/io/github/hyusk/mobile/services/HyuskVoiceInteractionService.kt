@@ -31,12 +31,15 @@ import android.speech.tts.UtteranceProgressListener
 import io.github.hyusk.mobile.automation.PhoneAgentTaskManager
 import io.github.hyusk.mobile.automation.PhoneTaskPhase
 import io.github.hyusk.mobile.voice.HyuskSpeech
+import io.github.hyusk.mobile.voice.NovaSonicVoiceSession
+import io.github.hyusk.mobile.security.NovaSonicSettingsStore
 import io.github.hyusk.mobile.voice.isVoiceStopCommand
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class HyuskVoiceInteractionService : VoiceInteractionService()
@@ -59,6 +62,9 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
     private var pendingSpeech: SpeechRequest? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val taskManager = PhoneAgentTaskManager.get(sessionService.applicationContext)
+    private val nova = NovaSonicVoiceSession(sessionService.applicationContext)
+    private val novaSettingsStore = NovaSonicSettingsStore(sessionService.applicationContext)
+    private var novaActive = false
     private var recognizer: android.speech.SpeechRecognizer? = null
     private var statusView: TextView? = null
     private var inputView: EditText? = null
@@ -122,6 +128,10 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
             taskManager.state.collect { task ->
                 if (!visible || task.revision <= lastDeliveredRevision) return@collect
                 lastDeliveredRevision = task.revision
+                if (novaActive) {
+                    if (task.phase == PhoneTaskPhase.Working) setVisualState(AssistantVisualState.THINKING, task.message)
+                    return@collect
+                }
                 when (task.phase) {
                     PhoneTaskPhase.Working -> {
                         setVisualState(AssistantVisualState.THINKING, task.message)
@@ -132,6 +142,17 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
                         setVisualState(AssistantVisualState.SPEAKING, task.message)
                         speak(task.message, append = true, completesTurn = true, listenAfter = task.needsReply)
                     }
+                }
+            }
+        }
+        scope.launch {
+            nova.state.collect { voice ->
+                if (!visible || !novaActive) return@collect
+                when {
+                    voice.error != null -> setVisualState(AssistantVisualState.ERROR, voice.error)
+                    voice.speaking -> setVisualState(AssistantVisualState.SPEAKING, voice.transcript)
+                    voice.listening -> setVisualState(AssistantVisualState.LISTENING, voice.transcript.ifBlank { "Listening…" })
+                    else -> setVisualState(AssistantVisualState.IDLE, "Nova conversation ended")
                 }
             }
         }
@@ -281,7 +302,7 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
         recognizer?.cancel()
         recognizer?.destroy()
         recognizer = null
-        submitCommand(command)
+        if (novaActive) nova.submitText(command) else submitCommand(command)
     }
 
     override fun onShow(args: Bundle?, showFlags: Int) {
@@ -289,10 +310,20 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
         visible = true
         val task = taskManager.state.value
         lastDeliveredRevision = task.revision
-        if (task.phase == PhoneTaskPhase.Working) {
-            setVisualState(AssistantVisualState.THINKING, task.message)
-        } else {
-            beginListening()
+        scope.launch {
+            val settings = novaSettingsStore.settings.first()
+            if (!visible) return@launch
+            novaActive = settings.enabled
+            if (settings.enabled) {
+                setVisualState(AssistantVisualState.LISTENING, "Connecting Nova voice…")
+                nova.start(settings, { request ->
+                    val before = taskManager.state.value.revision
+                    taskManager.submit(request)
+                    taskManager.state.first { it.revision > before && it.phase !in setOf(PhoneTaskPhase.Working, PhoneTaskPhase.Idle) }.message
+                }, onStopTask = { taskManager.stop(); hide() })
+            } else if (task.phase == PhoneTaskPhase.Working) {
+                setVisualState(AssistantVisualState.THINKING, task.message)
+            } else beginListening()
         }
     }
 
@@ -411,6 +442,8 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
 
     override fun onHide() {
         visible = false
+        nova.stop()
+        novaActive = false
         sessionToken++
         listenAfterFinalSpeech = false
         finalUtteranceId = null
@@ -423,6 +456,7 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
 
     override fun onDestroy() {
         recognizer?.destroy()
+        nova.close()
         scope.cancel()
         tts?.shutdown()
         tts = null
