@@ -27,5 +27,8 @@ dedicated least-privilege IAM key with Bedrock model-invocation access. Nova
 usage may incur AWS charges. The debug APK can be built without a connected
 phone, but microphone routing, speaker echo cancellation, and AWS model access
 must be verified on the device after installation.
+Bedrock streams have a finite lifetime; when AWS closes a stream, Hyusk shows
+an error and requires a tap to reconnect. Conversation context is not yet
+carried automatically across that reconnect.
 
 The accessibility, notification listener, voice interaction, microphone, and Quick Settings capabilities are opt-in Android system surfaces. The UI links to their settings pages and every action executor checks the process-wide emergency stop gate.

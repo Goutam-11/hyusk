@@ -106,6 +106,9 @@ Build success does not establish live Bedrock access or acoustic performance:
 test those on a connected phone with the chosen region and model enabled in
 your AWS account. A long-lived IAM key on a personal phone remains a security
 risk despite encryption at rest; restrict its policy and rotate it regularly.
+Bedrock closes bidirectional streams after a finite session window (currently
+up to eight minutes); Hyusk surfaces that closure and asks you to tap the mic
+again. Automatic reconnection with conversation history is not implemented.
 
 ### Optional Alexa background wake
 

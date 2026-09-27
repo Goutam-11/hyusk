@@ -160,6 +160,7 @@ class NovaSonicVoiceSession(private val context: Context) : AutoCloseable {
                         handleEvent(JSONObject(bytes.toString(Charsets.UTF_8)).optJSONObject("event") ?: return@collect, onPhoneTask)
                     }
                 }
+                throw IllegalStateException("Nova closed the live stream. Tap the microphone to start a new conversation.")
             } finally {
                 recorderJob.cancelAndJoin()
                 idleJob.cancel()
