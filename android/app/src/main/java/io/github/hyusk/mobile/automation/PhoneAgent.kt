@@ -194,6 +194,7 @@ class PhoneAgent(
             arguments = pending.arguments,
             observationLabel = "Confirmed action",
             observations = observations,
+            onProgress = onProgress,
         )
         saveCheckpoint(taskId, taskPrompt, observations, attempts)
 
@@ -255,8 +256,22 @@ class PhoneAgent(
                 )
             }
             router.execute(taskPrompt)?.let { direct ->
-                if (direct.success) return finish(direct.message, true, taskId = taskId)
-                addObservation(observations, "Deterministic action failed: ${direct.message}")
+                if (direct.success) {
+                    val launchedPackage = direct.data.optString("package")
+                    if (launchedPackage.isBlank()) return finish(direct.message, true, taskId = taskId)
+                    val label = direct.data.optString("label", launchedPackage)
+                    publishStatus(onProgress, "Opening $label…")
+                    if (waitForPackage(launchedPackage, APP_TRANSITION_TIMEOUT_MS)) {
+                        addObservation(observations, "Verified foreground app: $label ($launchedPackage)")
+                        return finish(direct.message, true, taskId = taskId)
+                    }
+                    addObservation(observations,
+                        "App launch was requested for $label, but Android did not expose it as the foreground accessibility window. Inspect the current screen before retrying.")
+                    publishStatus(onProgress, "I opened $label but couldn't verify its screen; checking what Android shows.")
+                } else {
+                    addObservation(observations, "Deterministic action failed: ${direct.message}")
+                    publishStatus(onProgress, "Couldn't complete the direct phone action; checking the current screen. ${direct.message}")
+                }
             }
         }
 
@@ -264,11 +279,22 @@ class PhoneAgent(
         val spokenProgress = mutableSetOf<String>()
         var invalidPlans = 0
         var completionReviewed = false
+        var unresolvedActionIssue = lastActionIssue(observations)
         repeat(MAX_ACTIONS) actionLoop@ { step ->
             currentCoroutineContext().ensureActive()
             refreshUiObservation(observations)
             publishStatus(onProgress, "Working · ${step + 1} verified action${if (step == 0) "" else "s"}")
-            val answer = model.complete(settings, taskPrompt, memory, modelObservations(observations, attempts))
+            val answer = try {
+                model.complete(settings, taskPrompt, memory, modelObservations(observations, attempts))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                val issue = unresolvedActionIssue
+                if (issue != null) {
+                    throw IllegalStateException("Model recovery failed after $issue: ${failure.message ?: "model request failed"}", failure)
+                }
+                throw failure
+            }
             val structured = parseObject(answer)
             if (structured == null) {
                 addObservation(observations, "The model returned an invalid action plan; it was not executed or accepted as completion: ${answer.take(300)}")
@@ -289,10 +315,26 @@ class PhoneAgent(
             val needsReply = structured.optBoolean("needs_reply", false)
             val replyType = normalizedReplyType(structured.optString("reply_type"), needsReply)
             if (reply.isNotBlank()) {
-                if (observations.lastOrNull()?.contains(" failed:") == true) {
-                    addObservation(observations, "Completion was rejected because the last action failed. Recover or explain the concrete blocker.")
-                    saveCheckpoint(taskId, taskPrompt, observations, attempts)
-                    return@actionLoop
+                if (unresolvedActionIssue != null) {
+                    val issue = unresolvedActionIssue
+                    val message = if (needsReply) "$reply I couldn't continue because $issue."
+                    else "I paused because I couldn't verify this step: $issue. Your progress is saved; tell me how you'd like me to proceed."
+                    saveCheckpoint(
+                        taskId,
+                        taskPrompt,
+                        observations,
+                        attempts,
+                        status = if (needsReply) "awaiting_user" else "paused",
+                        replyType = if (needsReply) replyType else "none",
+                    )
+                    return finish(
+                        message,
+                        false,
+                        checkpointed = !needsReply,
+                        needsReply = needsReply,
+                        replyType = replyType,
+                        taskId = taskId,
+                    )
                 }
                 if (!needsReply && attempts.isNotEmpty() && !completionReviewed) {
                     completionReviewed = true
@@ -332,7 +374,7 @@ class PhoneAgent(
             val signature = "$action:${arguments}|screen=${screenFingerprint(observations)}"
             val previousAttempts = attempts.getOrDefault(signature, 0)
             if (previousAttempts >= attemptLimit(action)) {
-                return stopForNoProgress(taskId, taskPrompt, observations, attempts)
+                return stopForNoProgress(taskId, taskPrompt, observations, attempts, unresolvedActionIssue)
             }
             val pending = PendingAction(action, arguments, signature)
             if (executor.risk(action, arguments) != ActionRisk.Safe) {
@@ -358,12 +400,16 @@ class PhoneAgent(
             saveCheckpoint(taskId, taskPrompt, observations, attempts, inFlight = pending)
             publishStatus(onProgress, "Running ${action.replace('.', ' ')}…")
             currentCoroutineContext().ensureActive()
-            executeAndObserve(action, arguments, "Step ${step + 1}", observations)
+            val actionIssue = executeAndObserve(action, arguments, "Step ${step + 1}", observations, onProgress)
+            if (actionIssue != null) unresolvedActionIssue = actionIssue
+            else if (action !in setOf("apps.list", "ui.snapshot")) unresolvedActionIssue = null
             saveCheckpoint(taskId, taskPrompt, observations, attempts)
         }
         saveCheckpoint(taskId, taskPrompt, observations, attempts, status = "paused")
+        val issue = unresolvedActionIssue ?: lastActionIssue(observations)
         return finish(
-            "This execution window ended; verified progress is saved.",
+            if (issue == null) "This execution window ended; verified progress is saved."
+            else "This execution window ended after $issue. I saved the verified progress; say continue to resume or give me another way to proceed.",
             false,
             checkpointed = true,
             taskId = taskId,
@@ -376,13 +422,36 @@ class PhoneAgent(
         arguments: JSONObject,
         observationLabel: String,
         observations: MutableList<String>,
-    ) {
+        onProgress: (PhoneAgentProgress) -> Unit = {},
+    ): String? {
         val beforeTree = latestScreenTree(observations)
+        if (action in UI_TARGET_ACTIONS && beforeTree == null) {
+            val issue = "$action was not attempted because no accessibility snapshot is available"
+            addObservation(observations, "$observationLabel: $issue")
+            publishStatus(onProgress, "I can't see the phone's current controls, so I didn't guess. Check Hyusk Accessibility and try again.")
+            return issue
+        }
         val result = executor.execute(action, arguments)
         var screenChanged: Boolean? = null
         if (action in UI_CHANGING_ACTIONS && result.success) {
-            val timeout = if (action == "apps.launch" || action == "url.open") APP_TRANSITION_TIMEOUT_MS else UI_TRANSITION_TIMEOUT_MS
-            screenChanged = waitForUiAfterAction(beforeTree, timeout, observations)
+            screenChanged = when {
+                action == "apps.launch" && result.data.optString("package").isNotBlank() -> {
+                    val packageName = result.data.optString("package")
+                    val verified = waitForPackage(packageName, APP_TRANSITION_TIMEOUT_MS)
+                    if (verified) addObservation(observations, "Verified foreground app: ${result.data.optString("label", packageName)} ($packageName)")
+                    verified
+                }
+                action == "ui.set_text" -> waitForTextVisible(
+                    beforeTree,
+                    arguments.optString("text"),
+                    UI_TRANSITION_TIMEOUT_MS,
+                    observations,
+                )
+                else -> {
+                    val timeout = if (action == "url.open") APP_TRANSITION_TIMEOUT_MS else UI_TRANSITION_TIMEOUT_MS
+                    waitForUiAfterAction(beforeTree, timeout, observations)
+                }
+            }
         }
         val outcome = when {
             !result.success -> "failed"
@@ -393,6 +462,23 @@ class PhoneAgent(
             observations,
             "$observationLabel: $action $outcome: ${result.message}. Data: ${result.data}",
         )
+        val issue = when {
+            !result.success -> "$action failed: ${result.message}"
+            screenChanged == false -> "$action was dispatched, but the accessibility screen did not change; ${result.message}"
+            else -> null
+        }
+        if (issue != null) {
+            publishStatus(onProgress, "Couldn't verify $action; checking another route. ${result.message}")
+        }
+        return issue
+    }
+
+    private fun lastActionIssue(observations: List<String>): String? {
+        val lastAction = observations.lastOrNull {
+            it.startsWith("Step ") || it.startsWith("Confirmed action:") || it.startsWith("Deterministic action failed:")
+        } ?: return null
+        if (!lastAction.contains(" failed:") && !lastAction.contains("no accessibility change was verified")) return null
+        return lastAction.substringAfter(": ").substringBefore(". Data:").take(500)
     }
 
     private fun refreshUiObservation(observations: MutableList<String>) {
@@ -443,6 +529,44 @@ class PhoneAgent(
         .lastOrNull { it.startsWith(SCREEN_OBSERVATION_PREFIX) }
         ?.removePrefix(SCREEN_OBSERVATION_PREFIX)
 
+    private suspend fun waitForPackage(packageName: String, timeoutMillis: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            currentCoroutineContext().ensureActive()
+            val snapshot = executor.execute("ui.snapshot", JSONObject())
+            val tree = snapshot.data.optJSONObject("tree")
+            if (snapshot.success && tree?.optString("package") == packageName) return true
+            delay(UI_POLL_INTERVAL_MILLIS)
+        }
+        return false
+    }
+
+    private suspend fun waitForTextVisible(
+        beforeTree: String?,
+        expected: String,
+        timeoutMillis: Long,
+        observations: MutableList<String>,
+    ): Boolean {
+        if (expected.isBlank()) return false
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        var latestTree: String? = null
+        while (System.currentTimeMillis() < deadline) {
+            currentCoroutineContext().ensureActive()
+            val snapshot = executor.execute("ui.snapshot", JSONObject())
+            val tree = snapshot.data.optJSONObject("tree")?.toString()
+            if (snapshot.success && !tree.isNullOrBlank()) {
+                latestTree = tree
+                if (tree.contains(expected)) {
+                    if (tree != beforeTree) addObservation(observations, "Current accessibility tree: $tree")
+                    return true
+                }
+            }
+            delay(UI_POLL_INTERVAL_MILLIS)
+        }
+        latestTree?.let { if (it != beforeTree) addObservation(observations, "Current accessibility tree: $it") }
+        return false
+    }
+
     private fun screenFingerprint(observations: List<String>): String {
         val tree = latestScreenTree(observations) ?: return "unknown"
         val digest = MessageDigest.getInstance("SHA-256").digest(tree.toByteArray(Charsets.UTF_8))
@@ -479,10 +603,13 @@ class PhoneAgent(
         taskPrompt: String,
         observations: List<String>,
         attempts: Map<String, Int>,
+        unresolvedIssue: String? = null,
     ): PhoneAgentResult {
         saveCheckpoint(taskId, taskPrompt, observations, attempts, status = "paused")
+        val issue = unresolvedIssue ?: lastActionIssue(observations)
         return finish(
-            "I paused because the same action produced no verified screen change. Your progress is saved; tell me another way to proceed or continue after checking the phone.",
+            if (issue == null) "I paused because the same action produced no verified screen change. Your progress is saved; tell me another way to proceed or continue after checking the phone."
+            else "I paused because I couldn't complete this step: $issue. I saved your progress; tell me another way to proceed or continue after checking the phone.",
             false,
             checkpointed = true,
             taskId = taskId,
@@ -594,7 +721,7 @@ class PhoneAgent(
         const val SCREEN_SIGNATURE_SEPARATOR = "|screen="
         const val SCREEN_FINGERPRINT_BYTES = 8
         const val UI_POLL_INTERVAL_MILLIS = 120L
-        const val UI_TRANSITION_TIMEOUT_MS = 840L
+        const val UI_TRANSITION_TIMEOUT_MS = 1_400L
         const val APP_TRANSITION_TIMEOUT_MS = 2_400L
         val REPEATABLE_ACTIONS = setOf(
             "ui.snapshot", "ui.scroll", "ui.swipe", "ui.tap", "volume.up", "volume.down", "media.next", "media.previous",
@@ -603,6 +730,9 @@ class PhoneAgent(
             "apps.launch", "url.open", "web.search", "system.settings", "system.back", "system.home",
             "system.recents", "system.notifications", "system.quick_settings", "ui.click", "ui.long_click",
             "ui.set_text", "ui.scroll", "ui.swipe", "ui.tap", "ui.press_enter", "camera.open", "phone.dial", "sms.compose",
+        )
+        val UI_TARGET_ACTIONS = setOf(
+            "ui.click", "ui.long_click", "ui.set_text", "ui.scroll", "ui.tap", "ui.swipe", "ui.press_enter",
         )
     }
 }

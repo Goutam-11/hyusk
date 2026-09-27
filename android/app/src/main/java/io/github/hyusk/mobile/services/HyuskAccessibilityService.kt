@@ -7,12 +7,14 @@ import android.graphics.Rect
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import java.util.ArrayDeque
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 
 data class UiNodeSnapshot(val className: String?, val text: String?, val contentDescription: String?, val clickable: Boolean, val children: List<UiNodeSnapshot>)
+data class UiTextActionResult(val success: Boolean, val message: String, val candidates: List<String> = emptyList())
 
 internal fun accessibilityTextMatchRank(text: String?, description: String?, query: String): Int {
     val needle = query.trim()
@@ -40,7 +42,9 @@ class HyuskAccessibilityService : AccessibilityService() {
 
     fun snapshot(): UiNodeSnapshot? = targetWindowRoot()?.let(::readNode)
 
-    fun snapshotJson(): JSONObject? = targetWindowRoot()?.let(::nodeJson)
+    fun snapshotJson(): JSONObject? = targetWindowRoot()?.let { root ->
+        nodeJson(root).put("interactive_controls", interactiveControls(root))
+    }
 
     fun click(node: AccessibilityNodeInfo): Boolean = EmergencyStop.allowAction() && node.refresh() &&
         node.isEnabled && node.isVisibleToUser && node.isClickable &&
@@ -56,6 +60,8 @@ class HyuskAccessibilityService : AccessibilityService() {
 
     fun tap(x: Float, y: Float): Boolean {
         if (!EmergencyStop.allowAction()) return false
+        val metrics = resources.displayMetrics
+        if (x !in 0f..metrics.widthPixels.toFloat() || y !in 0f..metrics.heightPixels.toFloat()) return false
         val path = Path().apply { moveTo(x, y) }
         return dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 50)).build(), null, null)
     }
@@ -78,21 +84,67 @@ class HyuskAccessibilityService : AccessibilityService() {
     }
 
     fun clickText(text: String): Boolean {
-        val root = targetWindowRoot() ?: return false
-        for (match in findNodes(root, text)) {
-            var current: AccessibilityNodeInfo? = match
-            while (current != null) {
-                if (current.isClickable && click(current)) return true
-                current = current.parent
-            }
-            // Some apps expose a labelled icon without ACTION_CLICK on the
-            // accessibility node. A coordinate gesture is the last resort,
-            // and the agent still verifies the resulting screen separately.
-            val bounds = Rect().also(match::getBoundsInScreen)
-            if (!bounds.isEmpty && tap(bounds.exactCenterX(), bounds.exactCenterY())) return true
-        }
-        return false
+        return clickTextDetailed(text).success
     }
+
+    /** Resolve text to one unambiguous visible control and report why it cannot be activated. */
+    fun clickTextDetailed(text: String): UiTextActionResult {
+        if (!EmergencyStop.allowAction()) return UiTextActionResult(false, "Emergency stop is engaged")
+        val root = targetWindowRoot() ?: return UiTextActionResult(false, "No active accessibility window")
+        val matches = findNodes(root, text)
+        if (matches.isEmpty()) return UiTextActionResult(false, "No visible, enabled control matched \"${text.trim()}\"")
+        val bestRank = matches.minOf { node ->
+            accessibilityTextMatchRank(node.text?.toString(), node.contentDescription?.toString(), text)
+        }
+        val candidates = matches.asSequence()
+            .filter { node -> accessibilityTextMatchRank(node.text?.toString(), node.contentDescription?.toString(), text) == bestRank }
+            .mapNotNull { match ->
+                var current: AccessibilityNodeInfo? = match
+                var clickable: AccessibilityNodeInfo? = null
+                while (current != null) {
+                    if (current.isClickable && current.isEnabled && current.isVisibleToUser) {
+                        clickable = current
+                        break
+                    }
+                    current = current.parent
+                }
+                val target = clickable ?: match.takeIf {
+                    !Rect().also(match::getBoundsInScreen).isEmpty
+                }
+                target?.let { node ->
+                    val bounds = Rect().also(node::getBoundsInScreen)
+                    ClickCandidate(node, bounds, match.text?.toString()
+                        ?: match.contentDescription?.toString().orEmpty())
+                }
+            }
+            .distinctBy { it.bounds.toShortString() }
+            .toList()
+        if (candidates.isEmpty()) return UiTextActionResult(false, "Found \"${text.trim()}\", but it has no usable click target")
+        if (candidates.size > 1) {
+            return UiTextActionResult(
+                false,
+                "\"${text.trim()}\" matches more than one control; choose a more specific label or tap a listed bound",
+                candidates.take(6).map { "${it.label} ${it.bounds.toShortString()}" },
+            )
+        }
+        val candidate = candidates.single()
+        if (candidate.node.refresh() && candidate.node.isEnabled && candidate.node.isVisibleToUser &&
+            candidate.node.isClickable && candidate.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            return UiTextActionResult(true, "Activated \"${candidate.label}\"")
+        }
+        // Some apps expose a labelled text/icon without a usable ACTION_CLICK.
+        // Gesture dispatch is only considered success when the caller verifies a UI change.
+        if (tap(candidate.bounds.exactCenterX(), candidate.bounds.exactCenterY())) {
+            return UiTextActionResult(true, "Tapped \"${candidate.label}\" at ${candidate.bounds.toShortString()}")
+        }
+        return UiTextActionResult(false, "Android rejected the click for \"${candidate.label}\"")
+    }
+
+    private data class ClickCandidate(
+        val node: AccessibilityNodeInfo,
+        val bounds: Rect,
+        val label: String,
+    )
 
     fun longClickText(text: String): Boolean {
         val root = targetWindowRoot() ?: return false
@@ -108,33 +160,46 @@ class HyuskAccessibilityService : AccessibilityService() {
     }
 
     fun setTextInFocusedOrMatching(target: String, text: String): Boolean {
-        val root = targetWindowRoot() ?: return false
+        return setTextInFocusedOrMatchingDetailed(target, text).success
+    }
+
+    fun setTextInFocusedOrMatchingDetailed(target: String, text: String): UiTextActionResult {
+        val root = targetWindowRoot() ?: return UiTextActionResult(false, "No active accessibility window")
         val node = if (target.isBlank()) {
-            root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-                ?: findFirstEditable(root)
+            root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
+                ?: return UiTextActionResult(false, "No focused input field; name the target field from the accessibility controls")
         } else {
-            findNode(target)?.let { match ->
-                if (match.isEditable) match else findFirstEditable(match)
-            } ?: root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-                ?: findFirstEditable(root)
+            val matches = findNodes(root, target)
+            if (matches.isEmpty()) return UiTextActionResult(false, "No visible field matched \"${target.trim()}\"")
+            val rank = matches.minOf { accessibilityTextMatchRank(it.text?.toString(), it.contentDescription?.toString(), target) }
+            val fields = matches.filter {
+                accessibilityTextMatchRank(it.text?.toString(), it.contentDescription?.toString(), target) == rank
+            }.mapNotNull { match -> if (match.isEditable) match else findFirstEditable(match) }
+                .distinctBy { node -> Rect().also(node::getBoundsInScreen).toShortString() }
+            if (fields.isEmpty()) return UiTextActionResult(false, "\"${target.trim()}\" matched, but no editable field was found")
+            if (fields.size > 1) return UiTextActionResult(
+                false,
+                "\"${target.trim()}\" matches more than one editable field",
+                fields.take(6).map { node ->
+                    "${node.hintText ?: node.contentDescription ?: node.text ?: node.className} ${Rect().also(node::getBoundsInScreen).toShortString()}"
+                },
+            )
+            fields.single()
         }
-        return node?.let { setText(it, text) } ?: false
+        if (setText(node, text)) return UiTextActionResult(true, "Entered text in \"${target.ifBlank { "focused input" }}\"")
+        return UiTextActionResult(false, "Android rejected text entry for \"${target.ifBlank { "focused input" }}\"")
     }
 
     fun scroll(direction: String): Boolean {
+        if (!EmergencyStop.allowAction()) return false
         val action = if (direction.equals("backward", true) || direction.equals("up", true))
             AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD else AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
         var node: AccessibilityNodeInfo? = targetWindowRoot()
         while (node != null) {
-            if (node.isScrollable && node.performAction(action)) return true
+            if (node.isScrollable && node.refresh() && node.isEnabled && node.isVisibleToUser && node.performAction(action)) return true
             node = firstScrollableChild(node)
         }
         return false
-    }
-
-    private fun findNode(query: String): AccessibilityNodeInfo? {
-        val root = targetWindowRoot() ?: return null
-        return findNodes(root, query).firstOrNull()
     }
 
     private fun findNodes(root: AccessibilityNodeInfo, query: String): List<AccessibilityNodeInfo> {
@@ -225,6 +290,46 @@ class HyuskAccessibilityService : AccessibilityService() {
         }
         if (children.length() > 0) result.put("children", children)
         return result
+    }
+
+    private fun interactiveControls(root: AccessibilityNodeInfo): JSONArray {
+        val pending = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+        val controls = mutableListOf<Pair<Int, JSONObject>>()
+        pending.add(root to 0)
+        var inspected = 0
+        while (pending.isNotEmpty() && inspected++ < 1_200) {
+            val (node, depth) = pending.removeFirst()
+            if (!node.isVisibleToUser || depth > 12) continue
+            val label = node.text?.toString()?.takeIf(String::isNotBlank)
+                ?: node.contentDescription?.toString()?.takeIf(String::isNotBlank)
+            if (node.isClickable || node.isEditable || node.isScrollable || node.isFocused) {
+                val bounds = Rect().also(node::getBoundsInScreen)
+                controls += controlPriority(node) to JSONObject()
+                    .put("label", label.orEmpty())
+                    .put("id", node.viewIdResourceName.orEmpty())
+                    .put("class", node.className?.toString().orEmpty())
+                    .put("clickable", node.isClickable)
+                    .put("editable", node.isEditable)
+                    .put("scrollable", node.isScrollable)
+                    .put("focused", node.isFocused)
+                    .put("bounds", "[${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}]")
+            }
+            for (index in 0 until node.childCount) {
+                node.getChild(index)?.let { pending.add(it to depth + 1) }
+            }
+        }
+        return JSONArray().apply {
+            controls.sortedBy { it.first }.take(40).forEach { put(it.second) }
+            if (inspected >= 1_200) put(JSONObject().put("truncated", true))
+        }
+    }
+
+    private fun controlPriority(node: AccessibilityNodeInfo): Int = when {
+        node.isFocused -> 0
+        node.isEditable -> 1
+        node.isClickable -> 2
+        node.isScrollable -> 3
+        else -> 4
     }
 
     private fun readNode(node: AccessibilityNodeInfo): UiNodeSnapshot {

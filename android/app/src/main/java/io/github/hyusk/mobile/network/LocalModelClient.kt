@@ -85,33 +85,25 @@ class LocalModelClient(
 
         val endpoint = completionEndpoint(settings.baseUrl)
         val system = """You are Hyusk, an autonomous Android assistant. Continue the user's task one step at a time using native actions and the accessibility tree. Return exactly one complete JSON object, with no markdown and no text outside the object. When another action is required, use {"action":"name","arguments":{...},"progress_text":"optional short spoken update"}. Use {"reply":"...","needs_reply":false,"reply_type":"none"} only when the task is complete; set needs_reply true and reply_type to question, choice, or confirmation when the user must answer. progress_text is optional, must be brief and natural to say aloud, and is not a completion claim. Never claim an action succeeded until an observation says it succeeded. Do not repeat an action that already succeeded. Prefer apps.launch before UI navigation. Allowed actions: apps.list, apps.launch, url.open, web.search, timer.create, reminder.create, memory.remember, system.back, system.home, system.recents, system.notifications, system.quick_settings, system.settings, ui.snapshot, ui.click, ui.long_click, ui.set_text, ui.scroll, ui.tap, ui.swipe, ui.press_enter, media.play_pause, media.next, media.previous, volume.up, volume.down, device.status, camera.open, phone.dial, sms.compose, share.text, clipboard.write. For memory.remember use {"text":"concise durable fact","kind":"fact or preference"}; save only stable personal facts or preferences the user explicitly states or clearly asks you to remember, never transient requests, guesses, secrets, credentials, or screen contents. Arguments must use the names implied by the action, such as app, text, query, url, phone, x, y, x1, y1, x2, y2. Sensitive operations must be proposed normally; Hyusk will enforce confirmation."""
-        val loopGuidance = "You have a persistent checkpoint and up to sixty-four verified actions for multi-step tasks. After launching an app, opening a URL, submitting text, or changing screens, use the latest accessibility tree before choosing the next target. A result that says an action was dispatched but no accessibility change was verified is not proof of success: do not repeat the identical action on the same screen; inspect the tree, try a different route, or report the concrete blocker. For messaging tasks, identify the intended contact and enter the message, but stop before sending unless the user clearly authorized sending. Never return a completion reply after a failed action; recover or state the concrete blocker. Keep JSON compact so it remains complete within the response limit."
+        val loopGuidance = "You have a persistent checkpoint and up to sixty-four verified actions for multi-step tasks. Accessibility snapshots include an interactive_controls list with exact labels, resource IDs, editable/clickable state, and screen bounds; use it to choose one grounded target. Prefer ui.click with an exact unique label over coordinates. If it returns multiple matches, choose a more specific target from the listed candidates; never guess. Use ui.set_text with the exact composer/search field label, and confirm the entered value in a fresh snapshot before continuing. After launching an app or changing screens, inspect the latest accessibility snapshot before selecting the next target. A result that says dispatched but unverified is not proof of success: do not repeat that action on the same screen; inspect, try a different route, or report the specific failure. For messaging tasks, verify the contact header and composed text; send only when the user clearly asked you to send. Never return completion while an action failure is unresolved. If you cannot proceed, explain the last failed action and its actual result in plain language. Keep JSON compact so it remains complete within the response limit."
         val fullInstructions = "$system\n$loopGuidance"
         val relevantContext = memoryContext.take(MAX_CONTEXT_CHARS)
         val task = prompt.take(MAX_PROMPT_CHARS)
         val observedState = compactObservations(observations)
+        // Keep a single system turn followed by one user turn. Some compatible
+        // providers reject repeated system messages or non-alternating roles.
+        val userContext = buildString {
+            if (relevantContext.isNotBlank()) appendLine("Relevant private on-device context:\n$relevantContext")
+            appendLine("User task:\n$task")
+            observedState.forEach { appendLine("Observed phone state:\n$it") }
+        }
         val messages = if (settings.model.contains("gemma", ignoreCase = true)) {
-            // Gemma chat templates require alternating user/assistant turns and
-            // may reject system messages. This request has no prior assistant
-            // turn, so provide all context in one user message.
-            val content = buildString {
-                appendLine("Instructions:\n$fullInstructions")
-                if (relevantContext.isNotBlank())
-                    appendLine("Relevant private on-device context:\n$relevantContext")
-                appendLine("User task:\n$task")
-                observedState.forEach { appendLine("Observed phone state:\n$it") }
-            }
-            JSONArray().put(JSONObject().put("role", "user").put("content", content))
+            // Gemma chat templates may reject a system role entirely.
+            JSONArray().put(JSONObject().put("role", "user").put("content", "Instructions:\n$fullInstructions\n$userContext"))
         } else {
-            JSONArray().put(JSONObject().put("role", "system").put("content", fullInstructions)).apply {
-                if (relevantContext.isNotBlank()) {
-                    put(JSONObject().put("role", "system").put("content", "Relevant private on-device context:\n$relevantContext"))
-                }
-                put(JSONObject().put("role", "user").put("content", task))
-                observedState.forEach {
-                    put(JSONObject().put("role", "system").put("content", "Observed phone state:\n$it"))
-                }
-            }
+            JSONArray()
+                .put(JSONObject().put("role", "system").put("content", fullInstructions))
+                .put(JSONObject().put("role", "user").put("content", userContext))
         }
 
         var lastFailure: Throwable? = null

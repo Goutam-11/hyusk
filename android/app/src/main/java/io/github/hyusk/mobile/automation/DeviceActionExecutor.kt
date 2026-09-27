@@ -69,9 +69,9 @@ class DeviceActionExecutor(private val context: Context) {
                 "system.quick_settings" -> global(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS, "Quick settings")
                 "system.settings" -> openSettings(args.optString("action", Settings.ACTION_SETTINGS))
                 "ui.snapshot" -> snapshot()
-                "ui.click" -> accessibility().clickText(args.getString("text")).asResult("Clicked ${args.getString("text")}")
+                "ui.click" -> clickText(args.getString("text"))
                 "ui.long_click" -> accessibility().longClickText(args.getString("text")).asResult("Long-pressed ${args.getString("text")}")
-                "ui.set_text" -> accessibility().setTextInFocusedOrMatching(args.optString("target"), args.getString("text")).asResult("Entered text")
+                "ui.set_text" -> setUiText(args.optString("target"), args.getString("text"))
                 "ui.scroll" -> accessibility().scroll(args.optString("direction", "forward")).asResult("Scrolled")
                 "ui.tap" -> accessibility().tap(args.getDouble("x").toFloat(), args.getDouble("y").toFloat()).asResult("Tapped")
                 "ui.swipe" -> accessibility().swipe(
@@ -293,6 +293,26 @@ class DeviceActionExecutor(private val context: Context) {
         val value = accessibility().snapshotJson()
             ?: return ActionResult(false, "No active accessibility window")
         return ActionResult(true, "Captured semantic UI", JSONObject().put("tree", value))
+    }
+
+    private fun clickText(text: String): ActionResult {
+        val result = accessibility().clickTextDetailed(text)
+        val data = JSONObject().put("target", text)
+        if (result.candidates.isNotEmpty()) {
+            val candidates = org.json.JSONArray()
+            result.candidates.forEach(candidates::put)
+            data.put("candidates", candidates)
+        }
+        return ActionResult(result.success, result.message, data)
+    }
+
+    private fun setUiText(target: String, text: String): ActionResult {
+        val result = accessibility().setTextInFocusedOrMatchingDetailed(target, text)
+        return ActionResult(
+            result.success,
+            result.message,
+            JSONObject().put("target", target).put("text_length", text.length),
+        )
     }
 
     private fun mediaKey(code: Int): ActionResult {
