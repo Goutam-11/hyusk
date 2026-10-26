@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Dao
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
@@ -48,6 +49,7 @@ data class AgentTurnEntity(
     val role: String,
     val encryptedContent: String,
     val createdAt: Long = System.currentTimeMillis(),
+    @ColumnInfo(defaultValue = "'legacy'") val sessionId: String = "legacy",
 )
 
 @Entity(tableName = "agent_runs")
@@ -55,6 +57,16 @@ data class AgentRunEntity(
     @androidx.room.PrimaryKey val id: String,
     val encryptedState: String,
     val status: String,
+    val updatedAt: Long = System.currentTimeMillis(),
+    @ColumnInfo(defaultValue = "'legacy'") val sessionId: String = "legacy",
+)
+
+@Entity(tableName = "agent_sessions")
+data class AgentSessionEntity(
+    @androidx.room.PrimaryKey val id: String,
+    val title: String,
+    val active: Boolean,
+    val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
 )
 
@@ -81,8 +93,19 @@ interface MemoryDao {
 @Dao
 interface AgentTurnDao {
     @Insert suspend fun insert(turn: AgentTurnEntity)
-    @Query("SELECT * FROM agent_turns ORDER BY createdAt DESC, id DESC LIMIT :limit") suspend fun latest(limit: Int): List<AgentTurnEntity>
-    @Query("DELETE FROM agent_turns WHERE id NOT IN (SELECT id FROM agent_turns ORDER BY createdAt DESC, id DESC LIMIT :keep)") suspend fun trim(keep: Int)
+    @Query("SELECT * FROM agent_turns WHERE sessionId = :sessionId ORDER BY createdAt DESC, id DESC LIMIT :limit") suspend fun latest(sessionId: String, limit: Int): List<AgentTurnEntity>
+    @Query("SELECT * FROM agent_turns WHERE sessionId = :sessionId ORDER BY createdAt, id") fun observe(sessionId: String): Flow<List<AgentTurnEntity>>
+    @Query("DELETE FROM agent_turns WHERE sessionId = :sessionId AND id NOT IN (SELECT id FROM agent_turns WHERE sessionId = :sessionId ORDER BY createdAt DESC, id DESC LIMIT :keep)") suspend fun trimSession(sessionId: String, keep: Int)
+}
+
+@Dao
+interface AgentSessionDao {
+    @Query("SELECT * FROM agent_sessions ORDER BY updatedAt DESC LIMIT 100") fun observe(): Flow<List<AgentSessionEntity>>
+    @Query("SELECT * FROM agent_sessions WHERE active = 1 ORDER BY updatedAt DESC LIMIT 1") suspend fun active(): AgentSessionEntity?
+    @Query("SELECT * FROM agent_sessions WHERE id = :id") suspend fun get(id: String): AgentSessionEntity?
+    @Query("UPDATE agent_sessions SET active = 0") suspend fun deactivateAll()
+    @Insert(onConflict = OnConflictStrategy.ABORT) suspend fun insert(session: AgentSessionEntity)
+    @androidx.room.Update suspend fun update(session: AgentSessionEntity)
 }
 
 @Dao
@@ -90,9 +113,9 @@ interface AgentRunDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun save(run: AgentRunEntity)
     @Query("SELECT * FROM agent_runs ORDER BY updatedAt DESC LIMIT 100") fun observe(): Flow<List<AgentRunEntity>>
     @Query("SELECT * FROM agent_runs WHERE id = :id") suspend fun get(id: String): AgentRunEntity?
-    @Query("SELECT * FROM agent_runs WHERE status = 'active' ORDER BY updatedAt DESC LIMIT 1") suspend fun latestActive(): AgentRunEntity?
-    @Query("SELECT * FROM agent_runs WHERE status = 'awaiting_user' ORDER BY updatedAt DESC LIMIT 1") suspend fun latestAwaitingUser(): AgentRunEntity?
-    @Query("SELECT * FROM agent_runs WHERE status IN ('paused', 'interrupted') ORDER BY updatedAt DESC LIMIT 1") suspend fun latestPaused(): AgentRunEntity?
+    @Query("SELECT * FROM agent_runs WHERE sessionId = :sessionId AND status = 'active' ORDER BY updatedAt DESC LIMIT 1") suspend fun latestActive(sessionId: String): AgentRunEntity?
+    @Query("SELECT * FROM agent_runs WHERE sessionId = :sessionId AND status = 'awaiting_user' ORDER BY updatedAt DESC LIMIT 1") suspend fun latestAwaitingUser(sessionId: String): AgentRunEntity?
+    @Query("SELECT * FROM agent_runs WHERE sessionId = :sessionId AND status IN ('paused', 'interrupted') ORDER BY updatedAt DESC LIMIT 1") suspend fun latestPaused(sessionId: String): AgentRunEntity?
     @Query("UPDATE agent_runs SET status = :status, updatedAt = :updatedAt WHERE id = :id") suspend fun setStatus(id: String, status: String, updatedAt: Long = System.currentTimeMillis())
     @Query("UPDATE agent_runs SET status = 'interrupted' WHERE status = 'active' AND updatedAt < :cutoff")
     suspend fun markStaleInterrupted(cutoff: Long)
@@ -100,12 +123,13 @@ interface AgentRunDao {
     suspend fun pauseOrphanedActiveRuns()
 }
 
-@Database(entities = [WorkflowEntity::class, MemoryEntity::class, AgentTurnEntity::class, AgentRunEntity::class], version = 3, exportSchema = false)
+@Database(entities = [WorkflowEntity::class, MemoryEntity::class, AgentTurnEntity::class, AgentRunEntity::class, AgentSessionEntity::class], version = 4, exportSchema = false)
 abstract class HyuskDatabase : RoomDatabase() {
     abstract fun workflows(): WorkflowDao
     abstract fun memories(): MemoryDao
     abstract fun agentTurns(): AgentTurnDao
     abstract fun agentRuns(): AgentRunDao
+    abstract fun agentSessions(): AgentSessionDao
 
     companion object {
         private val migration1To2 = object : Migration(1, 2) {
@@ -120,8 +144,18 @@ abstract class HyuskDatabase : RoomDatabase() {
             }
         }
 
+        private val migration3To4 = object : Migration(3, 4) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("CREATE TABLE IF NOT EXISTS agent_sessions (id TEXT NOT NULL PRIMARY KEY, title TEXT NOT NULL, active INTEGER NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)")
+                database.execSQL("ALTER TABLE agent_turns ADD COLUMN sessionId TEXT NOT NULL DEFAULT 'legacy'")
+                database.execSQL("ALTER TABLE agent_runs ADD COLUMN sessionId TEXT NOT NULL DEFAULT 'legacy'")
+                database.execSQL("INSERT OR IGNORE INTO agent_sessions (id, title, active, createdAt, updatedAt) VALUES ('legacy', 'Previous conversation', 1, strftime('%s','now') * 1000, strftime('%s','now') * 1000)")
+            }
+        }
+
         fun create(context: Context): HyuskDatabase = Room.databaseBuilder(context, HyuskDatabase::class.java, "hyusk.db")
-            .addMigrations(migration1To2, migration2To3)
+            .addMigrations(migration1To2, migration2To3, migration3To4)
+            .enableMultiInstanceInvalidation()
             .build()
     }
 }

@@ -148,6 +148,8 @@ import io.github.hyusk.mobile.data.HyuskRepository
 import io.github.hyusk.mobile.data.MemorySummary
 import io.github.hyusk.mobile.data.ProviderIdentity
 import io.github.hyusk.mobile.data.RunSummary
+import io.github.hyusk.mobile.data.SessionSummary
+import io.github.hyusk.mobile.data.ConversationTurn
 import io.github.hyusk.mobile.data.WorkflowEntity
 import io.github.hyusk.mobile.ui.VoiceHomeScreen
 import io.github.hyusk.mobile.ui.VoicePhase
@@ -160,7 +162,7 @@ private data class PendingInvocation(val id: String, val action: String, val arg
 
 private enum class Destination(val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
     Home("Home", Icons.Default.Bolt), Devices("Devices", Icons.Default.Devices), Workflows("Flows", Icons.Default.PlayArrow),
-    Memory("Memory", Icons.Default.Memory), Activity("Runs", Icons.Default.History), Settings("Settings", Icons.Default.Settings)
+    Memory("Memory", Icons.Default.Memory), Activity("Chats", Icons.Default.History), Settings("Settings", Icons.Default.Settings)
 }
 
 // Secondary destinations use the same visual language as the voice home.
@@ -222,6 +224,8 @@ private fun HyuskApp(width: WindowWidthSizeClass) {
     val executor = remember { DeviceActionExecutor(context.applicationContext) }
     val localModelStore = remember { LocalModelSettingsStore(context.applicationContext) }
     val phoneTasks = remember { PhoneAgentTaskManager.get(context.applicationContext) }
+    val scope = rememberCoroutineScope()
+    val activeSessionId by phoneTasks.activeSessionId.collectAsState()
     var pendingInvocation by remember { mutableStateOf<PendingInvocation?>(null) }
     DisposableEffect(rpc) { onDispose { rpc.close() } }
     DisposableEffect(repository) { onDispose { repository.close() } }
@@ -307,7 +311,28 @@ private fun HyuskApp(width: WindowWidthSizeClass) {
                 Destination.Devices -> DevicesScreen(rpc)
                 Destination.Workflows -> WorkflowsScreen(repository)
                 Destination.Memory -> MemoryScreen(repository)
-                Destination.Activity -> ActivityScreen(repository)
+                Destination.Activity -> ActivityScreen(
+                    repository = repository,
+                    activeSessionId = activeSessionId,
+                    onNewConversation = {
+                        scope.launch {
+                            runCatching { phoneTasks.startNewConversation() }
+                                .onSuccess { destination = Destination.Home }
+                        }
+                    },
+                    onContinueConversation = { id ->
+                        scope.launch {
+                            runCatching { phoneTasks.selectConversation(id) }
+                                .onSuccess { destination = Destination.Home }
+                        }
+                    },
+                    onResumeTask = { id ->
+                        scope.launch {
+                            runCatching { phoneTasks.selectConversation(id) }
+                                .onSuccess { destination = Destination.Home; phoneTasks.submit("continue") }
+                        }
+                    },
+                )
                 Destination.Settings -> SettingsScreen(localModelStore, onOpenDevices = { destination = Destination.Devices })
             }
         }
@@ -759,6 +784,7 @@ private fun WorkflowsScreen(repository: HyuskRepository) {
                                         .put("label", workflow.name)
                                         .put("prompt", "Run ${workflow.name}")
                                         .put("completed_steps", 0),
+                                    sessionId = repository.ensureActiveSession(),
                                 )
                                 val outcome = runCatching {
                                     executeWorkflowDefinition(repository.decryptWorkflowDefinition(workflow), executor)
@@ -1005,7 +1031,11 @@ private fun WorkflowEditor(
                         "web.search" to "Search the web",
                         "timer.create" to "Start a timer",
                         "workflow.delay" to "Wait before continuing",
+                        "media.play" to "Play current media",
+                        "media.pause" to "Pause current media",
                         "media.play_pause" to "Play or pause media",
+                        "media.next" to "Skip to next track",
+                        "media.previous" to "Play previous track",
                         "system.home" to "Go to the Home screen",
                         "system.notifications" to "Open notifications",
                     ).forEach { (action, label) ->
@@ -1167,6 +1197,7 @@ private fun MemoryScreen(repository: HyuskRepository) {
             memory.scope.contains(search, ignoreCase = true) ||
             memory.originDevice.contains(search, ignoreCase = true)
     }
+    val scope = rememberCoroutineScope()
 
     Screen("Memory") {
         OutlinedTextField(
@@ -1185,14 +1216,24 @@ private fun MemoryScreen(repository: HyuskRepository) {
             )
         } else {
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(visibleMemories, key = { it.id }) { memory -> MemoryCard(memory) }
+                items(visibleMemories, key = { it.id }) { memory ->
+                    MemoryCard(
+                        memory,
+                        onUpdate = { content, kind -> scope.launch { repository.updateMemory(memory.id, content, kind) } },
+                        onForget = { scope.launch { repository.forgetMemory(memory.id) } },
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun MemoryCard(memory: MemorySummary) {
+private fun MemoryCard(memory: MemorySummary, onUpdate: (String, String) -> Unit, onForget: () -> Unit) {
+    var editing by remember(memory.id) { mutableStateOf(false) }
+    var deleting by remember(memory.id) { mutableStateOf(false) }
+    var content by remember(memory.id) { mutableStateOf(memory.content) }
+    var kind by remember(memory.id) { mutableStateOf(memory.kind) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(memory.kind.ifBlank { "Memory" }, style = MaterialTheme.typography.titleMedium)
@@ -1200,31 +1241,152 @@ private fun MemoryCard(memory: MemorySummary) {
             Text("Encrypted on disk", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
             Text("Scope: ${memory.scope} · Device: ${memory.originDevice}", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Created ${formatRecordTime(memory.createdAt)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { content = memory.content; kind = memory.kind; editing = true }) { Text("Edit") }
+                TextButton(onClick = { deleting = true }) { Text("Forget") }
+            }
         }
     }
+    if (editing) AlertDialog(
+        onDismissRequest = { editing = false },
+        title = { Text("Edit memory") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(kind, { kind = it }, label = { Text("Type") }, singleLine = true, colors = hyuskTextFieldColors())
+                OutlinedTextField(content, { content = it }, label = { Text("Memory") }, colors = hyuskTextFieldColors())
+            }
+        },
+        confirmButton = { TextButton(onClick = { onUpdate(content, kind); editing = false }, enabled = content.isNotBlank()) { Text("Save") } },
+        dismissButton = { TextButton(onClick = { editing = false }) { Text("Cancel") } },
+    )
+    if (deleting) AlertDialog(
+        onDismissRequest = { deleting = false },
+        title = { Text("Forget this memory?") },
+        text = { Text("Hyusk will no longer use this saved fact or preference.") },
+        confirmButton = { TextButton(onClick = { onForget(); deleting = false }) { Text("Forget") } },
+        dismissButton = { TextButton(onClick = { deleting = false }) { Text("Cancel") } },
+    )
 }
 
 private fun formatRecordTime(timestamp: Long): String =
     DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(timestamp))
 @Composable
-private fun ActivityScreen(repository: HyuskRepository) {
-    val runs by repository.runs.collectAsState(initial = emptyList())
+private fun ActivityScreen(
+    repository: HyuskRepository,
+    activeSessionId: String?,
+    onNewConversation: () -> Unit,
+    onContinueConversation: (String) -> Unit,
+    onResumeTask: (String) -> Unit,
+) {
+    val sessions by repository.sessions.collectAsState(initial = emptyList())
+    var selectedSessionId by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(repository) { repository.markStaleRunsInterrupted() }
-    Screen("Runs") {
-        Text("Recent activity", color = UiPearl, style = MaterialTheme.typography.headlineSmall)
-        Text("${runs.size} run${if (runs.size == 1) "" else "s"} stored locally", color = UiMuted)
-        if (runs.isEmpty()) {
-            EmptyState("Nothing recorded", "Workflow runs and agent tasks will appear here.")
+    val visibleSessionId = selectedSessionId ?: activeSessionId ?: sessions.firstOrNull()?.id ?: "legacy"
+    val selectedSession = sessions.firstOrNull { it.id == visibleSessionId }
+
+    Screen("Chats") {
+        if (selectedSessionId == null) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Conversations", color = UiPearl, style = MaterialTheme.typography.headlineSmall)
+                    Text("Pick up where you left off, or start a fresh chat.", color = UiMuted)
+                }
+                Button(onClick = onNewConversation) { Icon(Icons.Default.Add, contentDescription = null); Text("New") }
+            }
+            if (sessions.isEmpty()) {
+                EmptyState("No conversations yet", "Your phone conversations will be saved here.")
+            } else {
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(sessions, key = { it.id }) { session ->
+                        Card(
+                            Modifier.fillMaxWidth().clickable { selectedSessionId = session.id },
+                            colors = CardDefaults.cardColors(containerColor = UiPanelRaised),
+                        ) {
+                            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(session.title.ifBlank { "New conversation" }, color = UiPearl, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    Text("${if (session.active) "Current chat · " else ""}${formatRecordTime(session.updatedAt)}", color = UiMuted, style = MaterialTheme.typography.bodySmall)
+                                }
+                                TextButton(onClick = { onContinueConversation(session.id) }) { Text("Continue") }
+                            }
+                        }
+                    }
+                }
+            }
         } else {
-            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(runs, key = { it.id }) { run -> RunCard(run) }
+            ChatSessionDetail(
+                repository = repository,
+                sessionId = visibleSessionId,
+                title = selectedSession?.title ?: "Conversation",
+                updatedAt = selectedSession?.updatedAt,
+                onBack = { selectedSessionId = null },
+                onContinue = { onContinueConversation(visibleSessionId) },
+                onResume = { onResumeTask(visibleSessionId) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ColumnScope.ChatSessionDetail(
+    repository: HyuskRepository,
+    sessionId: String,
+    title: String,
+    updatedAt: Long?,
+    onBack: () -> Unit,
+    onContinue: () -> Unit,
+    onResume: () -> Unit,
+) {
+    val turns by repository.conversation(sessionId).collectAsState(initial = emptyList())
+    val runs by repository.runs.collectAsState(initial = emptyList())
+    val sessionRuns = runs.filter { it.sessionId == sessionId }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "All conversations", tint = UiPearl)
+        }
+        Column(Modifier.weight(1f)) {
+            Text(title, color = UiPearl, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            updatedAt?.let { Text(formatRecordTime(it), color = UiMuted, style = MaterialTheme.typography.bodySmall) }
+        }
+        TextButton(onClick = onContinue) { Text("Continue") }
+    }
+    if (turns.isEmpty() && sessionRuns.isEmpty()) {
+        EmptyState("Conversation is empty", "Messages and task outcomes will appear here.")
+    } else {
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(turns, key = { "turn-${it.id}" }) { turn -> ConversationTurnCard(turn) }
+            if (sessionRuns.isNotEmpty()) {
+                item(key = "task-history-heading") {
+                    Text("Tasks in this conversation", color = UiPearl, style = MaterialTheme.typography.titleMedium)
+                }
+                items(sessionRuns, key = { "run-${it.id}" }) { run ->
+                    when (run.status) {
+                        "paused", "interrupted" -> RunCard(run, onResume = onResume)
+                        else -> RunCard(run)
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun RunCard(run: RunSummary) {
+private fun ConversationTurnCard(turn: ConversationTurn) {
+    val isUser = turn.role == "user"
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = if (isUser) Color(0xFF202A38) else UiPanelRaised),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(if (isUser) "You" else "Hyusk", color = if (isUser) Color(0xFFB7C4FF) else MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+            Text(turn.content, color = UiPearl, style = MaterialTheme.typography.bodyMedium)
+            Text(formatRecordTime(turn.createdAt), color = UiMuted, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+private fun RunCard(run: RunSummary, onResume: (() -> Unit)? = null) {
     val statusColor = when (run.status) {
         "completed" -> Color(0xFF78E6AA)
         "failed" -> MaterialTheme.colorScheme.error
@@ -1244,6 +1406,11 @@ private fun RunCard(run: RunSummary) {
                 color = UiMuted,
                 style = MaterialTheme.typography.bodySmall,
             )
+            if (onResume != null && run.status in setOf("paused", "interrupted")) {
+                OutlinedButton(onClick = onResume) { Text("Resume task") }
+            } else if (run.status == "awaiting_user") {
+                Text("Hyusk is waiting for your reply in this conversation.", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }

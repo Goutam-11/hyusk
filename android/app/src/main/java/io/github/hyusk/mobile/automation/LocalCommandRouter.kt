@@ -3,12 +3,25 @@ package io.github.hyusk.mobile.automation
 import android.content.Context
 import org.json.JSONObject
 
+internal fun mediaCommandAction(text: String): String? = when (
+    text.lowercase().trim().replace(Regex("\\s+"), " ")
+) {
+    "play", "resume", "resume music", "play music", "play some music", "play a song", "play song", "play songs" -> "media.play"
+    "pause", "pause music", "pause the music", "stop music", "stop the music" -> "media.pause"
+    "play pause", "toggle music" -> "media.play_pause"
+    "next song", "next track", "skip song", "skip track" -> "media.next"
+    "previous song", "previous track", "back a song" -> "media.previous"
+    "is music playing", "is anything playing", "check music playback" -> "media.status"
+    else -> null
+}
+
 /** Fast, LLM-free phone vocabulary for common commands. */
 class LocalCommandRouter(context: Context) {
     private val executor = DeviceActionExecutor(context)
 
     fun execute(text: String): ActionResult? {
         val command = text.trim()
+        mediaCommandAction(command)?.let { return executor.execute(it, JSONObject()) }
         if (command.equals("go back", true) || command.equals("back", true)) return executor.execute("system.back", JSONObject())
         if (command.equals("go home", true) || command.equals("home", true)) return executor.execute("system.home", JSONObject())
         if (command.equals("show notifications", true)) return executor.execute("system.notifications", JSONObject())
@@ -16,9 +29,6 @@ class LocalCommandRouter(context: Context) {
         if (command.equals("show recent apps", true) || command.equals("open recents", true)) return executor.execute("system.recents", JSONObject())
         if (command.equals("volume up", true) || command.equals("increase volume", true)) return executor.execute("volume.up", JSONObject())
         if (command.equals("volume down", true) || command.equals("decrease volume", true)) return executor.execute("volume.down", JSONObject())
-        if (command.equals("play", true) || command.equals("pause", true) || command.equals("play pause", true)) return executor.execute("media.play_pause", JSONObject())
-        if (command.equals("next song", true) || command.equals("next track", true)) return executor.execute("media.next", JSONObject())
-        if (command.equals("previous song", true) || command.equals("previous track", true)) return executor.execute("media.previous", JSONObject())
         Regex("^(?:search(?: the)? web for|google)\\s+(.+)$", RegexOption.IGNORE_CASE).find(command)?.let {
             return executor.execute("web.search", JSONObject().put("query", it.groupValues[1]))
         }

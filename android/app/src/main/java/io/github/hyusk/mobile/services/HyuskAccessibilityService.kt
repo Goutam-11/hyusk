@@ -2,12 +2,25 @@ package io.github.hyusk.mobile.services
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import android.util.Log
+import com.google.android.gms.tasks.Task
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.util.ArrayDeque
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONArray
@@ -27,23 +40,205 @@ internal fun accessibilityTextMatchRank(text: String?, description: String?, que
     }
 }
 
+internal fun accessibilityControlLabel(text: String?, description: String?, descendantLabels: Iterable<String>): String? =
+    listOfNotNull(text, description).firstOrNull { it.isNotBlank() }
+        ?: descendantLabels.firstOrNull { it.isNotBlank() }
+
+internal fun swipeCoordinatesWithinDisplay(x1: Float, y1: Float, x2: Float, y2: Float, width: Int, height: Int): Boolean {
+    return pointWithinDisplay(x1, y1, width, height) && pointWithinDisplay(x2, y2, width, height)
+}
+
+internal fun pointWithinDisplay(x: Float, y: Float, width: Int, height: Int): Boolean =
+    width > 0 && height > 0 && x.isFinite() && y.isFinite() && x >= 0f && y >= 0f && x < width && y < height
+
+internal fun normalizedScrollDirection(direction: String): String? = when (direction.trim().lowercase()) {
+    "forward", "down" -> "forward"
+    "backward", "up" -> "backward"
+    else -> null
+}
+
+internal fun accessibilityWindowPriority(
+    isIme: Boolean,
+    isExternal: Boolean,
+    isApplication: Boolean,
+    isFocused: Boolean,
+    isActive: Boolean,
+): Int? = when {
+    isIme -> null
+    isExternal && isApplication && isFocused -> 0
+    isExternal && isApplication && isActive -> 1
+    isExternal && isFocused -> 2
+    isExternal && isActive -> 3
+    isExternal && isApplication -> 4
+    isExternal -> 5
+    isFocused -> 6
+    isActive -> 7
+    else -> 8
+}
+
+internal data class ScrollSwipeCoordinates(val startX: Float, val startY: Float, val endX: Float, val endY: Float)
+
+internal fun scrollSwipeCoordinates(
+    left: Int,
+    top: Int,
+    right: Int,
+    bottom: Int,
+    width: Int,
+    height: Int,
+    direction: String,
+): ScrollSwipeCoordinates? {
+    if (width <= 0 || height <= 0) return null
+    val normalized = normalizedScrollDirection(direction) ?: return null
+    val clippedLeft = left.coerceIn(0, width)
+    val clippedTop = top.coerceIn(0, height)
+    val clippedRight = right.coerceIn(0, width)
+    val clippedBottom = bottom.coerceIn(0, height)
+    val clippedWidth = clippedRight - clippedLeft
+    val clippedHeight = clippedBottom - clippedTop
+    if (clippedWidth <= 0 || clippedHeight < 2) return null
+    val centerX = clippedLeft + clippedWidth / 2f
+    val nearY = clippedTop + clippedHeight * 0.2f
+    val farY = clippedTop + clippedHeight * 0.8f
+    return if (normalized == "forward") ScrollSwipeCoordinates(centerX, farY, centerX, nearY)
+    else ScrollSwipeCoordinates(centerX, nearY, centerX, farY)
+}
+
+internal data class AccessibilityTextTarget(val text: String?, val description: String?, val bounds: String)
+
+/** Duplicate accessible labels are safe only when they resolve to the same physical target. */
+internal fun hasUniqueBestAccessibilityTarget(candidates: List<AccessibilityTextTarget>, query: String): Boolean {
+    if (candidates.isEmpty()) return false
+    val bestRank = candidates.minOf { accessibilityTextMatchRank(it.text, it.description, query) }
+    return candidates.asSequence()
+        .filter { accessibilityTextMatchRank(it.text, it.description, query) == bestRank }
+        .distinctBy(AccessibilityTextTarget::bounds)
+        .count() == 1
+}
+
 class HyuskAccessibilityService : AccessibilityService() {
     companion object {
+        private const val TAG = "HyuskAccessibility"
         private val _connected = MutableStateFlow(false)
         val connected: StateFlow<Boolean> = _connected
-        var instance: HyuskAccessibilityService? = null
+        @Volatile var instance: HyuskAccessibilityService? = null
             private set
     }
 
-    override fun onServiceConnected() { super.onServiceConnected(); instance = this; _connected.value = true }
-    override fun onDestroy() { instance = null; _connected.value = false; super.onDestroy() }
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        instance = this
+        _connected.value = true
+        Log.i(TAG, "Accessibility service connected")
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        markDisconnected("unbound")
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        markDisconnected("destroyed")
+        super.onDestroy()
+    }
+
+    private fun markDisconnected(reason: String) {
+        if (instance === this) {
+            instance = null
+            _connected.value = false
+            Log.w(TAG, "Accessibility service $reason")
+        }
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) { /* events are consumed by workflow runs on demand */ }
     override fun onInterrupt() = Unit
 
     fun snapshot(): UiNodeSnapshot? = targetWindowRoot()?.let(::readNode)
 
     fun snapshotJson(): JSONObject? = targetWindowRoot()?.let { root ->
-        nodeJson(root).put("interactive_controls", interactiveControls(root))
+        val tree = nodeJson(root)
+        val controls = interactiveControls(root)
+        val controlsTruncated = controls.optJSONObject(controls.length() - 1)?.optBoolean("truncated") == true
+        tree.put("interactive_controls", controls)
+            .put("window", JSONObject()
+                .put("package", root.packageName?.toString().orEmpty())
+                .put("class", root.className?.toString().orEmpty())
+                .put("focused", root.isFocused)
+                .put("active", root.isAccessibilityFocused))
+            .put("truncation", JSONObject()
+                .put("tree", containsTruncatedNode(tree))
+                .put("interactive_controls", controlsTruncated)
+                .put("visible_text", false))
+    }
+
+    private fun containsTruncatedNode(value: JSONObject): Boolean {
+        if (value.optBoolean("truncated")) return true
+        val children = value.optJSONArray("children") ?: return false
+        return (0 until children.length()).any { children.optJSONObject(it)?.let(::containsTruncatedNode) == true }
+    }
+
+    /** Captures only on request and returns local OCR text/rectangles; the bitmap is never persisted. */
+    suspend fun screenshotText(): JSONObject = withContext(Dispatchers.Default) {
+        val bitmap = captureScreenshotBitmap()
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        try {
+            val recognized = recognizer.process(InputImage.fromBitmap(bitmap, 0)).awaitValue()
+            val lines = JSONArray()
+            val text = StringBuilder()
+            recognized.textBlocks.asSequence().flatMap { it.lines.asSequence() }.take(100).forEach { line ->
+                val value = line.text.trim()
+                if (value.isNotBlank()) {
+                    if (text.isNotEmpty()) text.append('\n')
+                    text.append(value)
+                    val bounds = line.boundingBox
+                    val rect = JSONArray()
+                    if (bounds != null) listOf(bounds.left, bounds.top, bounds.right, bounds.bottom).forEach(rect::put)
+                    lines.put(JSONObject().put("text", value).put("bounds", rect))
+                }
+            }
+            JSONObject()
+                .put("source", "on_device_screenshot_ocr")
+                .put("width", bitmap.width)
+                .put("height", bitmap.height)
+                .put("text", text.toString().take(8_000))
+                .put("lines", lines)
+        } finally {
+            recognizer.close()
+            bitmap.recycle()
+        }
+    }
+
+    private suspend fun captureScreenshotBitmap(): Bitmap = suspendCancellableCoroutine { continuation ->
+        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+            override fun onSuccess(screenshot: ScreenshotResult) {
+                val hardwareBuffer = screenshot.hardwareBuffer
+                var hardwareBitmap: Bitmap? = null
+                try {
+                    val wrapped = Bitmap.wrapHardwareBuffer(hardwareBuffer, screenshot.colorSpace)
+                        ?: error("Android returned an empty screenshot buffer")
+                    hardwareBitmap = wrapped
+                    val bitmap = wrapped.copy(Bitmap.Config.ARGB_8888, false)
+                        ?: error("Could not copy the screenshot for OCR")
+                    if (continuation.isActive) continuation.resume(bitmap) else bitmap.recycle()
+                } catch (failure: Exception) {
+                    if (continuation.isActive) continuation.resumeWithException(failure)
+                } finally {
+                    hardwareBitmap?.recycle()
+                    hardwareBuffer.close()
+                }
+            }
+
+            override fun onFailure(errorCode: Int) {
+                if (continuation.isActive) continuation.resumeWithException(
+                    IllegalStateException("Android screenshot capture failed (code $errorCode). Check that Hyusk Accessibility is enabled and screenshot access is allowed."),
+                )
+            }
+        })
+    }
+
+    private suspend fun <T> Task<T>.awaitValue(): T = suspendCancellableCoroutine { continuation ->
+        addOnSuccessListener { value -> if (continuation.isActive) continuation.resume(value) }
+        addOnFailureListener { failure -> if (continuation.isActive) continuation.resumeWithException(failure) }
+        addOnCanceledListener { continuation.cancel() }
     }
 
     fun click(node: AccessibilityNodeInfo): Boolean = EmergencyStop.allowAction() && node.refresh() &&
@@ -61,13 +256,15 @@ class HyuskAccessibilityService : AccessibilityService() {
     fun tap(x: Float, y: Float): Boolean {
         if (!EmergencyStop.allowAction()) return false
         val metrics = resources.displayMetrics
-        if (x !in 0f..metrics.widthPixels.toFloat() || y !in 0f..metrics.heightPixels.toFloat()) return false
+        if (!pointWithinDisplay(x, y, metrics.widthPixels, metrics.heightPixels)) return false
         val path = Path().apply { moveTo(x, y) }
         return dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 50)).build(), null, null)
     }
 
     fun swipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long): Boolean {
         if (!EmergencyStop.allowAction()) return false
+        val metrics = resources.displayMetrics
+        if (!swipeCoordinatesWithinDisplay(x1, y1, x2, y2, metrics.widthPixels, metrics.heightPixels)) return false
         val path = Path().apply { moveTo(x1, y1); lineTo(x2, y2) }
         return dispatchGesture(
             GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, durationMs.coerceIn(100, 2_000))).build(),
@@ -148,15 +345,37 @@ class HyuskAccessibilityService : AccessibilityService() {
 
     fun longClickText(text: String): Boolean {
         val root = targetWindowRoot() ?: return false
-        for (match in findNodes(root, text)) {
-            var current: AccessibilityNodeInfo? = match
-            while (current != null) {
-                if (current.isClickable && EmergencyStop.allowAction() && current.refresh() && current.isEnabled &&
-                    current.isVisibleToUser && current.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) return true
-                current = current.parent
+        val matches = findNodes(root, text)
+        if (matches.isEmpty()) return false
+        val bestRank = matches.minOf { accessibilityTextMatchRank(it.text?.toString(), it.contentDescription?.toString(), text) }
+        val targets = matches.asSequence()
+            .filter { accessibilityTextMatchRank(it.text?.toString(), it.contentDescription?.toString(), text) == bestRank }
+            .mapNotNull { match ->
+                var current: AccessibilityNodeInfo? = match
+                while (current != null) {
+                    if (current.isClickable && current.isEnabled && current.isVisibleToUser) {
+                        val clickable = current
+                        val bounds = Rect().also(clickable::getBoundsInScreen)
+                        return@mapNotNull ClickCandidate(
+                            clickable,
+                            bounds,
+                            match.text?.toString() ?: match.contentDescription?.toString().orEmpty(),
+                        )
+                    }
+                    current = current.parent
+                }
+                null
             }
+            .distinctBy { it.bounds.toShortString() }
+            .toList()
+        val targetKeys = targets.map { candidate ->
+            AccessibilityTextTarget(candidate.label, null, candidate.bounds.toShortString())
         }
-        return false
+        if (!hasUniqueBestAccessibilityTarget(targetKeys, text)) return false
+        val target = targets.singleOrNull() ?: return false
+        return EmergencyStop.allowAction() && target.node.refresh() && target.node.isEnabled &&
+            target.node.isVisibleToUser && target.node.isClickable &&
+            target.node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
     }
 
     fun setTextInFocusedOrMatching(target: String, text: String): Boolean {
@@ -192,14 +411,36 @@ class HyuskAccessibilityService : AccessibilityService() {
 
     fun scroll(direction: String): Boolean {
         if (!EmergencyStop.allowAction()) return false
-        val action = if (direction.equals("backward", true) || direction.equals("up", true))
+        val normalizedDirection = normalizedScrollDirection(direction) ?: return false
+        val action = if (normalizedDirection == "backward")
             AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD else AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
-        var node: AccessibilityNodeInfo? = targetWindowRoot()
-        while (node != null) {
-            if (node.isScrollable && node.refresh() && node.isEnabled && node.isVisibleToUser && node.performAction(action)) return true
-            node = firstScrollableChild(node)
+        val root = targetWindowRoot() ?: return false
+        val pending = ArrayDeque<AccessibilityNodeInfo>()
+        var largestScrollableBounds: Rect? = null
+        var largestScrollableArea = 0L
+        pending.add(root)
+        while (pending.isNotEmpty()) {
+            val node = pending.removeFirst()
+            if (node.isScrollable && node.refresh() && node.isEnabled && node.isVisibleToUser) {
+                if (node.performAction(action)) return true
+                val bounds = Rect().also(node::getBoundsInScreen)
+                if (bounds.intersect(0, 0, resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels)) {
+                    val area = bounds.width().toLong() * bounds.height()
+                    if (area > largestScrollableArea) {
+                        largestScrollableArea = area
+                        largestScrollableBounds = bounds
+                    }
+                }
+            }
+            for (index in 0 until node.childCount) node.getChild(index)?.let(pending::addLast)
         }
-        return false
+        val bounds = largestScrollableBounds ?: return false
+        val metrics = resources.displayMetrics
+        val coordinates = scrollSwipeCoordinates(
+            bounds.left, bounds.top, bounds.right, bounds.bottom,
+            metrics.widthPixels, metrics.heightPixels, normalizedDirection,
+        ) ?: return false
+        return swipe(coordinates.startX, coordinates.startY, coordinates.endX, coordinates.endY, 500)
     }
 
     private fun findNodes(root: AccessibilityNodeInfo, query: String): List<AccessibilityNodeInfo> {
@@ -236,13 +477,17 @@ class HyuskAccessibilityService : AccessibilityService() {
     private fun targetWindowRoot(): AccessibilityNodeInfo? {
         val candidates = runCatching { windows }.getOrDefault(emptyList()).mapNotNull { window ->
             val root = runCatching { window.root }.getOrNull() ?: return@mapNotNull null
-            Triple(window, root, root.packageName?.toString())
+            val packageName = root.packageName?.toString()
+            val priority = accessibilityWindowPriority(
+                isIme = window.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD,
+                isExternal = packageName != this.packageName,
+                isApplication = window.type == AccessibilityWindowInfo.TYPE_APPLICATION,
+                isFocused = window.isFocused,
+                isActive = window.isActive,
+            ) ?: return@mapNotNull null
+            priority to root
         }
-        val external = candidates.filter { (_, _, packageName) -> packageName != this.packageName }
-        return external.firstOrNull { (window, _, _) -> window.isFocused && window.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD }?.second
-            ?: external.firstOrNull { (window, _, _) -> window.isActive && window.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD }?.second
-            ?: external.firstOrNull { (window, _, _) -> window.type == AccessibilityWindowInfo.TYPE_APPLICATION }?.second
-            ?: candidates.firstOrNull { (window, _, _) -> window.isFocused }?.second
+        return candidates.minByOrNull { it.first }?.second
             ?: rootInActiveWindow
     }
 
@@ -254,22 +499,13 @@ class HyuskAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun firstScrollableChild(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        for (index in 0 until node.childCount) {
-            val child = node.getChild(index) ?: continue
-            if (child.isScrollable) return child
-            firstScrollableChild(child)?.let { return it }
-        }
-        return null
-    }
-
     @Suppress("DEPRECATION")
     private fun nodeJson(node: AccessibilityNodeInfo, depth: Int = 0, budget: IntArray = intArrayOf(180)): JSONObject {
         if (budget[0]-- <= 0) return JSONObject().put("truncated", true)
         val children = JSONArray()
         if (depth < 8) for (index in 0 until node.childCount) node.getChild(index)?.let { child ->
             if (child.isVisibleToUser) children.put(nodeJson(child, depth + 1, budget))
-        }
+        } else if (node.childCount > 0) children.put(JSONObject().put("truncated", true))
         val bounds = Rect().also(node::getBoundsInScreen)
         val result = JSONObject()
             .put("class", node.className?.toString())
@@ -300,8 +536,11 @@ class HyuskAccessibilityService : AccessibilityService() {
         while (pending.isNotEmpty() && inspected++ < 1_200) {
             val (node, depth) = pending.removeFirst()
             if (!node.isVisibleToUser || depth > 12) continue
-            val label = node.text?.toString()?.takeIf(String::isNotBlank)
-                ?: node.contentDescription?.toString()?.takeIf(String::isNotBlank)
+            val label = accessibilityControlLabel(
+                node.text?.toString(),
+                node.contentDescription?.toString(),
+                if (node.isClickable) descendantLabels(node) else emptyList(),
+            )
             if (node.isClickable || node.isEditable || node.isScrollable || node.isFocused) {
                 val bounds = Rect().also(node::getBoundsInScreen)
                 controls += controlPriority(node) to JSONObject()
@@ -309,6 +548,7 @@ class HyuskAccessibilityService : AccessibilityService() {
                     .put("id", node.viewIdResourceName.orEmpty())
                     .put("class", node.className?.toString().orEmpty())
                     .put("clickable", node.isClickable)
+                    .put("enabled", node.isEnabled)
                     .put("editable", node.isEditable)
                     .put("scrollable", node.isScrollable)
                     .put("focused", node.isFocused)
@@ -322,6 +562,20 @@ class HyuskAccessibilityService : AccessibilityService() {
             controls.sortedBy { it.first }.take(40).forEach { put(it.second) }
             if (inspected >= 1_200) put(JSONObject().put("truncated", true))
         }
+    }
+
+    private fun descendantLabels(node: AccessibilityNodeInfo): List<String> {
+        val pending = ArrayDeque<AccessibilityNodeInfo>()
+        for (index in 0 until node.childCount) node.getChild(index)?.let(pending::addLast)
+        while (pending.isNotEmpty()) {
+            val child = pending.removeFirst()
+            if (!child.isVisibleToUser) continue
+            val label = child.text?.toString()?.takeIf(String::isNotBlank)
+                ?: child.contentDescription?.toString()?.takeIf(String::isNotBlank)
+            if (label != null) return listOf(label)
+            for (index in 0 until child.childCount) child.getChild(index)?.let(pending::addLast)
+        }
+        return emptyList()
     }
 
     private fun controlPriority(node: AccessibilityNodeInfo): Int = when {

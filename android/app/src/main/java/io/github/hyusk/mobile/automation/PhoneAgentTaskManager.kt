@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import io.github.hyusk.mobile.MainActivity
 import io.github.hyusk.mobile.R
+import io.github.hyusk.mobile.services.PhoneTaskForegroundService
 import io.github.hyusk.mobile.data.HyuskRepository
 import io.github.hyusk.mobile.network.LocalModelClient
 import io.github.hyusk.mobile.security.LocalModelSettingsStore
@@ -48,9 +49,37 @@ class PhoneAgentTaskManager private constructor(private val context: Context) {
     private val recoveryJob = scope.launch { repository.pauseOrphanedActiveRuns() }
     private val mutableState = MutableStateFlow(PhoneTaskState())
     val state = mutableState.asStateFlow()
+    private val mutableSessionId = MutableStateFlow<String?>(null)
+    val activeSessionId = mutableSessionId.asStateFlow()
+    private val sessionInitialization = scope.launch {
+        recoveryJob.join()
+        val sessionId = repository.ensureActiveSession()
+        mutableSessionId.value = sessionId
+        repository.latestPausedAgentRun(sessionId)?.second?.let { state ->
+            val prompt = state.optString("prompt").take(72)
+            publish(
+                PhoneTaskPhase.Paused,
+                "A saved task was interrupted${if (prompt.isBlank()) "" else ": $prompt"}. Say continue to resume it.",
+            )
+        }
+    }
     private var activeJob: Job? = null
     private var pendingReplacement: String? = null
     private var revision = 0L
+
+    suspend fun startNewConversation(): String {
+        check(activeJob?.isActive != true) { "Stop the current phone task before changing conversations." }
+        val id = repository.createSession()
+        mutableSessionId.value = id
+        return id
+    }
+
+    suspend fun selectConversation(id: String): Boolean {
+        check(activeJob?.isActive != true) { "Stop the current phone task before changing conversations." }
+        val selected = repository.activateSession(id)
+        if (selected) mutableSessionId.value = id
+        return selected
+    }
 
     fun submit(prompt: String): Boolean {
         if (prompt.isBlank()) return false
@@ -61,20 +90,25 @@ class PhoneAgentTaskManager private constructor(private val context: Context) {
             activeJob?.cancel(UserStoppedTask())
             return true
         }
-        publish(PhoneTaskPhase.Working, "Working…")
+        val backgroundProtected = startForegroundWork()
+        publish(
+            PhoneTaskPhase.Working,
+            if (backgroundProtected) "Working…" else "Working, but Android background protection could not start. Keep Hyusk open while I work.",
+        )
         val task = scope.launch(start = CoroutineStart.LAZY) {
             try {
-                recoveryJob.join()
+                sessionInitialization.join()
                 val selectedSettings = settings.settings.first()
+                val sessionId = mutableSessionId.value ?: repository.ensureActiveSession().also { mutableSessionId.value = it }
                 var result = agent.run(prompt, selectedSettings, { progress ->
                     publish(PhoneTaskPhase.Working, progress.text, progress.shouldSpeak)
-                })
+                }, sessionId = sessionId)
                 var windows = 1
                 while (result.autoContinue && windows < MAX_EXECUTION_WINDOWS) {
                     publish(PhoneTaskPhase.Working, "Continuing from verified progress…")
                     result = agent.run("continue", selectedSettings, { progress ->
                         publish(PhoneTaskPhase.Working, progress.text, progress.shouldSpeak)
-                    }, internalContinuation = true)
+                    }, internalContinuation = true, sessionId = sessionId)
                     windows++
                 }
                 if (result.autoContinue) {
@@ -91,6 +125,7 @@ class PhoneAgentTaskManager private constructor(private val context: Context) {
                 if (cancelled is UserStoppedTask) {
                     if (pendingReplacement == null) {
                         publish(PhoneTaskPhase.Finished, "Stopped. Send a new request whenever you're ready.")
+                        runCatching { notifyFinished(PhoneTaskPhase.Finished) }
                     }
                 } else {
                     publish(PhoneTaskPhase.Paused, "Interrupted. Verified progress is saved; say continue to resume.")
@@ -104,7 +139,7 @@ class PhoneAgentTaskManager private constructor(private val context: Context) {
                 pendingReplacement?.let { next ->
                     pendingReplacement = null
                     submit(next)
-                }
+                } ?: stopForegroundWork()
             }
         }
         activeJob = task
@@ -115,6 +150,21 @@ class PhoneAgentTaskManager private constructor(private val context: Context) {
     fun stop() {
         pendingReplacement = null
         activeJob?.cancel(UserStoppedTask())
+    }
+
+    private fun startForegroundWork(): Boolean {
+        val intent = Intent(context, PhoneTaskForegroundService::class.java)
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+            else context.startService(intent)
+            true
+        }.onFailure { failure ->
+            android.util.Log.w("HyuskPhoneTask", "Could not start foreground task notification", failure)
+        }.getOrDefault(false)
+    }
+
+    private fun stopForegroundWork() {
+        runCatching { context.stopService(Intent(context, PhoneTaskForegroundService::class.java)) }
     }
 
     private fun publish(phase: PhoneTaskPhase, message: String, speakProgress: Boolean = false, needsReply: Boolean = false) {

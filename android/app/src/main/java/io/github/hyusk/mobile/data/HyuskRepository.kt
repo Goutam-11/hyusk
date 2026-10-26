@@ -3,6 +3,7 @@ package io.github.hyusk.mobile.data
 import android.content.Context
 import io.github.hyusk.mobile.security.EncryptedPayload
 import java.util.UUID
+import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import org.json.JSONObject
@@ -24,7 +25,11 @@ data class RunSummary(
     val status: String,
     val completedSteps: Int,
     val updatedAt: Long,
+    val sessionId: String,
 )
+
+data class SessionSummary(val id: String, val title: String, val active: Boolean, val updatedAt: Long)
+data class ConversationTurn(val id: Long, val role: String, val content: String, val createdAt: Long)
 
 /** Small local data boundary for the screens that manage synced records. */
 class HyuskRepository(context: Context) : AutoCloseable {
@@ -32,6 +37,9 @@ class HyuskRepository(context: Context) : AutoCloseable {
     private val payload = EncryptedPayload(context.applicationContext)
 
     val workflows: Flow<List<WorkflowEntity>> = database.workflows().observe()
+    val sessions: Flow<List<SessionSummary>> = database.agentSessions().observe().map { records ->
+        records.map { SessionSummary(it.id, it.title, it.active, it.updatedAt) }
+    }
     val memories: Flow<List<MemorySummary>> = database.memories().observe().map { records ->
         records.mapNotNull { memory ->
             runCatching {
@@ -60,15 +68,57 @@ class HyuskRepository(context: Context) : AutoCloseable {
                     status = run.status,
                     completedSteps = state.optInt("completed_steps", 0),
                     updatedAt = run.updatedAt,
+                    sessionId = run.sessionId,
                 )
             }.getOrNull()
         }
     }
 
-    suspend fun recordTurn(role: String, content: String) {
+    fun conversation(sessionId: String): Flow<List<ConversationTurn>> = database.agentTurns().observe(sessionId).map { records ->
+        records.mapNotNull { turn ->
+            runCatching {
+                ConversationTurn(turn.id, turn.role, payload.decrypt(turn.encryptedContent), turn.createdAt)
+            }.getOrNull()
+        }
+    }
+
+    suspend fun ensureActiveSession(): String = database.withTransaction {
+        database.agentSessions().active()?.id ?: run {
+            val now = System.currentTimeMillis()
+            val id = UUID.randomUUID().toString()
+            database.agentSessions().deactivateAll()
+            database.agentSessions().insert(AgentSessionEntity(id, "New conversation", true, now, now))
+            id
+        }
+    }
+
+    suspend fun createSession(): String {
+        val now = System.currentTimeMillis()
+        val id = UUID.randomUUID().toString()
+        database.withTransaction {
+            database.agentSessions().deactivateAll()
+            database.agentSessions().insert(AgentSessionEntity(id, "New conversation", true, now, now))
+        }
+        return id
+    }
+
+    suspend fun activateSession(id: String): Boolean = database.withTransaction {
+        val session = database.agentSessions().get(id) ?: return@withTransaction false
+        database.agentSessions().deactivateAll()
+        database.agentSessions().update(session.copy(active = true, updatedAt = System.currentTimeMillis()))
+        true
+    }
+
+    suspend fun recordTurn(role: String, content: String, sessionId: String? = null) {
         if (content.isBlank()) return
-        database.agentTurns().insert(AgentTurnEntity(role = role, encryptedContent = payload.encrypt(content.trim())))
-        database.agentTurns().trim(300)
+        val id = sessionId ?: ensureActiveSession()
+        val clean = content.trim()
+        database.agentTurns().insert(AgentTurnEntity(role = role, encryptedContent = payload.encrypt(clean), sessionId = id))
+        database.agentSessions().get(id)?.let { session ->
+            val title = if (role == "user" && session.title == "New conversation") clean.replace(Regex("\\s+"), " ").take(64) else session.title
+            database.agentSessions().update(session.copy(title = title, updatedAt = System.currentTimeMillis()))
+        }
+        database.agentTurns().trimSession(id, 300)
     }
 
     suspend fun remember(content: String, kind: String = "fact"): String {
@@ -88,10 +138,34 @@ class HyuskRepository(context: Context) : AutoCloseable {
         return id
     }
 
+    suspend fun updateMemory(id: String, content: String, kind: String = "fact"): Boolean {
+        val clean = content.trim()
+        require(clean.isNotBlank()) { "Memory cannot be empty" }
+        val current = database.memories().get(id) ?: return false
+        if (current.deleted) return false
+        database.memories().update(current.copy(
+            kind = kind.trim().ifBlank { current.kind },
+            encryptedPayload = payload.encrypt(clean),
+        ))
+        return true
+    }
+
+    suspend fun forgetMemory(id: String): Boolean {
+        val current = database.memories().get(id) ?: return false
+        if (current.deleted) return false
+        database.memories().update(current.copy(deleted = true))
+        return true
+    }
+
     suspend fun memoryContext(query: String): String {
+        val sessionId = ensureActiveSession()
+        return memoryContext(query, sessionId)
+    }
+
+    suspend fun memoryContext(query: String, sessionId: String): String {
         var skippedCurrentRequest = false
         val queryWords = words(query)
-        val allTurns = database.agentTurns().latest(300).mapNotNull { turn ->
+        val allTurns = database.agentTurns().latest(sessionId, 300).mapNotNull { turn ->
             runCatching { turn.role to payload.decrypt(turn.encryptedContent) }.getOrNull()
         }.filterNot { (role, content) ->
             // PhoneAgent records the current request before building context so
@@ -114,7 +188,7 @@ class HyuskRepository(context: Context) : AutoCloseable {
             runCatching { memory to payload.decrypt(memory.encryptedPayload) }.getOrNull()
         }.sortedByDescending { (_, text) -> words(text).count(queryWords::contains) }
             .take(8)
-            .map { (memory, text) -> "${memory.kind}: $text" }
+            .map { (memory, text) -> "[id=${memory.id}] ${memory.kind}: $text" }
         return buildString {
             if (facts.isNotEmpty()) appendLine("Saved memory:\n${facts.joinToString("\n")}")
             if (relevantOlderTurns.isNotEmpty()) appendLine("Earlier relevant conversation:\n${relevantOlderTurns.joinToString("\n")}")
@@ -130,23 +204,23 @@ class HyuskRepository(context: Context) : AutoCloseable {
         database.memories().deleteAll()
     }
 
-    suspend fun saveAgentRun(id: String, state: JSONObject, status: String = "active") {
-        database.agentRuns().save(AgentRunEntity(id, payload.encrypt(state.toString()), status))
+    suspend fun saveAgentRun(id: String, state: JSONObject, status: String = "active", sessionId: String = state.optString("session_id", "legacy")) {
+        database.agentRuns().save(AgentRunEntity(id, payload.encrypt(state.toString()), status, sessionId = sessionId))
     }
 
-    suspend fun latestAgentRun(): Pair<String, JSONObject>? = database.agentRuns().latestActive()?.let { run ->
+    suspend fun latestAgentRun(sessionId: String): Pair<String, JSONObject>? = database.agentRuns().latestActive(sessionId)?.let { run ->
         runCatching { run.id to JSONObject(payload.decrypt(run.encryptedState)) }.getOrNull()
     }
 
     /** A model question or confirmation may survive an assistant UI/session restart. */
-    suspend fun latestAwaitingAgentRun(): Pair<String, JSONObject>? =
-        database.agentRuns().latestAwaitingUser()?.let { run ->
+    suspend fun latestAwaitingAgentRun(sessionId: String): Pair<String, JSONObject>? =
+        database.agentRuns().latestAwaitingUser(sessionId)?.let { run ->
             runCatching { run.id to JSONObject(payload.decrypt(run.encryptedState)) }.getOrNull()
         }
 
     /** Paused tasks are resumable only after the user explicitly says continue. */
-    suspend fun latestPausedAgentRun(): Pair<String, JSONObject>? =
-        database.agentRuns().latestPaused()?.let { run ->
+    suspend fun latestPausedAgentRun(sessionId: String): Pair<String, JSONObject>? =
+        database.agentRuns().latestPaused(sessionId)?.let { run ->
             runCatching { run.id to JSONObject(payload.decrypt(run.encryptedState)) }.getOrNull()
         }
 

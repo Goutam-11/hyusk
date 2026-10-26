@@ -4,9 +4,13 @@ import android.accessibilityservice.AccessibilityService
 import android.app.SearchManager
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
+import android.media.session.MediaController
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.net.Uri
 import android.os.BatteryManager
 import android.provider.AlarmClock
@@ -15,6 +19,7 @@ import android.provider.Settings
 import android.view.KeyEvent
 import io.github.hyusk.mobile.services.EmergencyStop
 import io.github.hyusk.mobile.services.HyuskAccessibilityService
+import io.github.hyusk.mobile.services.HyuskNotificationListenerService
 import org.json.JSONObject
 
 private fun normalizeAppName(value: String): String =
@@ -80,9 +85,12 @@ class DeviceActionExecutor(private val context: Context) {
                     args.optLong("duration_ms", 350),
                 ).asResult("Swiped")
                 "ui.press_enter" -> accessibility().pressEnter().asResult("Pressed enter")
+                "media.play" -> mediaKey(KeyEvent.KEYCODE_MEDIA_PLAY, "Play")
+                "media.pause" -> mediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE, "Pause")
                 "media.play_pause" -> mediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
                 "media.next" -> mediaKey(KeyEvent.KEYCODE_MEDIA_NEXT)
                 "media.previous" -> mediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+                "media.status" -> mediaStatus()
                 "volume.up" -> volume(AudioManager.ADJUST_RAISE)
                 "volume.down" -> volume(AudioManager.ADJUST_LOWER)
                 "device.status" -> deviceStatus()
@@ -315,12 +323,70 @@ class DeviceActionExecutor(private val context: Context) {
         )
     }
 
-    private fun mediaKey(code: Int): ActionResult {
+    private fun mediaKey(code: Int, label: String = "Media control"): ActionResult {
+        val controller = activeMediaController()
+        if (controller != null) {
+            when (code) {
+                KeyEvent.KEYCODE_MEDIA_PLAY -> controller.transportControls.play()
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> controller.transportControls.pause()
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                    val playing = controller.playbackState?.state in setOf(
+                        PlaybackState.STATE_PLAYING,
+                        PlaybackState.STATE_BUFFERING,
+                    )
+                    if (playing) controller.transportControls.pause() else controller.transportControls.play()
+                }
+                KeyEvent.KEYCODE_MEDIA_NEXT -> controller.transportControls.skipToNext()
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> controller.transportControls.skipToPrevious()
+                else -> return ActionResult(false, "Unsupported media key: $code")
+            }
+            val metadata = controller.metadata
+            val state = controller.playbackState?.state
+            return ActionResult(
+                true,
+                "$label requested from ${metadata?.description?.title ?: controller.packageName}",
+                JSONObject()
+                    .put("package", controller.packageName)
+                    .put("title", metadata?.description?.title?.toString().orEmpty())
+                    .put("playback_state", state)
+                    .put("requested_key", code),
+            )
+        }
+
+        // Preserve a system fallback for players that only register legacy media
+        // keys. Report that it was dispatched, not that playback was verified.
         val audio = context.getSystemService(AudioManager::class.java)
         audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
         audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
-        return ActionResult(true, "Media control sent")
+        return ActionResult(
+            true,
+            "$label command dispatched to Android; no active media session was available to verify it",
+            JSONObject().put("active_session", false).put("music_active", audio.isMusicActive).put("requested_key", code),
+        )
     }
+
+    private fun mediaStatus(): ActionResult {
+        val controller = activeMediaController()
+        val state = controller?.playbackState?.state
+        val playing = state == PlaybackState.STATE_PLAYING || state == PlaybackState.STATE_BUFFERING ||
+            context.getSystemService(AudioManager::class.java).isMusicActive
+        return ActionResult(
+            true,
+            if (playing) "Android reports active media playback" else "Android reports no active media playback",
+            JSONObject()
+                .put("playing", playing)
+                .put("active_session", controller != null)
+                .put("package", controller?.packageName.orEmpty())
+                .put("title", controller?.metadata?.description?.title?.toString().orEmpty())
+                .put("playback_state", state),
+        )
+    }
+
+    private fun activeMediaController(): MediaController? = runCatching {
+        context.getSystemService(MediaSessionManager::class.java)
+            .getActiveSessions(ComponentName(context, HyuskNotificationListenerService::class.java))
+            .firstOrNull()
+    }.getOrNull()
 
     private fun volume(direction: Int): ActionResult {
         context.getSystemService(AudioManager::class.java)

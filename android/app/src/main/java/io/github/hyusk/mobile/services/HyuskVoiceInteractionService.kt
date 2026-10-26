@@ -77,6 +77,8 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
     private var finalUtteranceId: String? = null
     private var utteranceCounter = 0L
     private var listenAfterFinalSpeech = false
+    private var idleTimeout: Runnable? = null
+    private var lastConversationActivityAt = 0L
 
     init {
         tts = TextToSpeech(sessionService) { status ->
@@ -94,14 +96,13 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
                         mainHandler.post {
                             if (utteranceId != finalUtteranceId) return@post
                             finalUtteranceId = null
+                            lastConversationActivityAt = SystemClock.elapsedRealtime()
                             if (listenAfterFinalSpeech) {
                                 listenAfterFinalSpeech = false
                                 beginListening()
                                 return@post
                             }
-                            setVisualState(AssistantVisualState.IDLE, "Done")
-                            val token = sessionToken
-                            mainHandler.postDelayed({ if (token == sessionToken) hide() }, 900)
+                            beginListening()
                         }
                     }
 
@@ -294,11 +295,13 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
     private fun submitTypedCommand() {
         val command = inputView?.text?.toString()?.trim().orEmpty()
         if (command.isBlank()) return
+        lastConversationActivityAt = SystemClock.elapsedRealtime()
         inputView?.text?.clear()
         inputView?.clearFocus()
         (sessionService.getSystemService(InputMethodManager::class.java))
             ?.hideSoftInputFromWindow(inputView?.windowToken, 0)
         sessionToken++
+        cancelIdleTimeout()
         recognizer?.cancel()
         recognizer?.destroy()
         recognizer = null
@@ -308,6 +311,7 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
         visible = true
+        lastConversationActivityAt = SystemClock.elapsedRealtime()
         val task = taskManager.state.value
         lastDeliveredRevision = task.revision
         scope.launch {
@@ -331,6 +335,7 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
         recognizer?.cancel()
         recognizer?.destroy()
         recognizer = null
+        scheduleIdleTimeout()
         val token = ++sessionToken
         setVisualState(AssistantVisualState.LISTENING, "Listening…")
         val intent = Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -346,18 +351,28 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
         }.also {
             it.setRecognitionListener(object : android.speech.RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) = setVisualState(AssistantVisualState.LISTENING, "Listening…")
-                override fun onBeginningOfSpeech() = setVisualState(AssistantVisualState.LISTENING, "Listening…")
+                override fun onBeginningOfSpeech() {
+                    markConversationActivity()
+                    setVisualState(AssistantVisualState.LISTENING, "Listening…")
+                }
                 override fun onRmsChanged(rmsdB: Float) { orbView?.setMicrophoneLevel(rmsdB) }
                 override fun onBufferReceived(buffer: ByteArray?) = Unit
                 override fun onEndOfSpeech() = setVisualState(AssistantVisualState.THINKING, "Thinking…")
                 override fun onError(error: Int) {
                     if (token != sessionToken) return
+                    if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                        // Empty listen windows are normal during a continuing voice session.
+                        // Retry silently; the absolute idle deadline still closes the UI.
+                        beginListening()
+                        return
+                    }
                     setVisualState(AssistantVisualState.ERROR, "I couldn't hear that")
                     speak("I couldn't hear that. Please try again, sir.")
                 }
                 override fun onResults(results: Bundle?) {
                     if (token != sessionToken) return
                     val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+                    if (text.isNotBlank()) markConversationActivity()
                     setVisualState(
                         if (text.isBlank()) AssistantVisualState.ERROR else AssistantVisualState.THINKING,
                         if (text.isBlank()) "I didn’t catch that" else text,
@@ -366,7 +381,10 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
                 }
                 override fun onPartialResults(partialResults: Bundle?) {
                     val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
-                    if (partial.isNotBlank()) setVisualState(AssistantVisualState.LISTENING, partial)
+                    if (partial.isNotBlank()) {
+                        markConversationActivity()
+                        setVisualState(AssistantVisualState.LISTENING, partial)
+                    }
                 }
                 override fun onEvent(eventType: Int, params: Bundle?) = Unit
             })
@@ -377,6 +395,8 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
     }
 
     private fun submitCommand(raw: String) {
+        lastConversationActivityAt = SystemClock.elapsedRealtime()
+        cancelIdleTimeout()
         val command = raw.trim()
         if (isVoiceStopCommand(command)) {
             taskManager.stop()
@@ -442,6 +462,7 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
 
     override fun onHide() {
         visible = false
+        cancelIdleTimeout()
         nova.stop()
         novaActive = false
         sessionToken++
@@ -455,12 +476,42 @@ class HyuskVoiceInteractionSession(private val sessionService: VoiceInteractionS
     }
 
     override fun onDestroy() {
+        cancelIdleTimeout()
         recognizer?.destroy()
         nova.close()
         scope.cancel()
         tts?.shutdown()
         tts = null
         super.onDestroy()
+    }
+
+    private fun scheduleIdleTimeout() {
+        cancelIdleTimeout()
+        val timeout = Runnable {
+            idleTimeout = null
+            if (!visible || novaActive) return@Runnable
+            val idleFor = SystemClock.elapsedRealtime() - lastConversationActivityAt
+            if (idleFor >= CONVERSATION_IDLE_TIMEOUT_MILLIS) hide()
+            else scheduleIdleTimeout()
+        }
+        idleTimeout = timeout
+        val remaining = (CONVERSATION_IDLE_TIMEOUT_MILLIS -
+            (SystemClock.elapsedRealtime() - lastConversationActivityAt)).coerceAtLeast(1L)
+        mainHandler.postDelayed(timeout, remaining)
+    }
+
+    private fun markConversationActivity() {
+        lastConversationActivityAt = SystemClock.elapsedRealtime()
+        if (visible && !novaActive) scheduleIdleTimeout()
+    }
+
+    private fun cancelIdleTimeout() {
+        idleTimeout?.let(mainHandler::removeCallbacks)
+        idleTimeout = null
+    }
+
+    private companion object {
+        const val CONVERSATION_IDLE_TIMEOUT_MILLIS = 30_000L
     }
 }
 
