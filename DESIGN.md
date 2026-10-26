@@ -1,19 +1,25 @@
 ---
-name: Hyusk Workflows
-description: Native GNOME workflow editing with a voice-first Hyusk status surface.
+name: Hyusk Control Deck
+description: Native GNOME workflow studio and compact Shell controls for Hyusk.
 colors:
-  primary-blue-violet: "#82aaff"
-  success-green: "#50be82"
-  warning-orange: "#ffaa6e"
-  destructive-red: "#dc5050"
-  response-surface: "#20232a"
-  white: "#ffffff"
-  state-hidden: "#9aa0a6"
-  state-waking: "#82d2ff"
-  state-listening: "#78e6aa"
-  state-thinking: "#b4a0ff"
-  state-working: "#ffaa6e"
-  state-speaking: "#ff82c8"
+  graphite-rail: "#242a30"
+  graphite-inset: "#343d46"
+  graphite-display: "#20272d"
+  graphite-screen: "#151c21"
+  text-primary: "#f2f4f5"
+  text-secondary: "#bcc7d2"
+  transport-blue: "#215bc9"
+  transport-blue-hover: "#194aa5"
+  module-open: "#dbe6ff"
+  module-timer: "#ffe0b9"
+  module-media: "#c0ebd7"
+  module-system: "#e1d9ed"
+  status-hidden: "#9aa0a6"
+  status-waking: "#82d2ff"
+  status-listening: "#78e6aa"
+  status-thinking: "#b4a0ff"
+  status-working: "#ffaa6e"
+  status-speaking: "#ff82c8"
 typography:
   body:
     fontFamily: "system-ui, sans-serif"
@@ -22,7 +28,17 @@ typography:
     lineHeight: 1.35
   title:
     fontFamily: "system-ui, sans-serif"
+    fontSize: "26px"
+    fontWeight: 800
+    lineHeight: 1.2
+  module-number:
+    fontFamily: "system-ui, sans-serif"
     fontSize: "18px"
+    fontWeight: 800
+    lineHeight: 1.2
+  module-kind:
+    fontFamily: "system-ui, sans-serif"
+    fontSize: "12px"
     fontWeight: 700
     lineHeight: 1.2
   extension-meta:
@@ -31,159 +47,180 @@ typography:
     fontWeight: 400
     lineHeight: 1.2
 rounded:
-  native: "Adwaita default"
-  extension-control: "7px"
-  response-card: "12px"
+  module-number: "9px"
+  step-row: "12px"
+  schedule-panel: "10px"
+  shell-menu: "16px"
+  shell-key: "8px"
+  shell-display: "14px"
+  shell-screen: "8px"
 spacing:
-  extension-control: "6px 10px"
-  response-card: "12px"
-  editor-form: "18px"
+  library-padding: "22px 16px 16px"
+  editor-padding: "24px"
+  editor-rhythm: "18px"
+  step-row-padding: "12px"
+  footer-padding: "12px 22px"
+  shell-display-padding: "14px"
 components:
-  button-primary:
-    backgroundColor: "{colors.success-green}"
-    textColor: "{colors.white}"
-    rounded: "{rounded.native}"
-    padding: "native Adwaita button padding"
   button-run:
-    backgroundColor: "{colors.primary-blue-violet}"
-    textColor: "{colors.white}"
-    rounded: "pill"
-  extension-control:
-    backgroundColor: "rgba(255,255,255,0.10)"
-    textColor: "{colors.white}"
-    rounded: "{rounded.extension-control}"
-    padding: "{spacing.extension-control}"
+    backgroundColor: "{colors.transport-blue}"
+    textColor: "#ffffff"
+    typography: "700 14px system-ui, sans-serif"
+    padding: "8px 18px"
+  workflow-module:
+    rounded: "{rounded.step-row}"
+    padding: "{spacing.step-row-padding}"
+  module-number:
+    backgroundColor: "{colors.module-open}"
+    textColor: "#123575"
+    typography: "800 18px system-ui, sans-serif"
+    rounded: "{rounded.module-number}"
+    size: "30px minimum width, 36px minimum height"
+  shell-key:
+    backgroundColor: "#3b4752"
+    textColor: "#ffffff"
+    rounded: "{rounded.shell-key}"
+    padding: "8px 12px"
 ---
 
-# Design System: Hyusk Workflows
+# Design System: Hyusk Control Deck
 
 ## Overview
 
-**Creative North Star: “The Native Shortcut Desk”**
+**Creative North Star: “The Graphite Control Deck”**
 
-Hyusk Workflows is a focused Fedora/GNOME utility for making deterministic desktop routines legible before they run. The primary surface is a GTK4 and libadwaita application: a searchable workflow library sits beside an editor for the selected shortcut, using platform-standard controls and the system theme rather than a separate visual skin. The GNOME Shell extension is the lightweight companion: a small animated butterfly indicator, a status/response card, and a compact workflow launcher.
+Hyusk's workflow studio is a compact instrument for inspecting and running real desktop routines. It pairs a dark graphite library rail with a native themed GTK editor, where each ordered action becomes a numbered module. The butterfly remains the sole brand mark; native GNOME controls and type keep the experience grounded in the desktop.
 
-The visual language is calm, direct, and inspectable. Blue-violet is the recognizable Hyusk action accent; green confirms a save/create action, orange carries warning or active-work meaning, and red is reserved for deletion. The application delegates execution to the Hyusk service, so controls describe and request actions rather than presenting an independent automation runtime.
+The native app's first viewport is organized around the work: a searchable routine list at left, an expansive editor at right, and a fixed feedback footer below. Blue marks transport and selection, while module number keys use category colors to help users scan a sequence without making color the only label. Scheduling stays in an expandable section so the ordered actions remain the focus. The GNOME Shell companion offers quick status and workflow controls, while the Hyusk service remains the execution authority.
 
 **Key Characteristics:**
 
-- Native Adwaita surfaces, selection behavior, dialogs, and system typography.
-- Searchable library rail paired with a spacious, full-width action editor.
-- Explicit status feedback and destructive confirmation.
-- Small pearl-white butterfly indicator with a restrained state-colored aura for at-a-glance runtime status.
+- Graphite sidebar and native, theme-aware GTK editor surfaces.
+- Ordered steps presented as clearly numbered, category-colored modules.
+- Fixed status footer and explicit save-before-run behavior for edited drafts.
+- Compact GNOME Shell indicator and searchable quick-run menu.
 
 ## Colors
 
-The GTK application inherits the active Adwaita light/dark palette; the explicit values below are the colors authored by the GNOME Shell companion and its workflow dialog.
+The studio combines authored graphite and transport colors with native GTK surfaces; Shell state colors continue to identify the agent's current state.
 
 ### Primary
 
-- **Hyusk Blue-Violet** (#82aaff): New, run, draft-selection, and other direct workflow controls in the Shell surface.
+- **Transport Blue**: The main run action and selected library row use a saturated blue for direct interaction.
+- **Graphite Rail**: The library rail establishes the dark, instrument-like frame and carries high-contrast labels.
 
 ### Secondary
 
-- **Confirmation Green** (#50be82): Create/save confirmation control in the Shell workflow dialog.
+- **Open Module Blue**: Number keys for general/open actions use a pale blue fill and deep blue text.
+- **Timer Amber**: Timer modules use a warm amber key.
+- **Media Mint**: Media and audio modules use a mint key.
+- **System Lilac**: System and memory modules use a soft lilac key.
 
 ### Tertiary
 
-- **Active Orange** (#ffaa6e): Warning feedback and the Working state.
-- **State Pink** (#ff82c8): Speaking state only.
+- **Success Green**: The GNOME Shell workflow dialog uses green-tinted create/save feedback.
+- **Warning Orange**: Attention and the agent's Working state use orange.
+- **Speaking Pink**: The Shell indicator uses pink for Speaking state.
 
 ### Neutral
 
-- **Response Charcoal** (#20232a): Nearly opaque response-card surface in GNOME Shell.
-- **White** (#ffffff): Response-card body and timer text; white is used with alpha for secondary copy and controls.
-- **Muted Gray** (#9aa0a6): Hidden/idle butterfly state.
-- **Sky Blue** (#82d2ff): Waking butterfly state.
-- **Listening Green** (#78e6aa): Listening butterfly state.
-- **Thinking Violet** (#b4a0ff): Thinking butterfly state.
-- **Destructive Red** (#dc5050): Delete control in the Shell workflow dialog.
+- **Graphite Inset**: Search, entries, and Shell control surfaces sit on a lighter graphite inset.
+- **Display Charcoal**: The Shell status display separates the card from its darker inner message screen.
+- **Primary and Secondary Text**: Near-white carries essential labels; cool gray supports explanatory copy and metadata.
+- **Agent State Colors**: Hidden is gray, Waking is sky blue, Listening is green, Thinking is violet, Working is orange, and Speaking is pink.
 
 ### Named Rules
 
-**The Semantic Accent Rule.** Blue-violet signals an available Hyusk action; green confirms persistence; orange explains attention or active work; red means deletion. Do not repurpose these meanings casually.
+**The Labeled Module Rule.** Category color supports scanning, while every step also keeps its number and readable kind label.
+
+**The Transport Rule.** Reserve saturated blue for selection and direct run actions; don't use it as decoration.
 
 ## Typography
 
 **Display Font:** System UI supplied by GTK/Adwaita.
 **Body Font:** System UI supplied by GTK/Adwaita.
-**Label/Mono Font:** None defined; use native system labels.
+**Label/Mono Font:** No separate mono face is defined.
 
-**Character:** The native app is intentionally unbranded in typography: readable GNOME system text, platform hierarchy, and standard label treatments. The Shell response card adds only small explicit sizes where the compact overlay needs them.
+**Character:** Native system type keeps controls familiar and legible. The editor title and step numbers are deliberately bold so the library, sequence, and primary action scan quickly.
 
 ### Hierarchy
 
-- **Title** (700, 18px in the Shell workflow dialog): Dialog title and prominent workflow headings.
-- **Heading** (native Adwaita heading style): Workflow names, field labels, and section labels in the GTK editor.
-- **Body** (native system weight and size): Intro copy, workflow fields, action rows, and status messages.
-- **Label** (native system label; 11px metadata in Shell): Secondary state, provider/model metadata, and compact helper text.
-- **Timer** (800, 34px): Large minute/second readout in the Shell response card.
+- **Title** (800, 26px, 1.2): Studio title and selected workflow heading.
+- **Body** (400, native 14px, 1.35): Workflow fields, action descriptions, and supporting copy.
+- **Module Number** (800, 18px, 1.2): Sequence position inside each colored key.
+- **Module Kind** (700, 12px, 1.2): Short action category label beside each number.
+- **Shell Metadata** (400, 11px, 1.2): Compact status and secondary labels in the panel companion.
 
 ## Layout
 
-The native workflow window opens at 1040×700. Its `NavigationSplitView` keeps a library sidebar at 260–360px and gives the editor the remaining width. The sidebar uses 14px horizontal margins, 18px top margin, a search entry, and a vertically scrolling single-selection `ListBox`; rows have 12px horizontal and 10px vertical content insets. The editor is a vertically scrolling form with 32px horizontal margins, 28px vertical margins, and an 18px section rhythm.
+The GTK4/libadwaita window opens at 1120×760. An `AdwNavigationSplitView` gives the searchable library a 260–360px sidebar and the remaining width to the editor. The rail contains the butterfly and Hyusk name, New workflow, Search workflows, a scrolling single-selection list, and an agent-state label. The editor keeps its title and controls in the native header bar; its form scrolls independently beneath it.
 
-The editor order is stable: title and explanatory copy, Name, Voice triggers, Steps, status, and action controls. Steps are full-width horizontal rows with an expanding entry followed by move-up, move-down, and remove icon buttons. A common-action dropdown and “Add custom step” control sit in the Steps header. On smaller available widths, rely on the native split-view collapse and scrolling behavior; do not introduce a second bespoke breakpoint system.
+The editor presents Name and Voice triggers before Steps. Each step is a full-width row with a numbered category key, kind label, editable command, and explicit move-up, move-down, and remove controls. A common-action picker and Add custom step control sit above the sequence. Scheduling is an expander after the steps. A fixed footer keeps validation and runtime feedback visible while the form scrolls. Run stays unavailable until the current editor content matches the saved workflow; save changes before running.
 
-The Shell response card is a 330px-wide overlay with 12px padding and 8px internal spacing. The Shell workflow dialog uses a 760px content width, a 180px scrolling result list, and a compact stacked editor. GNOME panel placement remains the right-side status area.
+The Shell companion uses a small right-side panel indicator and a compact popup menu. Its workflow quick-run submenu includes search, while the workflow editor dialog uses a 760px content area. These Shell surfaces remain subordinate to the native application.
 
 ## Elevation & Depth
 
-The GTK workflow app defines no custom shadows or elevation tokens; depth comes from Adwaita’s native surfaces, list selection, split-view separation, and modal alert dialog. The Shell response card is an opaque overlay (`rgba(32, 35, 42, 0.98)`) and the workflow dialog is modal. Keep resting surfaces flat and let native GNOME treatment communicate hierarchy.
+The GTK studio uses no authored shadow system. Depth comes from the native theme, boxed workflow rows, inset fields, the split between the rail and editor, and the fixed footer boundary. The Shell status card uses a dark outer display and a still darker inner message surface; keep these planes flat and legible instead of adding decorative shadows.
 
 ## Shapes
 
-The native application follows Adwaita’s default control radii and silhouettes. Use boxed-list treatment for the workflow library and standard GTK entries, text views, dropdowns, buttons, and alert dialogs. The Shell companion uses 7px rounded controls and a 12px response card; the Run control in the GTK header uses a pill style. Avoid decorative cards, custom corner geometry, or heavy borders that fight the platform surface language.
+Use Adwaita's native silhouettes for GTK controls. The authored workflow modules have softly rounded row containers (12px) and distinct number keys (9px); the schedule expander is gently rounded (10px). The Shell companion uses rounded keys (8px), an inset display (14px), and a rounded popup menu (16px). Keep shape subordinate to the native control language.
 
 ## Components
 
-### Workflow library and search
+### Library rail and search
 
-- **Shape:** Single-selection Adwaita boxed list in a scrolling sidebar.
-- **Content:** Workflow name in heading treatment and a dim summary of step/trigger counts.
-- **Search:** Native `SearchEntry` with “Search workflows” placeholder; matching includes names, phrases, and steps.
-- **Empty state:** Dim, wrapped copy distinguishes no workflows from no search matches.
+- **Character:** A dark, dense index that frames routine selection.
+- **Layout:** Hyusk butterfly and wordmark, New workflow action, native search entry, scrolling list, and a bottom agent-state label.
+- **States:** Selected workflow uses the transport blue row; hover uses a restrained lighter graphite. Search communicates empty and no-match states in text.
 
-### Workflow editor
+### Workflow modules
 
-- **Character:** Direct manipulation of a readable ordered shortcut.
-- **Fields:** Name entry, multi-line voice-trigger `TextView`, and editable step entries.
-- **Actions:** Native action dropdown offers common Hyusk commands; custom steps remain available.
-- **States:** Save and Run communicate through header controls and a status label; invalid name, empty steps, duplicate names, save errors, and successful saves are written as explicit status messages.
+- **Character:** A sequence of tactile, inspectable command modules.
+- **Shape:** Wide theme-aware row with a 12px radius, subtle theme-derived outline, and 12px padding.
+- **Content:** Number key, short category label, expandable command entry, and compact native reorder/remove buttons.
+- **Color:** General/open keys are pale blue; timer amber; media/audio mint; system/memory lilac. Labels stay visible beside every key.
 
 ### Buttons
 
-- **Primary:** GTK Save uses the native `suggested-action` style; Shell Create uses a translucent green authored background.
-- **Run:** GTK Run is a native pill button; Shell Run uses the blue-violet action treatment.
-- **Destructive:** GTK Delete uses a trash icon and opens an Adwaita destructive alert dialog; Shell Delete uses red and requires a second “Delete?” activation.
-- **Secondary:** New workflow is an icon-only GTK header action with a tooltip; Add custom step is flat; move/remove step controls are icon buttons with tooltips.
-
-### Cards and containers
-
-- **GTK:** Navigation pages, toolbar, form, list, and scrollers are standard libadwaita/GTK containers with no custom shadow layer.
-- **Shell response card:** 330px dark card, 12px radius, 12px padding, 8px spacing, wrapped body text, and contextual approval/listening actions.
+- **Run:** Saturated blue, bold label, and generous horizontal padding; disabled until the editor matches the saved workflow.
+- **Save:** Native GTK suggested-action styling, retaining the active Adwaita theme.
+- **Secondary:** New workflow and step editing controls use standard GTK buttons and symbolic icons with tooltips.
+- **Shell controls:** Compact dark keys use white text, clear hover/focus states, and a distinct blue primary key; Stop uses a muted red-tinted surface.
 
 ### Inputs and fields
 
-- **GTK:** Native Entry, TextView, SearchEntry, and DropDown controls. Voice triggers are one per line; steps are one row per action.
-- **Shell:** Compact St.Entry fields use clear placeholders for workflow name, comma-separated triggers, and semicolon-separated steps.
-- **Feedback:** Validation copy is visible text, not color alone; focus is returned to the invalid name field when appropriate.
+- **GTK:** Native `SearchEntry`, `Entry`, `TextView`, and `DropDown` inherit the system theme. The voice trigger editor accepts one phrase per line; each action remains independently editable.
+- **Focus:** Keep native keyboard focus behavior visible; authored focus outline uses the Hyusk blue-violet accent.
+- **Draft behavior:** Unsaved edits remain drafts and provide visible status. Running requires saving the selected workflow first.
 
-### Navigation and indicator
+### Footer and status display
 
-- **GTK navigation:** `NavigationSplitView` with “Workflows” and “Edit workflow” navigation pages.
-- **Shell navigation:** The panel menu exposes Model, Workflows (with count), Refresh models, credential entries, and Stop Hyusk.
-- **Indicator:** A 24×24 pearl-white butterfly animates subtly while a restrained aura changes through Hidden, Waking, Listening, Thinking, Working, and Speaking colors. Its accessible name reports the current state (for example, “Hyusk: listening”).
+- **GTK footer:** Fixed below the scrolling editor, with a theme-derived top divider and wrapped status copy.
+- **Shell display:** A compact graphite status card with a darker message inset and state-aware labels. It presents current service status rather than invented progress telemetry.
+
+### Navigation and Shell indicator
+
+- **GTK navigation:** Native split view and single-selection library list; allow the platform's narrow-width collapse and scrolling behavior.
+- **Shell navigation:** Panel menu includes workflow count, a searchable Run workflow submenu, the workflow editor, Open automation browser, model controls, phone-link controls, and Stop current task.
+- **Indicator:** The pearl-white butterfly and its state-colored aura remain the sole brand mark in the Shell surface.
 
 ## Do's and Don'ts
 
-- **Do** preserve native GTK4/libadwaita controls and Adwaita theme behavior in the workflow application.
-- **Do** keep the library searchable and the selected workflow visibly tied to its editor.
-- **Do** represent ordered steps as separate, editable rows with explicit reorder and remove controls.
-- **Do** make status, validation, approval, cancellation, and destructive confirmation readable as text.
-- **Do** use the blue-violet accent for Hyusk actions and reserve green, orange, and red for their established meanings.
-- **Do** retain keyboard focusability and meaningful tooltips/accessibility labels for icon-only controls.
-- **Don't** add gradients, decorative illustrations, custom shadows, or a web-style card system to the native editor.
-- **Don't** make color the only indication of state or success.
-- **Don't** let the UI execute actions independently of the Hyusk service.
-- **Don't** collapse triggers and ordered actions into an opaque single text blob in the native editor.
+### Do:
+
+- **Do** preserve GTK4/libadwaita controls and their active theme behavior.
+- **Do** keep the rail, numbered modules, fixed feedback footer, and expandable scheduling hierarchy.
+- **Do** keep step numbers and text labels visible when using category colors.
+- **Do** make draft status and the save-before-run requirement explicit.
+- **Do** send execution requests to the Hyusk service; keep the editor as the authoring and control surface.
+- **Do** treat dedicated browser automation as a separate CDP browser profile, isolated from the user's normal browser profile.
+
+### Don't:
+
+- **Don't** replace native controls with fake hardware switches or decorative console chrome.
+- **Don't** let scheduling crowd out the ordered action sequence.
+- **Don't** rely on color alone for module kind, agent state, validation, or execution feedback.
+- **Don't** imply edits are saved or runnable when the selected workflow still has an unsaved draft.
+- **Don't** present an illustrative review capture as the user's actual workflow data or as proof of a live GNOME render.

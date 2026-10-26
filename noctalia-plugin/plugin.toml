@@ -1,0 +1,32 @@
+# Hyusk Indicator — the agent's state on a Noctalia v5 bar.
+#
+# Niri (and Hyprland/Sway) cannot load the GNOME Shell extension in
+# gnome-extension/, so this plugin is that indicator's counterpart: it reads the
+# same $XDG_RUNTIME_DIR/hyusk-status.json the agent already writes and sends
+# actions through the same hyusk-control.json the extension uses.
+id = "hyusk/indicator"
+name = "Hyusk Indicator"
+version = "1.2.0"
+# 32 for the button tooltips in the settings panel, on top of getColor (31),
+# nowMs (12), readFile/writeFile, barWidget.*, and the panel surface.
+plugin_api = 32
+author = "hyusk"
+license = "MIT"
+icon = "butterfly"
+description = "Shows the Hyusk desktop agent's state, model, and latest reply on the bar, plus a panel for switching models and saving API keys."
+tags = ["ai", "bar", "productivity"]
+
+[[widget]]
+id = "hyusk"
+entry = "hyusk.luau"
+
+# Model and API-key switching. The bar widget's gear opens it; it reads the same
+# runtime status file as the widget and writes through hyusk-control.json.
+[[panel]]
+id = "settings"
+entry = "settings.luau"
+width = 440
+height = 640
+placement = "attached"
+position = "auto"
+open_near_click = true

@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-21T00:00:00Z",
+  "title": "Design System: Hyusk Control Deck",
+  "extensions": {
+    "colorMeta": {
+      "graphite-rail": {
+        "role": "neutral",
+        "displayName": "Graphite Rail",
+        "canonical": "#242a30",
+        "tonalRamp": ["#0a0d10", "#12171b", "#1a2025", "#242a30", "#384149", "#53606b", "#75828d", "#aeb8c1"]
+      },
+      "transport-blue": {
+        "role": "primary",
+        "displayName": "Transport Blue",
+        "canonical": "#215bc9",
+        "tonalRamp": ["#071631", "#0b234d", "#123570", "#215bc9", "#3d79e3", "#70a0ef", "#a8c7f7", "#e1ecfc"]
+      },
+      "module-timer": {
+        "role": "secondary",
+        "displayName": "Timer Amber",
+        "canonical": "#ffe0b9",
+        "tonalRamp": ["#301907", "#542d0d", "#804812", "#b56d25", "#d9924d", "#efb77f", "#f8d3aa", "#ffe0b9"]
+      },
+      "module-media": {
+        "role": "secondary",
+        "displayName": "Media Mint",
+        "canonical": "#c0ebd7",
+        "tonalRamp": ["#0b2a1d", "#12452f", "#1e6646", "#3e8f68", "#6ab58f", "#94d1b2", "#b1e1c8", "#c0ebd7"]
+      },
+      "module-system": {
+        "role": "tertiary",
+        "displayName": "System Lilac",
+        "canonical": "#e1d9ed",
+        "tonalRamp": ["#241a31", "#3a2b4d", "#59436f", "#806994", "#a390b4", "#c0b2d0", "#d2c8df", "#e1d9ed"]
+      }
+    },
+    "typographyMeta": {
+      "title": { "displayName": "Studio title", "purpose": "Studio title and selected workflow heading." },
+      "module-number": { "displayName": "Module number", "purpose": "Shows sequence position inside the category key." },
+      "module-kind": { "displayName": "Module kind", "purpose": "Names the action category beside each number." }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "module-state", "value": "immediate category color update", "purpose": "Reclassify the module key and kind label as its command text changes." },
+      { "name": "shell-indicator", "value": "state-driven wing animation and color interpolation", "purpose": "Communicate agent state in the GNOME panel." }
+    ],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Library rail",
+      "kind": "nav",
+      "description": "Graphite workflow index with a clear selected row.",
+      "html": "<nav class=\"ds-library\"><strong class=\"ds-brand\">✿ Hyusk</strong><button class=\"ds-new\">New workflow</button><input class=\"ds-search\" placeholder=\"Search workflows\"><a class=\"ds-selected\">Focus session</a></nav>",
+      "css": ".ds-library { width: 264px; padding: 22px 16px 16px; background: #242a30; color: #f2f4f5; font: 14px/1.35 system-ui, sans-serif; } .ds-brand { display: block; margin-bottom: 18px; font-size: 26px; font-weight: 800; } .ds-new, .ds-search, .ds-selected { display: block; box-sizing: border-box; width: 100%; margin-bottom: 12px; padding: 9px 12px; border: 0; border-radius: 9px; background: #343d46; color: #f2f4f5; font: inherit; text-align: left; } .ds-selected { background: #215bc9; color: #fff; }"
+    },
+    {
+      "name": "Run workflow button",
+      "kind": "button",
+      "refersTo": "button-run",
+      "description": "Primary action to run the saved workflow selected in the editor.",
+      "html": "<button class=\"ds-run\">Run workflow</button>",
+      "css": ".ds-run { border: 0; border-radius: 9px; padding: 8px 18px; background: #215bc9; color: #fff; font: 700 14px system-ui, sans-serif; } .ds-run:hover, .ds-run:focus-visible { background: #316ddd; } .ds-run:active { background: #194aa5; } .ds-run:disabled { background: #343d46; color: #9aa0a6; }"
+    },
+    {
+      "name": "Workflow module",
+      "kind": "custom",
+      "refersTo": "workflow-module",
+      "description": "Editable action row with position, kind, command, and reorder affordances.",
+      "html": "<div class=\"ds-module\"><b class=\"ds-number\">1</b><strong class=\"ds-kind\">Open</strong><input class=\"ds-command\" value=\"open brave\"><button class=\"ds-step\">↑</button><button class=\"ds-step\">↓</button></div>",
+      "css": ".ds-module { display: flex; align-items: center; gap: 8px; padding: 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 12px; background: #34383d; color: #f2f4f5; font: 14px/1.35 system-ui, sans-serif; } .ds-number { display: grid; place-items: center; min-width: 30px; min-height: 36px; padding: 0 6px; border-radius: 9px; background: #dbe6ff; color: #123575; font-size: 18px; font-weight: 800; } .ds-kind { min-width: 54px; font-size: 12px; } .ds-command { flex: 1; min-width: 0; padding: 8px; border: 0; border-radius: 8px; background: #45484d; color: #f2f4f5; font: inherit; } .ds-step { min-width: 28px; min-height: 28px; border: 0; border-radius: 8px; background: #45484d; color: #f2f4f5; } .ds-step:hover, .ds-step:focus-visible { background: #56616d; }"
+    },
+    {
+      "name": "Timer module key",
+      "kind": "chip",
+      "description": "Category color for timer actions; the visible number and kind label carry meaning too.",
+      "html": "<b class=\"ds-timer-key\">3</b>",
+      "css": ".ds-timer-key { display: inline-grid; place-items: center; min-width: 30px; min-height: 36px; padding: 0 6px; border-radius: 9px; background: #ffe0b9; color: #633907; font: 800 18px/1.2 system-ui, sans-serif; }"
+    },
+    {
+      "name": "Media module key",
+      "kind": "chip",
+      "description": "Mint category color for media and audio actions.",
+      "html": "<b class=\"ds-media-key\">2</b>",
+      "css": ".ds-media-key { display: inline-grid; place-items: center; min-width: 30px; min-height: 36px; padding: 0 6px; border-radius: 9px; background: #c0ebd7; color: #164d37; font: 800 18px/1.2 system-ui, sans-serif; }"
+    },
+    {
+      "name": "Fixed feedback footer",
+      "kind": "card",
+      "description": "Keeps workflow save and runtime feedback visible beneath the scrolling editor.",
+      "html": "<div class=\"ds-footer\">Workflow loaded</div>",
+      "css": ".ds-footer { padding: 12px 22px; border-top: 1px solid rgba(255,255,255,.12); background: #252a2f; color: #f2f4f5; font: 14px/1.35 system-ui, sans-serif; }"
+    },
+    {
+      "name": "Shell status display",
+      "kind": "card",
+      "description": "Compact panel status surface with an inset message area.",
+      "html": "<section class=\"ds-display\"><strong>Hyusk · Listening</strong><p class=\"ds-screen\">Ready when you are.</p></section>",
+      "css": ".ds-display { width: 360px; padding: 14px; border: 1px solid #4d5b66; border-radius: 14px; background: #20272d; color: #f1f4f6; font: 14px/1.35 system-ui, sans-serif; } .ds-screen { margin: 10px 0 0; padding: 12px; border-radius: 8px; background: #151c21; color: #f1f4f6; font-size: 13px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Graphite Control Deck",
+    "overview": "Hyusk's workflow studio is a compact instrument for inspecting and running real desktop routines. It pairs a dark graphite library rail with a native themed GTK editor, where each ordered action becomes a numbered module. The butterfly remains the sole brand mark; native GNOME controls and type keep the experience grounded in the desktop.\n\nThe native app's first viewport is organized around the work: a searchable routine list at left, an expansive editor at right, and a fixed feedback footer below. Blue marks transport and selection, while module number keys use category colors to help users scan a sequence without making color the only label. Scheduling stays in an expandable section so the ordered actions remain the focus. The GNOME Shell companion offers quick status and workflow controls, while the Hyusk service remains the execution authority.",
+    "keyCharacteristics": [
+      "Graphite sidebar and native, theme-aware GTK editor surfaces.",
+      "Ordered steps presented as clearly numbered, category-colored modules.",
+      "Fixed status footer and explicit save-before-run behavior for edited drafts.",
+      "Compact GNOME Shell indicator and searchable quick-run menu."
+    ],
+    "rules": [
+      { "name": "The Labeled Module Rule", "body": "Category color supports scanning, while every step also keeps its number and readable kind label.", "section": "colors" },
+      { "name": "The Transport Rule", "body": "Reserve saturated blue for selection and direct run actions; don't use it as decoration.", "section": "colors" }
+    ],
+    "dos": [
+      "Do preserve GTK4/libadwaita controls and their active theme behavior.",
+      "Do keep the rail, numbered modules, fixed feedback footer, and expandable scheduling hierarchy.",
+      "Do keep step numbers and text labels visible when using category colors.",
+      "Do make draft status and the save-before-run requirement explicit.",
+      "Do send execution requests to the Hyusk service; keep the editor as the authoring and control surface.",
+      "Do treat dedicated browser automation as a separate CDP browser profile, isolated from the user's normal browser profile."
+    ],
+    "donts": [
+      "Don't replace native controls with fake hardware switches or decorative console chrome.",
+      "Don't let scheduling crowd out the ordered action sequence.",
+      "Don't rely on color alone for module kind, agent state, validation, or execution feedback.",
+      "Don't imply edits are saved or runnable when the selected workflow still has an unsaved draft.",
+      "Don't present an illustrative review capture as the user's actual workflow data or as proof of a live GNOME render."
+    ]
+  }
+}

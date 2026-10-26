@@ -1,0 +1,265 @@
+/* Hyusk GNOME Shell indicator.
+ *
+ * Palette (see DESIGN.md): graphite surfaces #242a30 / #343d46, display
+ * #20272d, screen #151c21, text #f2f4f5 / #bcc7d2, transport blue #215bc9.
+ *
+ * St's CSS parser has no custom properties and no `spacing`, so state colors
+ * are written per class below and every gap is set on the actor in JavaScript.
+ * Keep the state hex values in sync with STATE_COLORS in lib/state.js.
+ */
+
+/* --- Panel button ------------------------------------------------------- */
+
+.hyusk-panel-state {
+    font-size: 11px;
+    color: #bcc7d2;
+}
+
+.hyusk-panel.hyusk-state-waking .hyusk-panel-state { color: #82d2ff; }
+.hyusk-panel.hyusk-state-listening .hyusk-panel-state { color: #78e6aa; }
+.hyusk-panel.hyusk-state-thinking .hyusk-panel-state { color: #b4a0ff; }
+.hyusk-panel.hyusk-state-working .hyusk-panel-state { color: #ffaa6e; }
+.hyusk-panel.hyusk-state-speaking .hyusk-panel-state { color: #ff82c8; }
+
+/* --- Menu shell --------------------------------------------------------- */
+
+.hyusk-menu .popup-menu-content {
+    background-color: #252c32;
+    color: #f2f4f5;
+    border-radius: 16px;
+    padding: 8px;
+}
+
+.hyusk-menu .popup-menu-item {
+    padding: 7px 10px;
+    border-radius: 8px;
+    color: #f2f4f5;
+}
+
+/* Rows that lay out their own contents (headers, search fields, sections). */
+.hyusk-menu .popup-menu-item.hyusk-flat-item {
+    padding: 0;
+    background-color: transparent;
+}
+
+.hyusk-menu .popup-menu-item:hover,
+.hyusk-menu .popup-menu-item:focus,
+.hyusk-menu .popup-menu-item.selected {
+    background-color: #343d46;
+}
+
+/* --- Menu header -------------------------------------------------------- */
+
+.hyusk-deck-heading {
+    padding: 10px 8px 8px;
+}
+
+.hyusk-deck-text {
+    padding-left: 10px;
+}
+
+.hyusk-deck-title {
+    font-size: 18px;
+    font-weight: 800;
+    color: #f2f4f5;
+}
+
+.hyusk-deck-state {
+    font-size: 12px;
+    color: #bcc7d2;
+}
+
+.hyusk-state-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 99px;
+    margin: 6px 6px 0 0;
+    background-color: #9aa0a6;
+}
+
+.hyusk-menu.hyusk-state-waking .hyusk-state-dot { background-color: #82d2ff; }
+.hyusk-menu.hyusk-state-listening .hyusk-state-dot { background-color: #78e6aa; }
+.hyusk-menu.hyusk-state-thinking .hyusk-state-dot { background-color: #b4a0ff; }
+.hyusk-menu.hyusk-state-working .hyusk-state-dot { background-color: #ffaa6e; }
+.hyusk-menu.hyusk-state-speaking .hyusk-state-dot { background-color: #ff82c8; }
+
+/* --- Keys and section labels ------------------------------------------- */
+
+.hyusk-transport {
+    padding: 2px 4px 6px;
+}
+
+.hyusk-key {
+    padding: 7px 12px;
+    border-radius: 9px;
+    background-color: #343d46;
+    color: #f2f4f5;
+    font-size: 13px;
+}
+
+.hyusk-key:hover,
+.hyusk-key:focus {
+    background-color: #46515c;
+    color: #ffffff;
+}
+
+.hyusk-key:active {
+    background-color: #2b3440;
+}
+
+.hyusk-key-primary {
+    background-color: #215bc9;
+    color: #ffffff;
+    font-weight: 700;
+}
+
+.hyusk-key-primary:hover,
+.hyusk-key-primary:focus {
+    background-color: #316ddd;
+}
+
+.hyusk-key-primary:active {
+    background-color: #194aa5;
+}
+
+.hyusk-key-danger {
+    background-color: #4b3334;
+    color: #ffd8d7;
+}
+
+.hyusk-key-danger:hover,
+.hyusk-key-danger:focus {
+    background-color: #704548;
+}
+
+.hyusk-key-ghost {
+    background-color: transparent;
+    color: #bcc7d2;
+}
+
+.hyusk-key-ghost:hover,
+.hyusk-key-ghost:focus {
+    background-color: #343d46;
+    color: #f2f4f5;
+}
+
+.hyusk-section-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: #8494a3;
+    padding: 10px 10px 2px;
+}
+
+.hyusk-model-active {
+    color: #f2f4f5;
+    font-weight: 700;
+}
+
+/* --- Submenu fields ----------------------------------------------------- */
+
+.hyusk-search {
+    background-color: #1b2228;
+    color: #f2f4f5;
+    border-radius: 8px;
+    padding: 6px 9px;
+    font-size: 12px;
+    margin: 2px 0;
+}
+
+.hyusk-code {
+    width: 210px;
+    background-color: #1b2228;
+    color: #f2f4f5;
+    border-radius: 8px;
+    padding: 6px 9px;
+    font-family: monospace;
+    font-size: 11px;
+}
+
+.hyusk-phone-status {
+    font-size: 11px;
+    color: #bcc7d2;
+    padding: 2px 4px;
+}
+
+.hyusk-key-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #f2f4f5;
+}
+
+.hyusk-key-status {
+    font-size: 11px;
+    color: #8494a3;
+}
+
+/* --- Response card ------------------------------------------------------ */
+
+.hyusk-display {
+    background-color: #20272d;
+    border: 1px solid #4d5b66;
+    border-radius: 14px;
+    width: 360px;
+    color: #f2f4f5;
+}
+
+.hyusk-card-body {
+    padding: 14px 14px 14px 12px;
+}
+
+.hyusk-accent {
+    width: 3px;
+    border-radius: 3px;
+    margin: 12px 0;
+    background-color: #9aa0a6;
+}
+
+.hyusk-display.hyusk-state-waking .hyusk-accent { background-color: #82d2ff; }
+.hyusk-display.hyusk-state-listening .hyusk-accent { background-color: #78e6aa; }
+.hyusk-display.hyusk-state-thinking .hyusk-accent { background-color: #b4a0ff; }
+.hyusk-display.hyusk-state-working .hyusk-accent { background-color: #ffaa6e; }
+.hyusk-display.hyusk-state-speaking .hyusk-accent { background-color: #ff82c8; }
+
+.hyusk-card-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #f2f4f5;
+}
+
+.hyusk-card-status {
+    font-size: 11px;
+    font-weight: 600;
+    color: #bcc7d2;
+}
+
+.hyusk-display.hyusk-state-waking .hyusk-card-status { color: #82d2ff; }
+.hyusk-display.hyusk-state-listening .hyusk-card-status { color: #78e6aa; }
+.hyusk-display.hyusk-state-thinking .hyusk-card-status { color: #b4a0ff; }
+.hyusk-display.hyusk-state-working .hyusk-card-status { color: #ffaa6e; }
+.hyusk-display.hyusk-state-speaking .hyusk-card-status { color: #ff82c8; }
+
+.hyusk-card-meta {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.62);
+}
+
+.hyusk-display-body {
+    background-color: #151c21;
+    border-radius: 9px;
+    padding: 11px 12px;
+    color: #f2f4f5;
+    font-size: 13px;
+}
+
+.hyusk-timer {
+    font-size: 32px;
+    font-weight: 800;
+    color: #f2f4f5;
+}
+
+.hyusk-timer-colon {
+    font-size: 26px;
+    font-weight: 700;
+    color: #bcc7d2;
+    margin-top: 5px;
+}
