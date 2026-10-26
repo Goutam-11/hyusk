@@ -36,6 +36,8 @@
 - `scheduler`, `task`, `timer`, and `web_search` tool documentation and their
   GTK workflow-editor integration (control-deck library, quick-run menu,
   scheduling, and run-without-saving fixes).
+- `CI` workflow (`.github/workflows/ci.yml`) that checks formatting, runs
+  clippy, and runs the test suite on pushes to `main` and on pull requests.
 
 ### Changed
 
@@ -48,6 +50,9 @@
   `stream`, and `transport_tests` modules; tool dispatch reports partial
   failures instead of aborting a turn.
 - Shell foreground commands are bounded at 120 s with truncated output.
+- The crate declares its package metadata and its `sqlx` and
+  `tokio-tungstenite` requirements directly instead of inheriting them from the
+  parent workspace, so a fresh clone builds and tests without that workspace.
 
 ### Fixed
 

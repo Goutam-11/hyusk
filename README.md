@@ -19,7 +19,10 @@ status overlay, and optional voice components.
 
 This directory is a member of the parent Hyusk workspace. It is separate from
 the main `hyusk` CLI in `../crates/hyusk-cli`; see the workspace
-[`README.md`](../README.md) for the broader project.
+[`README.md`](../README.md) for the broader project. Package metadata and the
+shared dependency versions are declared in this crate's `Cargo.toml` rather
+than inherited from the workspace, so a fresh clone of this repository also
+builds and tests on its own.
 
 <p align="center">
   <img src="assets/readme/infographic_hyusk_runtime-architecture_20260916_dark.svg" width="100%" alt="Hyusk request routing architecture">
@@ -744,10 +747,15 @@ From this directory, omit `-p hyusk_agent`. `cargo check --all-targets` and
 the unit suite; a few portal and audio checks stay `#[ignore]`d because they
 need a real session (see [development](docs/development.md)).
 
-Dependencies are compiled with optimizations even in debug builds (workspace
-`[profile.dev.package."*"]`), so `cargo run` is fast enough for realtime
-wake-word inference. Building the dependencies the first time after a profile
-change takes a few minutes.
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs
+`cargo fmt --all -- --check`, `cargo clippy --all-targets`, and
+`cargo test --all-targets` on pushes to `main` and on pull requests.
+
+Inside the workspace, dependencies are compiled with optimizations even in
+debug builds (the workspace root's `[profile.dev.package."*"]`), so `cargo run`
+is fast enough for realtime wake-word inference. A standalone clone and CI use
+the default debug profile. Building the dependencies the first time after a
+profile change takes a few minutes.
 
 Wake-word diagnostics:
 

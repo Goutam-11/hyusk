@@ -2,9 +2,15 @@
 
 ## Repository position
 
-`hyusk_agent` is a workspace member declared by the parent
-[`Cargo.toml`](../Cargo.toml). Package metadata such as version, edition,
-authors, license, and repository is inherited from the workspace.
+This repository is checked out at `hyusk_agent`, a member of the parent Hyusk
+workspace declared by the `Cargo.toml` one directory above this repository,
+alongside the `hyusk` CLI in `../crates/hyusk-cli`.
+
+Package metadata (version, edition, authors, license, repository) and the
+`sqlx` and `tokio-tungstenite` requirements are declared in this crate's own
+[`Cargo.toml`](../Cargo.toml) instead of being inherited with
+`workspace = true`. That keeps a fresh clone building and testing on its own,
+which is what CI does. Keep the two manifests aligned when these values change.
 
 Use package-qualified commands from the workspace root:
 
@@ -14,8 +20,27 @@ cargo test -p hyusk_agent
 cargo run -p hyusk_agent
 ```
 
-When the current directory is `hyusk_agent`, the equivalent commands are
-`cargo check`, `cargo test`, and `cargo run`.
+When the current directory is `hyusk_agent` — inside the workspace or in a
+standalone clone — the equivalent commands are `cargo check`, `cargo test`,
+and `cargo run`.
+
+## Continuous integration
+
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on pushes to
+`main`, on pull requests, and on demand:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets
+cargo test --all-targets
+```
+
+The job installs the native packages listed under Prerequisites below, caches
+the Cargo registry and build directory, and reports clippy warnings without
+failing on them. The portal, live-CDP, Whisper-inference, and GUI workflow
+checks stay `#[ignore]`d, so CI does not cover the desktop-only paths. A cold
+run builds the whole dependency tree, including GTK4, the AWS SDK, whisper.cpp,
+and ONNX Runtime, and takes far longer than a cached run.
 
 ## Prerequisites
 
@@ -38,10 +63,13 @@ When the current directory is `hyusk_agent`, the equivalent commands are
 - For Linux TTS, `piper` plus an audio player such as `paplay` or `aplay`; the
   code falls back to `espeak-ng` or `espeak` when Piper is unavailable.
 
-On Debian or Ubuntu, the audio and GUI build commonly needs packages such as
-`libasound2-dev`, `libx11-dev`, `libxi-dev`, `libxcursor-dev`, `libxrandr-dev`,
-`libxinerama-dev`, `libgl1-mesa-dev`, and Wayland development packages when
-using a Wayland session. Distribution package names vary.
+On Debian or Ubuntu the build needs `build-essential`, `cmake`, `clang`,
+`libclang-dev`, and `pkg-config` for whisper.cpp and the AWS-LC bindings,
+`libasound2-dev` for audio, `libgtk-4-dev` and `libadwaita-1-dev` for the
+settings editor, and the X11/Wayland client packages `libx11-dev`, `libxi-dev`,
+`libxcursor-dev`, `libxrandr-dev`, `libxinerama-dev`, `libwayland-dev`,
+`libxkbcommon-dev`, and `libgl1-mesa-dev`. `ci.yml` installs exactly this set.
+Distribution package names vary.
 
 ## Configuration
 
