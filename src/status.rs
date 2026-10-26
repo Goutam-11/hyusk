@@ -22,6 +22,7 @@ pub struct Status {
 
 #[derive(Clone, Serialize)]
 struct Card {
+    id: u64,
     kind: String,
     text: String,
     persistent: bool,
@@ -91,6 +92,7 @@ pub fn model(provider: &str, model: &str) {
 pub fn card(kind: &str, text: impl Into<String>, persistent: bool) {
     if let Ok(mut s) = store().lock() {
         s.latest = Some(Card {
+            id: s.revision.saturating_add(1),
             kind: kind.to_string(),
             text: text.into(),
             persistent,

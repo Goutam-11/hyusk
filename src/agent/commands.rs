@@ -392,6 +392,82 @@ fn workflow_matches(text: &str, workflow: &Workflow) -> bool {
         .any(|name| invocation == name || candidates.iter().any(|candidate| *candidate == name))
 }
 
+/// Resolve a configured trigger only when the whole utterance matches it.
+/// This is used for voice routing, where ordinary requests must remain user
+/// input even if they contain a workflow name.
+pub fn exact_workflow_trigger(raw: &str) -> Option<String> {
+    let config = load_config();
+    exact_workflow_trigger_in(raw, &config)
+}
+
+fn exact_workflow_trigger_in(raw: &str, config: &Config) -> Option<String> {
+    let invocation = clean(raw);
+    if invocation.is_empty() {
+        return None;
+    }
+
+    let mut exact_forms = vec![invocation.clone()];
+    for prefix in [
+        "run workflow ",
+        "run shortcut ",
+        "execute workflow ",
+        "start workflow ",
+        "run ",
+        "execute ",
+        "start ",
+        "shortcut ",
+    ] {
+        if let Some(rest) = invocation.strip_prefix(prefix) {
+            exact_forms.push(rest.trim().to_string());
+            break;
+        }
+    }
+    if let Some(last) = exact_forms.last().cloned() {
+        if let Some(rest) = last.strip_prefix("my ") {
+            exact_forms.push(rest.trim().to_string());
+        }
+    }
+
+    config.workflows.iter().find_map(|workflow| {
+        let name = clean(&workflow.name);
+        let triggers =
+            std::iter::once(name.as_str()).chain(workflow.phrases.iter().map(String::as_str));
+        triggers
+            .map(clean)
+            .any(|trigger| exact_forms.iter().any(|form| form == &trigger))
+            .then(|| workflow.name.clone())
+    })
+}
+
+/// Parse a workflow by its configured name, requiring an exact name match.
+/// Unlike `parse`, this never recognizes ordinary commands or falls back to
+/// the model.
+pub fn parse_named_workflow(raw_name: &str) -> Result<Plan, String> {
+    let config = load_config();
+    parse_named_workflow_in(raw_name, &config)
+}
+
+fn parse_named_workflow_in(raw_name: &str, config: &Config) -> Result<Plan, String> {
+    let requested = clean(raw_name);
+    let workflow = config
+        .workflows
+        .iter()
+        .find(|workflow| clean(&workflow.name) == requested)
+        .ok_or_else(|| format!("No workflow named ‘{}’ is configured.", raw_name.trim()))?;
+    let actions = workflow_actions(workflow, config)
+        .map_err(|error| format!("Could not run {} because {error}.", workflow.name))?;
+    let spoken = format!(
+        "Running {}. {}",
+        title_case(&workflow.name),
+        actions
+            .iter()
+            .map(Action::spoken)
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    Ok(Plan { actions, spoken })
+}
+
 #[cfg(test)]
 fn workflow_for<'a>(text: &str, config: &'a Config) -> Option<&'a Workflow> {
     config
@@ -693,6 +769,41 @@ fn parse_clause(clause: &str, config: &Config) -> Option<Action> {
         return None;
     }
 
+    // Context-relative requests need the model's desktop observation. Opening
+    // a Google search for "this here" or a song named "this" loses the user's
+    // actual target before the model ever gets a chance to inspect it.
+    if [
+        "current window",
+        "current app",
+        "this window",
+        "this app",
+        "this page",
+        "this tab",
+        "on screen",
+        "on the screen",
+        "selected text",
+        "highlighted text",
+    ]
+    .iter()
+    .any(|phrase| clause.contains(phrase))
+        || (strip_prefix_any(
+            clause,
+            &[
+                "search ", "google ", "look up ", "play ", "put on ", "open ",
+            ],
+        )
+        .is_some_and(|rest| {
+            rest.split_whitespace().any(|word| {
+                matches!(
+                    word.trim_matches(|c: char| !c.is_alphanumeric()),
+                    "this" | "that" | "it" | "here"
+                )
+            })
+        }))
+    {
+        return None;
+    }
+
     // Search engine: "search X on youtube", or "search X" (default Google).
     if let Some(rest) = strip_prefix_any(clause, &["search ", "google ", "look up "]) {
         if let Some((query, engine)) = rest.rsplit_once(" on ") {
@@ -905,11 +1016,11 @@ fn parse_media(clause: &str) -> Option<Action> {
         "pause" | "pause music" | "pause the music" | "stop the music" => return media("pause"),
 
         "next" | "next song" | "next track" | "skip" | "skip song" | "skip track" => {
-            return media("next")
+            return media("next");
         }
 
         "previous" | "previous song" | "previous track" | "last song" | "go back a song" => {
-            return media("previous")
+            return media("previous");
         }
 
         "stop" | "stop playback" => return media("stop"),
@@ -917,19 +1028,19 @@ fn parse_media(clause: &str) -> Option<Action> {
         "volume up" | "turn it up" | "turn the volume up" | "louder" => return media("volume_up"),
 
         "volume down" | "turn it down" | "turn the volume down" | "quieter" => {
-            return media("volume_down")
+            return media("volume_down");
         }
 
         "mute" | "mute the volume" | "mute the sound" => {
             return Some(Action::Shell {
                 command: "pactl set-sink-mute @DEFAULT_SINK@ 1".to_string(),
-            })
+            });
         }
 
         "unmute" | "unmute the volume" | "unmute the sound" => {
             return Some(Action::Shell {
                 command: "pactl set-sink-mute @DEFAULT_SINK@ 0".to_string(),
-            })
+            });
         }
 
         _ => {}
@@ -1192,6 +1303,22 @@ pub fn parse(raw: &str) -> Option<Plan> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn contextual_requests_reach_the_model_instead_of_opening_literal_searches() {
+        let config = Config::default();
+        for request in [
+            "search here for pasta recipes",
+            "play this",
+            "open that",
+            "search for the selected text",
+            "search cats in the current window",
+        ] {
+            assert!(parse_clause(request, &config).is_none(), "{request}");
+        }
+        assert!(parse_clause("search pasta recipes on youtube", &config).is_some());
+        assert!(parse_clause("play", &config).is_some());
+    }
+
     fn tool(action: &Action) -> &'static str {
         action.tool_name()
     }
@@ -1221,6 +1348,34 @@ mod tests {
                 .map(|workflow| workflow.name.as_str()),
             Some("focus mode")
         );
+    }
+
+    #[test]
+    fn exact_trigger_routing_does_not_consume_routine_text() {
+        let config = Config {
+            apps: HashMap::new(),
+            sites: HashMap::new(),
+            workflows: vec![Workflow {
+                name: "focus mode".into(),
+                phrases: vec!["begin focused work".into()],
+                steps: vec!["set timer for 25 minutes".into()],
+            }],
+        };
+
+        assert_eq!(
+            exact_workflow_trigger_in("run my focus mode", &config).as_deref(),
+            Some("focus mode")
+        );
+        assert_eq!(
+            exact_workflow_trigger_in("begin focused work", &config).as_deref(),
+            Some("focus mode")
+        );
+        assert_eq!(exact_workflow_trigger_in("please run", &config), None);
+        assert_eq!(
+            exact_workflow_trigger_in("can you start focus mode and open mail", &config),
+            None
+        );
+        assert!(parse_named_workflow_in("unknown focus mode", &config).is_err());
     }
 
     #[test]

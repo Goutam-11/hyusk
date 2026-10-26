@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    future::Future,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -20,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     agent::Agent,
     speech::{SpeechToText, TextToSpeech},
-    tools::media,
+    tools::{media, registry::ToolRegistry},
     types::{HyuskEvent, HyuskState},
     wake::detector::WakeResume,
 };
@@ -34,16 +35,35 @@ struct ActiveTurn {
 /// The voice-listen flow (record + transcribe) runs as its own task so the
 /// event loop stays responsive while the microphone is being read.
 struct ActiveListen {
+    id: u64,
+    cancel: CancellationToken,
+    handle: JoinHandle<()>,
+    probe_id: Option<u64>,
+}
+
+struct WorkflowJob {
+    id: u64,
+    name: String,
+    actions: Vec<crate::agent::commands::Action>,
+    desktop: bool,
+}
+
+struct ActiveWorkflow {
+    id: u64,
+    name: String,
+    desktop: bool,
     cancel: CancellationToken,
     handle: JoinHandle<()>,
 }
+
+const MAX_QUEUED_WORKFLOWS: usize = 16;
 
 /// Release the paused wake detector when the listening flow ends, no matter
 /// how it ends (success, error, timeout, or task cancellation).
 ///
 /// The detector pauses inside its microphone thread after every detection;
 /// if the listening task died without resuming it, the whole voice path
-/// would stay deaf until the detector's own 120 s timeout.
+/// would stay deaf until the detector's own bounded pause timeout.
 struct ResumeOnDrop(WakeResume);
 
 impl Drop for ResumeOnDrop {
@@ -81,16 +101,67 @@ impl Drop for MediaOnDrop {
 }
 
 async fn interrupt_active(active: &mut Option<ActiveTurn>) {
-    if let Some(turn) = active.take() {
+    if let Some(mut turn) = active.take() {
         turn.cancel.cancel();
-        let _ = turn.handle.await;
+        if tokio::time::timeout(Duration::from_millis(350), &mut turn.handle)
+            .await
+            .is_err()
+        {
+            eprintln!("[Agent] Active turn did not stop promptly; aborting worker");
+            turn.handle.abort();
+            let _ = turn.handle.await;
+        }
     }
 }
 
 async fn interrupt_listen(active: &mut Option<ActiveListen>) {
-    if let Some(listen) = active.take() {
+    if let Some(mut listen) = active.take() {
         listen.cancel.cancel();
-        let _ = listen.handle.await;
+        if tokio::time::timeout(Duration::from_millis(350), &mut listen.handle)
+            .await
+            .is_err()
+        {
+            eprintln!("[Wake] Listening task did not stop promptly; aborting capture");
+            listen.handle.abort();
+            let _ = listen.handle.await;
+        }
+    }
+}
+
+async fn timeout_with_cancel<F: Future>(
+    duration: Duration,
+    capture_cancel: &CancellationToken,
+    future: F,
+) -> Option<F::Output> {
+    match tokio::time::timeout(duration, future).await {
+        Ok(output) => Some(output),
+        Err(_) => {
+            // Dropping a future that owns a spawn_blocking capture does not
+            // stop that worker. Signal it before microphone ownership is
+            // released back to the wake detector.
+            capture_cancel.cancel();
+            None
+        }
+    }
+}
+
+/// Prefer already-arrived external events over internal follow-ups so fresh
+/// input and stop requests retain priority. Follow-ups stay local to the
+/// receiver task, avoiding a blocking send into its own bounded channel.
+async fn next_runtime_event(
+    event_rx: &mut Receiver<HyuskEvent>,
+    pending_followups: &mut VecDeque<HyuskEvent>,
+) -> Option<HyuskEvent> {
+    match event_rx.try_recv() {
+        Ok(event) => Some(event),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+            if let Some(event) = pending_followups.pop_front() {
+                Some(event)
+            } else {
+                event_rx.recv().await
+            }
+        }
+        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => pending_followups.pop_front(),
     }
 }
 
@@ -103,13 +174,23 @@ pub async fn run_agent_task(
     stt: Option<Arc<SpeechToText>>,
     output_active: Arc<AtomicBool>,
 ) -> Result<()> {
+    let mut sonic_mode = agent.uses_bedrock_sonic();
+    // Clone the Arc-backed tools before any model turn can hold Agent's mutex.
+    let workflow_tools = agent.workflow_tools();
     let agent = Arc::new(Mutex::new(agent));
     let tts = TextToSpeech::new();
     let mut active: Option<ActiveTurn> = None;
     let mut listen: Option<ActiveListen> = None;
     let mut completed_tasks = VecDeque::new();
     let mut scheduled_inputs = VecDeque::new();
+    let mut pending_followups = VecDeque::new();
+    let mut workflow_queue = VecDeque::<WorkflowJob>::new();
+    let mut active_workflow: Option<ActiveWorkflow> = None;
     let mut next_turn_id = 1u64;
+    let mut last_finished_turn = None;
+    let mut deferred_reply_listen: Option<u64> = None;
+    let mut next_listen_id = 1u64;
+    let mut next_workflow_id = 1u64;
     let mut voice_conversation = false;
     let mut voice_listen_until: Option<std::time::Instant> = None;
 
@@ -119,9 +200,159 @@ pub async fn run_agent_task(
      */
     let resume_media = Arc::new(AtomicBool::new(false));
 
-    while let Some(event) = event_rx.recv().await {
+    loop {
+        /*
+         * Wait for input, but never longer than an armed confirmation has left.
+         * Without this, an abandoned approval would stay armed indefinitely:
+         * it would hold queued scheduled input and could be answered by an
+         * unrelated later "yes".
+         */
+        let event = tokio::select! {
+            event = next_runtime_event(&mut event_rx, &mut pending_followups) => event,
+            _ = approval_expiry(&agent) => Some(HyuskEvent::ApprovalExpired),
+        };
+        let Some(event) = event else {
+            break;
+        };
+
+        // Normalize capture completions before dispatching them. In particular,
+        // do not re-enqueue a transcript as untagged UserInput: an already
+        // queued newer input could cancel this capture while the old result
+        // waits in the channel.
+        let event = match event {
+            HyuskEvent::VoiceTranscript { id, text } => {
+                let Some(event) = normalize_voice_transcript(id, text, &listen) else {
+                    continue;
+                };
+                event
+            }
+            HyuskEvent::ListenCompleted {
+                id,
+                continue_listening,
+            } => {
+                let Some(event) = normalize_listen_completed(id, continue_listening, &listen)
+                else {
+                    continue;
+                };
+                crate::status::awaiting_reply(false);
+                if continue_listening {
+                    // The capture has ended, so its slot must not suppress the
+                    // continuation wake while its task finishes returning.
+                    listen = None;
+                }
+                event
+            }
+            HyuskEvent::WakeProbeFinished {
+                id,
+                text: Some(text),
+            } => {
+                if !listen.as_ref().is_some_and(|capture| {
+                    capture.probe_id == Some(id) && !capture.cancel.is_cancelled()
+                }) {
+                    continue;
+                }
+                listen = None;
+                voice_conversation = true;
+                voice_listen_until = Some(std::time::Instant::now() + Duration::from_secs(30));
+                if crate::agent::runner::is_voice_session_stop(&text) {
+                    HyuskEvent::StopRequested
+                } else {
+                    HyuskEvent::UserInput(text)
+                }
+            }
+            event @ HyuskEvent::SonicListenCompleted { id, .. } => {
+                if !is_current_sonic_listen(id, &listen) {
+                    continue;
+                }
+                event
+            }
+            event => event,
+        };
         match event {
-            event @ (HyuskEvent::WakeWordDetected | HyuskEvent::ContinueListening) => {
+            event @ (HyuskEvent::WakeWordDetected
+            | HyuskEvent::ContinueListening
+            | HyuskEvent::AwaitReplyListening { .. }) => {
+                if matches!(&event, HyuskEvent::ContinueListening) && !voice_conversation {
+                    wake_resume.resume();
+                    continue;
+                }
+                if let HyuskEvent::AwaitReplyListening { id } = &event {
+                    let active_turn = active.as_ref().is_some_and(|turn| turn.id == *id);
+                    if active_turn
+                        && active
+                            .as_ref()
+                            .is_some_and(|turn| !turn.handle.is_finished())
+                    {
+                        // The turn worker publishes this before TurnFinished.
+                        // Keep it as state rather than repeatedly requeueing
+                        // it while the worker is still winding down.
+                        deferred_reply_listen = Some(*id);
+                        wake_resume.resume();
+                        continue;
+                    }
+                    if !active_turn && last_finished_turn != Some(*id) {
+                        wake_resume.resume();
+                        continue;
+                    }
+                }
+                if listen_capture_active(&listen) {
+                    // Nova already has a live mic; duplicate wake/follow-up
+                    // events must not tear down it or another capture.
+                    continue;
+                }
+                let task_running = active
+                    .as_ref()
+                    .is_some_and(|turn| !turn.handle.is_finished());
+                if task_running {
+                    if !should_probe_busy_wake(&event, sonic_mode) {
+                        wake_resume.resume();
+                        continue;
+                    }
+                    let Some(probe_stt) = stt.clone() else {
+                        wake_resume.resume();
+                        continue;
+                    };
+                    let id = next_listen_id;
+                    next_listen_id += 1;
+                    let cancel = CancellationToken::new();
+                    let probe_cancel = cancel.clone();
+                    let capture_cancel = probe_cancel.child_token();
+                    let probe_tx = agent_tx.clone();
+                    let probe_resume = wake_resume.clone();
+                    let handle = tokio::spawn(async move {
+                        let _resume = ResumeOnDrop(probe_resume);
+                        let text = match timeout_with_cancel(
+                            Duration::from_secs(45),
+                            &capture_cancel,
+                            probe_stt.transcribe_from_microphone(8.0, &capture_cancel),
+                        )
+                        .await
+                        {
+                            Some(Ok(text)) if !text.trim().is_empty() => Some(text),
+                            Some(Err(error)) => {
+                                eprintln!(
+                                    "[Wake] Speech probe failed; current task continues: {error:#}"
+                                );
+                                None
+                            }
+                            _ => None,
+                        };
+                        if !probe_cancel.is_cancelled() {
+                            let _ = probe_tx
+                                .send(HyuskEvent::WakeProbeFinished { id, text })
+                                .await;
+                        }
+                    });
+                    listen = Some(ActiveListen {
+                        id,
+                        cancel,
+                        handle,
+                        probe_id: Some(id),
+                    });
+                    println!("[Wake] Checking for a spoken instruction; current task continues");
+                    send_state(&ui_tx, HyuskState::Listening).await;
+                    continue;
+                }
                 if matches!(event, HyuskEvent::WakeWordDetected) {
                     voice_conversation = true;
                     voice_listen_until = Some(std::time::Instant::now() + Duration::from_secs(30));
@@ -130,11 +361,26 @@ pub async fn run_agent_task(
                     && voice_listen_until
                         .is_some_and(|deadline| std::time::Instant::now() >= deadline)
                 {
-                    voice_conversation = false;
-                    voice_listen_until = None;
-                    crate::status::awaiting_reply(false);
+                    finish_voice_conversation(&mut voice_conversation, &mut voice_listen_until);
+                    release_next_scheduled_input(
+                        &mut scheduled_inputs,
+                        &mut pending_followups,
+                        active.is_some(),
+                        listen_capture_active(&listen),
+                        voice_conversation,
+                        approval_blocks_scheduled_input(&agent),
+                    );
                     send_state(&ui_tx, HyuskState::Hidden).await;
                     wake_resume.resume();
+                    start_next_workflow(
+                        &mut workflow_queue,
+                        &mut active_workflow,
+                        active.is_some(),
+                        listen_capture_active(&listen),
+                        &workflow_tools,
+                        &agent_tx,
+                        &ui_tx,
+                    );
                     continue;
                 }
                 println!("[Wake] Listening requested");
@@ -145,8 +391,14 @@ pub async fn run_agent_task(
                  * progress (for example a double wake or a clap during the
                  * recording window).
                  */
-                interrupt_active(&mut active).await;
-                interrupt_listen(&mut listen).await;
+                interrupt_interaction(
+                    &mut active,
+                    &mut listen,
+                    &mut active_workflow,
+                    &ui_tx,
+                    false,
+                )
+                .await;
 
                 // Quiet any music so the command is heard, and remember to
                 // resume it once the request is handled.
@@ -156,21 +408,44 @@ pub async fn run_agent_task(
 
                 send_state(&ui_tx, HyuskState::Waking).await;
                 send_state(&ui_tx, HyuskState::Listening).await;
+                crate::status::awaiting_reply(false);
 
                 let Some(stt) = stt.clone() else {
                     eprintln!("[STT] Speech-to-text is not configured; ignoring wake word");
+                    finish_voice_conversation(&mut voice_conversation, &mut voice_listen_until);
+                    release_next_scheduled_input(
+                        &mut scheduled_inputs,
+                        &mut pending_followups,
+                        active.is_some(),
+                        listen_capture_active(&listen),
+                        voice_conversation,
+                        approval_blocks_scheduled_input(&agent),
+                    );
+                    if resume_media.swap(false, Ordering::Relaxed) {
+                        tokio::spawn(media::resume());
+                    }
                     send_state(&ui_tx, HyuskState::Hidden).await;
                     wake_resume.resume();
+                    start_next_workflow(
+                        &mut workflow_queue,
+                        &mut active_workflow,
+                        active.is_some(),
+                        listen_capture_active(&listen),
+                        &workflow_tools,
+                        &agent_tx,
+                        &ui_tx,
+                    );
                     continue;
                 };
 
+                let id = next_listen_id;
+                next_listen_id += 1;
                 let cancel = CancellationToken::new();
                 let task_agent_tx = agent_tx.clone();
                 let task_ui_tx = ui_tx.clone();
                 let task_resume = wake_resume.clone();
                 let task_agent = Arc::clone(&agent);
                 let task_cancel = cancel.clone();
-                let task_media = Arc::clone(&resume_media);
                 let task_output = Arc::clone(&output_active);
                 let task_listen_until = voice_listen_until;
 
@@ -181,19 +456,152 @@ pub async fn run_agent_task(
                         task_ui_tx,
                         task_resume,
                         task_cancel,
-                        task_media,
                         task_agent,
                         task_output,
                         task_listen_until,
+                        id,
                     )
                     .await;
                 });
 
-                listen = Some(ActiveListen { cancel, handle });
+                listen = Some(ActiveListen {
+                    id,
+                    cancel,
+                    handle,
+                    probe_id: None,
+                });
             }
 
-            HyuskEvent::UserInput(text) => {
+            HyuskEvent::WakeProbeFinished { id, text: None } => {
+                if !listen.as_ref().is_some_and(|capture| {
+                    capture.probe_id == Some(id) && !capture.cancel.is_cancelled()
+                }) {
+                    continue;
+                }
+                listen = None;
+                if active
+                    .as_ref()
+                    .is_some_and(|turn| !turn.handle.is_finished())
+                {
+                    println!("[Wake] No new instruction; task was not cancelled");
+                    send_state(&ui_tx, HyuskState::Working).await;
+                } else if voice_conversation {
+                    pending_followups.push_back(HyuskEvent::ContinueListening);
+                } else {
+                    send_state(&ui_tx, HyuskState::Hidden).await;
+                }
+            }
+
+            HyuskEvent::SonicListenCompleted {
+                id: _,
+                text,
+                waiting,
+                error,
+            } => {
+                listen = None;
+                let keep_listening = waiting && text.is_some() && error.is_none();
+                if let Some(error) = error {
+                    eprintln!("[Nova Sonic] Turn failed: {error}");
+                    let message = format!(
+                        "Nova Sonic failed: {}",
+                        error.lines().next().unwrap_or("unknown error")
+                    );
+                    crate::status::card("error", &message, false);
+                    let _ = ui_tx.try_send(HyuskEvent::Response(message));
+                } else if let Some(text) = text {
+                    crate::status::awaiting_reply(waiting);
+                    crate::status::card(
+                        if waiting { "confirmation" } else { "response" },
+                        &text,
+                        waiting,
+                    );
+                    let _ = ui_tx.try_send(HyuskEvent::Response(text));
+                }
+
+                // This completion also performs the StopListening cleanup.
+                // Keeping it in this ID-validated dispatch prevents an old
+                // Sonic worker from hiding a newer capture or resuming media.
+                if keep_listening {
+                    voice_conversation = true;
+                    voice_listen_until = Some(std::time::Instant::now() + Duration::from_secs(30));
+                    pending_followups.push_back(HyuskEvent::ContinueListening);
+                    crate::status::awaiting_reply(true);
+                } else {
+                    finish_voice_conversation(&mut voice_conversation, &mut voice_listen_until);
+                }
+                release_next_scheduled_input(
+                    &mut scheduled_inputs,
+                    &mut pending_followups,
+                    active.is_some(),
+                    listen_capture_active(&listen),
+                    voice_conversation,
+                    approval_blocks_scheduled_input(&agent),
+                );
+                if resume_media.swap(false, Ordering::Relaxed) {
+                    tokio::spawn(media::resume());
+                }
+                send_state(
+                    &ui_tx,
+                    if keep_listening {
+                        HyuskState::Listening
+                    } else {
+                        HyuskState::Hidden
+                    },
+                )
+                .await;
+                start_next_workflow(
+                    &mut workflow_queue,
+                    &mut active_workflow,
+                    active.is_some(),
+                    listen_capture_active(&listen),
+                    &workflow_tools,
+                    &agent_tx,
+                    &ui_tx,
+                );
+            }
+
+            event @ (HyuskEvent::UserInput(_) | HyuskEvent::ScheduledAgentInput(_)) => {
+                let scheduled = matches!(&event, HyuskEvent::ScheduledAgentInput(_));
+                let text = match event {
+                    HyuskEvent::UserInput(text) | HyuskEvent::ScheduledAgentInput(text) => text,
+                    _ => unreachable!("matched an input event"),
+                };
+                if scheduled
+                    && (should_defer_scheduled_input(
+                        active.is_some(),
+                        listen_capture_active(&listen),
+                        voice_conversation,
+                    ) || approval_blocks_scheduled_input(&agent))
+                {
+                    // Never hand a scheduled prompt to a turn that is waiting
+                    // for a yes/no confirmation: `handle` would treat it as
+                    // the answer and drop the prompt.
+                    scheduled_inputs.push_back(text);
+                    continue;
+                }
                 if text.trim().is_empty() {
+                    continue;
+                }
+
+                if let Some(name) = crate::agent::commands::exact_workflow_trigger(&text) {
+                    let foreground_active = active.is_some();
+                    interrupt_listen(&mut listen).await;
+                    finish_voice_conversation(&mut voice_conversation, &mut voice_listen_until);
+                    release_next_scheduled_input(
+                        &mut scheduled_inputs,
+                        &mut pending_followups,
+                        foreground_active,
+                        false,
+                        voice_conversation,
+                        approval_blocks_scheduled_input(&agent),
+                    );
+                    if !foreground_active {
+                        if resume_media.swap(false, Ordering::Relaxed) {
+                            tokio::spawn(media::resume());
+                        }
+                        send_state(&ui_tx, HyuskState::Hidden).await;
+                    }
+                    pending_followups.push_back(HyuskEvent::RunWorkflow { name });
                     continue;
                 }
 
@@ -201,8 +609,14 @@ pub async fn run_agent_task(
                  * Interrupt the running turn before starting the new one so
                  * the agent is always responsive to the latest message.
                  */
-                interrupt_active(&mut active).await;
-                interrupt_listen(&mut listen).await;
+                interrupt_interaction(
+                    &mut active,
+                    &mut listen,
+                    &mut active_workflow,
+                    &ui_tx,
+                    false,
+                )
+                .await;
                 crate::status::awaiting_reply(false);
 
                 let cancel = CancellationToken::new();
@@ -224,6 +638,8 @@ pub async fn run_agent_task(
                 let turn_voice_conversation = voice_conversation;
                 let id = next_turn_id;
                 next_turn_id += 1;
+                last_finished_turn = None;
+                deferred_reply_listen = None;
 
                 let handle = tokio::spawn(async move {
                     run_turn(
@@ -236,26 +652,110 @@ pub async fn run_agent_task(
                         turn_resume,
                         turn_event_tx.clone(),
                         turn_voice_conversation,
+                        id,
                     )
                     .await;
                     let _ = turn_event_tx.send(HyuskEvent::TurnFinished { id }).await;
                 });
 
                 active = Some(ActiveTurn { id, cancel, handle });
+                start_next_workflow(
+                    &mut workflow_queue,
+                    &mut active_workflow,
+                    active.is_some(),
+                    listen_capture_active(&listen) || voice_conversation,
+                    &workflow_tools,
+                    &agent_tx,
+                    &ui_tx,
+                );
+            }
+
+            HyuskEvent::RunWorkflow { name } => {
+                match crate::agent::commands::parse_named_workflow(&name) {
+                    Ok(plan) => {
+                        if workflow_queue.len() + usize::from(active_workflow.is_some())
+                            >= MAX_QUEUED_WORKFLOWS
+                        {
+                            let message = format!(
+                                "Could not queue workflow {name}: the workflow queue is full."
+                            );
+                            crate::status::card("workflow_error", &message, true);
+                            let _ = ui_tx.try_send(HyuskEvent::Response(message));
+                            continue;
+                        }
+                        let desktop = plan.actions.iter().any(|action| {
+                            matches!(
+                                action.tool_name(),
+                                "process" | "computer" | "window" | "shell"
+                            )
+                        });
+                        let id = next_workflow_id;
+                        next_workflow_id += 1;
+                        workflow_queue.push_back(WorkflowJob {
+                            id,
+                            name: name.clone(),
+                            actions: plan.actions,
+                            desktop,
+                        });
+                        let message = if desktop
+                            && (active.is_some()
+                                || listen_capture_active(&listen)
+                                || voice_conversation)
+                        {
+                            format!("Workflow {name} queued until the current interaction ends.")
+                        } else {
+                            format!("Workflow {name} queued to run.")
+                        };
+                        crate::status::card("workflow", &message, false);
+                        start_next_workflow(
+                            &mut workflow_queue,
+                            &mut active_workflow,
+                            active.is_some(),
+                            listen_capture_active(&listen) || voice_conversation,
+                            &workflow_tools,
+                            &agent_tx,
+                            &ui_tx,
+                        );
+                    }
+                    Err(message) => {
+                        crate::status::card("workflow_error", &message, true);
+                        let _ = ui_tx.try_send(HyuskEvent::Response(message));
+                    }
+                }
             }
 
             HyuskEvent::TurnFinished { id } => {
                 if active.as_ref().map(|turn| turn.id) == Some(id) {
                     active = None;
+                    last_finished_turn = Some(id);
+                    if deferred_reply_listen == Some(id) {
+                        deferred_reply_listen = None;
+                        pending_followups.push_back(HyuskEvent::AwaitReplyListening { id });
+                    }
                     announce_completed_tasks(&mut completed_tasks, &ui_tx, &tts).await;
-                    if let Some(text) = scheduled_inputs.pop_front() {
-                        let _ = agent_tx.send(HyuskEvent::UserInput(text)).await;
-                    } else if voice_conversation {
+                    let scheduled_released = release_next_scheduled_input(
+                        &mut scheduled_inputs,
+                        &mut pending_followups,
+                        false,
+                        listen_capture_active(&listen),
+                        voice_conversation,
+                        approval_blocks_scheduled_input(&agent),
+                    );
+                    if !scheduled_released && voice_conversation {
                         voice_listen_until =
                             Some(std::time::Instant::now() + Duration::from_secs(30));
-                        let _ = agent_tx.send(HyuskEvent::ContinueListening).await;
+                        pending_followups.push_back(HyuskEvent::ContinueListening);
                     }
                 }
+                start_next_workflow(
+                    &mut workflow_queue,
+                    &mut active_workflow,
+                    active.is_some(),
+                    listen_capture_active(&listen) || voice_conversation,
+                    &workflow_tools,
+                    &agent_tx,
+                    &ui_tx,
+                );
             }
 
             HyuskEvent::ScheduledWorkflow { id, name } => {
@@ -265,21 +765,66 @@ pub async fn run_agent_task(
                     format!("Scheduled workflow ready: {name}"),
                     false,
                 );
-                let text = format!("run {name}");
-                if active.is_some() {
-                    scheduled_inputs.push_back(text);
-                } else {
-                    let _ = agent_tx.send(HyuskEvent::UserInput(text)).await;
+                pending_followups.push_back(HyuskEvent::RunWorkflow { name });
+            }
+
+            HyuskEvent::WorkflowFinished {
+                id,
+                name,
+                success,
+                summary,
+            } => {
+                if active_workflow.as_ref().map(|workflow| workflow.id) != Some(id) {
+                    continue;
                 }
+                active_workflow = None;
+                let message = format!(
+                    "Workflow {name} {}: {summary}",
+                    if success { "completed" } else { "failed" }
+                );
+                crate::status::card(
+                    if success {
+                        "workflow"
+                    } else {
+                        "workflow_error"
+                    },
+                    &message,
+                    !success,
+                );
+                let _ = ui_tx.try_send(HyuskEvent::Response(message));
+                start_next_workflow(
+                    &mut workflow_queue,
+                    &mut active_workflow,
+                    active.is_some(),
+                    listen_capture_active(&listen) || voice_conversation,
+                    &workflow_tools,
+                    &agent_tx,
+                    &ui_tx,
+                );
             }
 
             HyuskEvent::ScheduledAgentTask { id, prompt } => {
                 println!("[Scheduler #{id}] Agent task due");
-                crate::status::card("scheduled_task", "Scheduled agent task is starting", false);
-                if active.is_some() {
+                if should_defer_scheduled_input(
+                    active.is_some(),
+                    listen_capture_active(&listen),
+                    voice_conversation,
+                ) || approval_blocks_scheduled_input(&agent)
+                {
+                    println!("[Scheduler #{id}] Queued behind the current interaction");
+                    crate::status::card(
+                        "scheduled_task",
+                        "Scheduled agent task is waiting for the current interaction to end",
+                        false,
+                    );
                     scheduled_inputs.push_back(prompt);
                 } else {
-                    let _ = agent_tx.send(HyuskEvent::UserInput(prompt)).await;
+                    crate::status::card(
+                        "scheduled_task",
+                        "Scheduled agent task is starting",
+                        false,
+                    );
+                    pending_followups.push_back(HyuskEvent::ScheduledAgentInput(prompt));
                 }
             }
 
@@ -305,29 +850,110 @@ pub async fn run_agent_task(
                 }
             }
 
+            HyuskEvent::ApprovalExpired => {
+                // The timer only fires when the lock was free to read the
+                // deadline, but a turn can start in between. Try the lock so a
+                // running turn never blocks the event loop.
+                let expired = agent
+                    .try_lock()
+                    .ok()
+                    .and_then(|mut agent| agent.expire_stale_approval());
+                let Some(message) = expired else {
+                    continue;
+                };
+                println!("[Agent] Pending confirmation expired");
+                crate::status::card("approval", &message, false);
+                let _ = ui_tx.try_send(HyuskEvent::Response(message));
+                release_next_scheduled_input(
+                    &mut scheduled_inputs,
+                    &mut pending_followups,
+                    active.is_some(),
+                    listen_capture_active(&listen),
+                    voice_conversation,
+                    approval_blocks_scheduled_input(&agent),
+                );
+            }
+
             HyuskEvent::StopRequested => {
                 println!("[Agent] Emergency stop requested");
-                interrupt_active(&mut active).await;
-                interrupt_listen(&mut listen).await;
+                clear_pending_interactions(&mut pending_followups, &mut scheduled_inputs);
+                last_finished_turn = None;
+                deferred_reply_listen = None;
+                interrupt_interaction(&mut active, &mut listen, &mut active_workflow, &ui_tx, true)
+                    .await;
+                // An emergency stop disarms a stored confirmation. Otherwise a
+                // later, unrelated "yes" could execute the aborted action, and
+                // queued scheduled input would stay blocked behind it.
+                if agent.lock().await.clear_pending_approval() {
+                    crate::status::card("approval", "Pending confirmation cancelled.", false);
+                }
+                let queued = workflow_queue.len();
+                workflow_queue.clear();
+                if queued > 0 {
+                    let message = format!("Cancelled {queued} queued workflow(s).");
+                    crate::status::card("workflow", &message, false);
+                    let _ = ui_tx.try_send(HyuskEvent::Response(message));
+                }
                 voice_conversation = false;
                 voice_listen_until = None;
+                crate::status::awaiting_reply(false);
+                if resume_media.swap(false, Ordering::Relaxed) {
+                    tokio::spawn(media::resume());
+                }
+                announce_completed_tasks(&mut completed_tasks, &ui_tx, &tts).await;
                 send_state(&ui_tx, HyuskState::Hidden).await;
             }
 
             HyuskEvent::StopListening => {
+                if let Some(listen) = &listen {
+                    listen.cancel.cancel();
+                }
                 interrupt_listen(&mut listen).await;
-                voice_conversation = false;
-                voice_listen_until = None;
-                crate::status::awaiting_reply(false);
+                finish_voice_conversation(&mut voice_conversation, &mut voice_listen_until);
+                release_next_scheduled_input(
+                    &mut scheduled_inputs,
+                    &mut pending_followups,
+                    active.is_some(),
+                    listen_capture_active(&listen),
+                    voice_conversation,
+                    approval_blocks_scheduled_input(&agent),
+                );
+                if resume_media.swap(false, Ordering::Relaxed) {
+                    tokio::spawn(media::resume());
+                }
                 send_state(&ui_tx, HyuskState::Hidden).await;
+                start_next_workflow(
+                    &mut workflow_queue,
+                    &mut active_workflow,
+                    active.is_some(),
+                    listen_capture_active(&listen) || voice_conversation,
+                    &workflow_tools,
+                    &agent_tx,
+                    &ui_tx,
+                );
             }
 
             HyuskEvent::ModelSelected { provider, model } => {
-                interrupt_active(&mut active).await;
-                interrupt_listen(&mut listen).await;
-                voice_conversation = false;
-                voice_listen_until = None;
+                if let Some(listen) = &listen {
+                    listen.cancel.cancel();
+                }
+                remove_stale_listen_followups(&mut pending_followups);
+                last_finished_turn = None;
+                deferred_reply_listen = None;
+                let _ = tokio::join!(interrupt_active(&mut active), interrupt_listen(&mut listen));
+                finish_voice_conversation(&mut voice_conversation, &mut voice_listen_until);
+                release_next_scheduled_input(
+                    &mut scheduled_inputs,
+                    &mut pending_followups,
+                    active.is_some(),
+                    listen_capture_active(&listen),
+                    voice_conversation,
+                    // Selecting a model clears any armed approval, so it must
+                    // not hold back input released after the switch.
+                    false,
+                );
                 let result = agent.lock().await.select_model(&provider, &model);
+                sonic_mode = agent.lock().await.uses_bedrock_sonic();
                 let message = match result {
                     Ok(()) => {
                         crate::status::model(&provider, &model);
@@ -341,12 +967,38 @@ pub async fn run_agent_task(
                 };
                 crate::status::card("model", &message, false);
                 let _ = ui_tx.try_send(HyuskEvent::Response(message));
+                start_next_workflow(
+                    &mut workflow_queue,
+                    &mut active_workflow,
+                    active.is_some(),
+                    listen_capture_active(&listen),
+                    &workflow_tools,
+                    &agent_tx,
+                    &ui_tx,
+                );
+            }
+
+            HyuskEvent::ApiKeySaved { provider } => {
+                // Read the key back from the keyring instead of carrying it in
+                // the event, then hand the fresh client to the live agent so
+                // the next model switch uses it without a service restart.
+                let message = match crate::model::configured_client(&provider).await {
+                    Some(client) => {
+                        agent.lock().await.set_provider_client(&provider, client);
+                        format!("Saved the {provider} key. Pick a model from the Hyusk panel.")
+                    }
+                    None => format!(
+                        "Saved the {provider} key, but it could not be read back from the keyring."
+                    ),
+                };
+                crate::status::card("key", &message, false);
             }
 
             HyuskEvent::Shutdown => {
                 println!("[Agent] Shutdown requested");
-                interrupt_active(&mut active).await;
-                interrupt_listen(&mut listen).await;
+                interrupt_interaction(&mut active, &mut listen, &mut active_workflow, &ui_tx, true)
+                    .await;
+                workflow_queue.clear();
                 break;
             }
 
@@ -354,7 +1006,308 @@ pub async fn run_agent_task(
         }
     }
 
+    // A closed event channel is also a runtime shutdown path. Do not leave
+    // microphone, turn, or workflow workers detached if Shutdown was not sent.
+    interrupt_interaction(&mut active, &mut listen, &mut active_workflow, &ui_tx, true).await;
+    workflow_queue.clear();
+
     Ok(())
+}
+
+fn start_next_workflow(
+    queue: &mut VecDeque<WorkflowJob>,
+    active: &mut Option<ActiveWorkflow>,
+    turn_active: bool,
+    listen_active: bool,
+    tools: &ToolRegistry,
+    event_tx: &Sender<HyuskEvent>,
+    ui_tx: &Sender<HyuskEvent>,
+) {
+    if active.is_some() {
+        return;
+    }
+    let eligible = queue
+        .iter()
+        .position(|job| !job.desktop || (!turn_active && !listen_active));
+    let Some(index) = eligible else {
+        return;
+    };
+
+    let job = queue.remove(index).expect("eligible workflow exists");
+    let cancel = CancellationToken::new();
+    let worker_cancel = cancel.clone();
+    let worker_tx = event_tx.clone();
+    let worker_tools = tools.clone();
+    let id = job.id;
+    let name = job.name.clone();
+    let active_name = job.name;
+    let actions = job.actions;
+    crate::status::card("workflow", format!("Workflow {name} is running."), false);
+    let _ = ui_tx.try_send(HyuskEvent::Response(format!("Workflow {name} is running.")));
+    let handle = tokio::spawn(async move {
+        let result = execute_workflow_actions(&actions, &worker_tools, &worker_cancel).await;
+        let (success, summary) = match result {
+            Ok(summary) => (true, summary),
+            Err(error) => (false, error),
+        };
+        let _ = worker_tx
+            .send(HyuskEvent::WorkflowFinished {
+                id,
+                name,
+                success,
+                summary,
+            })
+            .await;
+    });
+    *active = Some(ActiveWorkflow {
+        id,
+        name: active_name,
+        desktop: job.desktop,
+        cancel,
+        handle,
+    });
+}
+
+fn finish_voice_conversation(
+    voice_conversation: &mut bool,
+    voice_listen_until: &mut Option<std::time::Instant>,
+) {
+    *voice_conversation = false;
+    *voice_listen_until = None;
+    crate::status::awaiting_reply(false);
+}
+
+fn listen_capture_active(listen: &Option<ActiveListen>) -> bool {
+    listen
+        .as_ref()
+        .is_some_and(|listen| !listen.handle.is_finished())
+}
+
+fn normalize_voice_transcript(
+    id: u64,
+    text: String,
+    listen: &Option<ActiveListen>,
+) -> Option<HyuskEvent> {
+    listen
+        .as_ref()
+        .filter(|capture| {
+            capture.id == id && capture.probe_id.is_none() && !capture.cancel.is_cancelled()
+        })
+        .map(|_| {
+            if crate::agent::runner::is_voice_session_stop(&text) {
+                HyuskEvent::StopListening
+            } else {
+                HyuskEvent::UserInput(text)
+            }
+        })
+}
+
+fn normalize_listen_completed(
+    id: u64,
+    continue_listening: bool,
+    listen: &Option<ActiveListen>,
+) -> Option<HyuskEvent> {
+    listen
+        .as_ref()
+        .filter(|capture| {
+            capture.id == id && capture.probe_id.is_none() && !capture.cancel.is_cancelled()
+        })
+        .map(|_| {
+            if continue_listening {
+                HyuskEvent::ContinueListening
+            } else {
+                HyuskEvent::StopListening
+            }
+        })
+}
+
+fn is_current_sonic_listen(id: u64, listen: &Option<ActiveListen>) -> bool {
+    listen.as_ref().is_some_and(|capture| {
+        capture.id == id && capture.probe_id.is_none() && !capture.cancel.is_cancelled()
+    })
+}
+
+fn should_defer_scheduled_input(
+    turn_active: bool,
+    listen_active: bool,
+    voice_active: bool,
+) -> bool {
+    turn_active || listen_active || voice_active
+}
+
+/// Resolve when the armed confirmation's deadline passes, or never when no
+/// confirmation is armed.
+///
+/// The deadline is read with `try_lock`: a held lock means a turn is running,
+/// and the next turn completion wakes the loop to re-read it.
+async fn approval_expiry(agent: &Arc<Mutex<Agent>>) {
+    match agent
+        .try_lock()
+        .ok()
+        .and_then(|agent| agent.approval_deadline())
+    {
+        Some(deadline) => tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Whether an armed tool approval holds back queued scheduled input.
+///
+/// A scheduled prompt is not an answer to a confirmation. While one is armed
+/// the prompt waits instead of being consumed as a yes/no reply. A locked agent
+/// means a turn is running, which defers the input either way.
+fn approval_blocks_scheduled_input(agent: &Arc<Mutex<Agent>>) -> bool {
+    agent
+        .try_lock()
+        .map(|agent| agent.awaiting_approval())
+        .unwrap_or(true)
+}
+
+fn release_next_scheduled_input(
+    scheduled_inputs: &mut VecDeque<String>,
+    pending_followups: &mut VecDeque<HyuskEvent>,
+    turn_active: bool,
+    listen_active: bool,
+    voice_active: bool,
+    approval_pending: bool,
+) -> bool {
+    if !should_defer_scheduled_input(turn_active, listen_active, voice_active) && !approval_pending
+    {
+        if let Some(prompt) = scheduled_inputs.pop_front() {
+            pending_followups.push_back(HyuskEvent::ScheduledAgentInput(prompt));
+            return true;
+        }
+    }
+    false
+}
+
+fn clear_pending_interactions(
+    pending_followups: &mut VecDeque<HyuskEvent>,
+    scheduled_inputs: &mut VecDeque<String>,
+) {
+    pending_followups.clear();
+    scheduled_inputs.clear();
+}
+
+fn remove_stale_listen_followups(pending_followups: &mut VecDeque<HyuskEvent>) {
+    pending_followups.retain(|event| {
+        !matches!(
+            event,
+            HyuskEvent::ContinueListening | HyuskEvent::AwaitReplyListening { .. }
+        )
+    });
+}
+
+fn should_probe_busy_wake(event: &HyuskEvent, sonic_mode: bool) -> bool {
+    // Follow-up notifications cannot cancel or replace a running task. Nova
+    // owns its live mic/barge-in path; text providers validate new speech first.
+    matches!(event, HyuskEvent::WakeWordDetected) && !sonic_mode
+}
+
+async fn cancel_desktop_workflow(active: &mut Option<ActiveWorkflow>, ui_tx: &Sender<HyuskEvent>) {
+    if active
+        .as_ref()
+        .is_some_and(|workflow| workflow.desktop && !workflow.handle.is_finished())
+    {
+        cancel_workflow(active, ui_tx).await;
+    }
+}
+
+fn signal_interaction_cancellation(
+    turn: &Option<ActiveTurn>,
+    listen: &Option<ActiveListen>,
+    workflow: &Option<ActiveWorkflow>,
+    cancel_any_workflow: bool,
+) {
+    if let Some(turn) = turn {
+        turn.cancel.cancel();
+    }
+    if let Some(listen) = listen {
+        listen.cancel.cancel();
+    }
+    if let Some(workflow) = workflow {
+        if cancel_any_workflow || workflow.desktop {
+            workflow.cancel.cancel();
+        }
+    }
+}
+
+async fn interrupt_interaction(
+    turn: &mut Option<ActiveTurn>,
+    listen: &mut Option<ActiveListen>,
+    workflow: &mut Option<ActiveWorkflow>,
+    ui_tx: &Sender<HyuskEvent>,
+    cancel_any_workflow: bool,
+) {
+    signal_interaction_cancellation(turn, listen, workflow, cancel_any_workflow);
+    if cancel_any_workflow {
+        let _ = tokio::join!(
+            interrupt_active(turn),
+            interrupt_listen(listen),
+            cancel_workflow(workflow, ui_tx),
+        );
+    } else {
+        let _ = tokio::join!(
+            interrupt_active(turn),
+            interrupt_listen(listen),
+            cancel_desktop_workflow(workflow, ui_tx),
+        );
+    }
+}
+
+async fn cancel_workflow(active: &mut Option<ActiveWorkflow>, ui_tx: &Sender<HyuskEvent>) {
+    if let Some(mut workflow) = active.take() {
+        let message = format!("Workflow {} cancelled.", workflow.name);
+        workflow.cancel.cancel();
+        if tokio::time::timeout(Duration::from_millis(350), &mut workflow.handle)
+            .await
+            .is_err()
+        {
+            workflow.handle.abort();
+            let _ = workflow.handle.await;
+        }
+        crate::status::card("workflow", &message, false);
+        let _ = ui_tx.try_send(HyuskEvent::Response(message));
+    }
+}
+
+async fn execute_workflow_actions(
+    actions: &[crate::agent::commands::Action],
+    tools: &ToolRegistry,
+    cancel: &CancellationToken,
+) -> std::result::Result<String, String> {
+    let mut completed = 0usize;
+    for action in actions {
+        if cancel.is_cancelled() {
+            return Err("cancelled before all steps completed".to_string());
+        }
+        let name = action.tool_name();
+        let input = action.tool_input();
+        if crate::tools::safety::requires_approval(name, &input) {
+            return Err(format!(
+                "step {} requires user approval, which is unavailable in workflow execution",
+                completed + 1
+            ));
+        }
+        let Some(tool) = tools.get(name) else {
+            return Err(format!(
+                "step {} needs unavailable tool {name}",
+                completed + 1
+            ));
+        };
+        let result = tokio::select! {
+            _ = cancel.cancelled() => return Err("cancelled before all steps completed".to_string()),
+            result = tool.execute(&input) => result.map_err(|error| {
+                format!("step {} ({name}) failed: {error}", completed + 1)
+            })?,
+        };
+        if !result.success {
+            let detail = result.error.unwrap_or(result.output);
+            return Err(format!("step {} ({name}) failed: {detail}", completed + 1));
+        }
+        completed += 1;
+    }
+    Ok(format!("{completed} step(s) completed."))
 }
 
 async fn announce_completed_tasks(
@@ -362,11 +1315,7 @@ async fn announce_completed_tasks(
     ui_tx: &Sender<HyuskEvent>,
     tts: &TextToSpeech,
 ) {
-    while let Some((label, success)) = completed_tasks.pop_front() {
-        let announcement = format!(
-            "Background task {label} {}. Its report is ready.",
-            if success { "completed" } else { "failed" }
-        );
+    for announcement in take_completed_task_announcements(completed_tasks) {
         let _ = ui_tx.try_send(HyuskEvent::Response(announcement.clone()));
         crate::status::card("task", &announcement, true);
         let tts = tts.clone();
@@ -375,6 +1324,20 @@ async fn announce_completed_tasks(
             let _ = tts.speak_cancellable(&announcement, &cancel).await;
         });
     }
+}
+
+fn take_completed_task_announcements(
+    completed_tasks: &mut VecDeque<(String, bool)>,
+) -> Vec<String> {
+    completed_tasks
+        .drain(..)
+        .map(|(label, success)| {
+            format!(
+                "Background task {label} {}. Its report is ready.",
+                if success { "completed" } else { "failed" }
+            )
+        })
+        .collect()
 }
 
 /// Record a short command from the microphone and forward it as user input.
@@ -389,10 +1352,10 @@ async fn handle_listen(
     ui_tx: Sender<HyuskEvent>,
     wake_resume: WakeResume,
     cancel: CancellationToken,
-    resume_media: Arc<AtomicBool>,
     agent: Arc<Mutex<Agent>>,
     output_active: Arc<AtomicBool>,
     listen_until: Option<std::time::Instant>,
+    listen_id: u64,
 ) {
     // Always hand the microphone back to the wake detector, even when this
     // task is cancelled mid-recording.
@@ -401,7 +1364,6 @@ async fn handle_listen(
     let stt_start = std::time::Instant::now();
 
     if agent.lock().await.uses_bedrock_sonic() {
-        crate::status::awaiting_reply(false);
         output_active.store(true, Ordering::Relaxed);
         let _output_guard = OutputOnDrop(output_active);
         send_state(&ui_tx, HyuskState::Listening).await;
@@ -411,48 +1373,35 @@ async fn handle_listen(
             result = sonic_agent.handle_sonic_live_audio(Arc::clone(&stt), Some(&ui_tx), &cancel) => Some(result),
         };
         drop(sonic_agent);
-        match result {
-            Some(Ok(Some(text))) => {
-                let waiting = agent.lock().await.reply_needs_follow_up() == Some(true);
-                crate::status::awaiting_reply(waiting);
-                crate::status::card(
-                    if waiting { "confirmation" } else { "response" },
-                    &text,
-                    waiting,
-                );
-                let _ = agent_tx.send(HyuskEvent::Response(text)).await;
-                if waiting {
-                    send_state(&ui_tx, HyuskState::Listening).await;
-                } else {
-                    send_state(&ui_tx, HyuskState::Hidden).await;
-                }
-            }
-            Some(Ok(None)) | None => send_state(&ui_tx, HyuskState::Hidden).await,
-            Some(Err(error)) => {
-                eprintln!("[Nova Sonic] Turn failed: {error:#}");
-                let message = format!(
-                    "Nova Sonic failed: {}",
-                    error.to_string().lines().next().unwrap_or("unknown error")
-                );
-                crate::status::card("error", &message, false);
-                let _ = ui_tx.try_send(HyuskEvent::Response(message));
-                send_state(&ui_tx, HyuskState::Hidden).await;
-            }
-        }
-        if resume_media.swap(false, Ordering::Relaxed) {
-            media::resume().await;
-        }
         if !cancel.is_cancelled() {
-            let _ = agent_tx.send(HyuskEvent::StopListening).await;
+            let (text, waiting, error) = match result {
+                Some(Ok(Some(text))) => {
+                    let waiting = agent.lock().await.reply_needs_follow_up() == Some(true);
+                    (Some(text), waiting, None)
+                }
+                Some(Ok(None)) | None => (None, false, None),
+                Some(Err(error)) => (None, false, Some(error.to_string())),
+            };
+            if !cancel.is_cancelled() {
+                let _ = agent_tx
+                    .send(HyuskEvent::SonicListenCompleted {
+                        id: listen_id,
+                        text,
+                        waiting,
+                        error,
+                    })
+                    .await;
+            }
         }
         return;
     }
 
     // A generous cap; recording still stops shortly after the speaker pauses,
     // so this only bounds unusually long requests.
-    let recording = stt.transcribe_from_microphone(8.0);
+    let capture_cancel = cancel.child_token();
+    let recording = stt.transcribe_from_microphone(8.0, &capture_cancel);
 
-    let transcription = match tokio::time::timeout(Duration::from_secs(45), async {
+    let transcription = match timeout_with_cancel(Duration::from_secs(45), &capture_cancel, async {
         tokio::select! {
             _ = cancel.cancelled() => None,
             result = recording => Some(result),
@@ -460,16 +1409,16 @@ async fn handle_listen(
     })
     .await
     {
-        Ok(Some(Ok(text))) => Some(text),
-        Ok(Some(Err(error))) => {
+        Some(Some(Ok(text))) => Some(text),
+        Some(Some(Err(error))) => {
             eprintln!("[STT] {error}");
             None
         }
-        Ok(None) => {
+        Some(None) => {
             println!("[STT] Listening replaced by a newer request");
             None
         }
-        Err(_) => {
+        None => {
             eprintln!("[STT] Transcription timed out");
             None
         }
@@ -483,27 +1432,23 @@ async fn handle_listen(
 
     match transcription {
         Some(text) if !text.trim().is_empty() => {
-            if crate::agent::runner::is_voice_session_stop(&text) {
-                let _ = agent_tx.send(HyuskEvent::StopListening).await;
-                return;
-            }
-            crate::status::awaiting_reply(false);
-            let _ = agent_tx.send(HyuskEvent::UserInput(text)).await;
+            let _ = agent_tx
+                .send(HyuskEvent::VoiceTranscript {
+                    id: listen_id,
+                    text,
+                })
+                .await;
         }
 
         _ => {
-            if listen_until.is_some_and(|deadline| std::time::Instant::now() < deadline) {
-                let _ = agent_tx.send(HyuskEvent::ContinueListening).await;
-                return;
-            }
-            crate::status::awaiting_reply(false);
-            // Nothing usable was heard: hand media back immediately.
-            if resume_media.swap(false, Ordering::Relaxed) {
-                media::resume().await;
-            }
-
-            send_state(&ui_tx, HyuskState::Hidden).await;
-            let _ = agent_tx.send(HyuskEvent::StopListening).await;
+            let continue_listening =
+                listen_until.is_some_and(|deadline| std::time::Instant::now() < deadline);
+            let _ = agent_tx
+                .send(HyuskEvent::ListenCompleted {
+                    id: listen_id,
+                    continue_listening,
+                })
+                .await;
         }
     }
 }
@@ -519,6 +1464,7 @@ async fn run_turn(
     resume_media: Arc<AtomicBool>,
     event_tx: Sender<HyuskEvent>,
     voice_conversation: bool,
+    turn_id: u64,
 ) {
     // Keep the detector muted until this turn (including TTS) is done.
     let _output_guard = OutputOnDrop(output_active);
@@ -531,8 +1477,10 @@ async fn run_turn(
     let turn_start = std::time::Instant::now();
 
     /*
-     * TTS worker. It speaks reply sentences as the model streams them, so the
-     * first words start before the full answer is generated.
+     * TTS worker. The agent forwards a sentence as soon as it completes while
+     * the reply is still streaming, so the first words start before the full
+     * answer is generated. A reply that was not streamed arrives as one chunk
+     * and is spoken the same way.
      */
     let (sentence_tx, mut sentence_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
@@ -652,7 +1600,9 @@ async fn run_turn(
     if !cancel.is_cancelled() {
         crate::status::awaiting_reply(needs_reply);
         if needs_reply && !voice_conversation {
-            let _ = event_tx.send(HyuskEvent::ContinueListening).await;
+            let _ = event_tx
+                .send(HyuskEvent::AwaitReplyListening { id: turn_id })
+                .await;
         }
     }
 
@@ -691,7 +1641,68 @@ async fn send_state(ui_tx: &Sender<HyuskEvent>, state: HyuskState) {
 
 #[cfg(test)]
 mod tests {
-    use super::response_needs_reply;
+    use super::{
+        approval_blocks_scheduled_input, approval_expiry, cancel_desktop_workflow,
+        clear_pending_interactions, execute_workflow_actions, finish_voice_conversation,
+        interrupt_active, interrupt_interaction, is_current_sonic_listen, listen_capture_active,
+        next_runtime_event, normalize_listen_completed, normalize_voice_transcript,
+        release_next_scheduled_input, remove_stale_listen_followups, response_needs_reply,
+        run_agent_task, should_defer_scheduled_input, should_probe_busy_wake, start_next_workflow,
+        take_completed_task_announcements, timeout_with_cancel, ActiveListen, ActiveTurn,
+        ActiveWorkflow, WorkflowJob,
+    };
+    use crate::{
+        agent::{commands::Action, Agent},
+        tools::{Tool, ToolRegistry, ToolResult},
+    };
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+    use std::collections::VecDeque;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::{Duration, Instant};
+    use tokio_util::sync::CancellationToken;
+
+    struct CountingTool(Arc<AtomicUsize>, bool);
+
+    #[test]
+    fn busy_wake_requires_new_speech_and_follow_up_cannot_interrupt() {
+        use crate::types::HyuskEvent;
+        assert!(should_probe_busy_wake(&HyuskEvent::WakeWordDetected, false));
+        assert!(!should_probe_busy_wake(
+            &HyuskEvent::ContinueListening,
+            false
+        ));
+        assert!(!should_probe_busy_wake(&HyuskEvent::WakeWordDetected, true));
+        assert!(!should_probe_busy_wake(
+            &HyuskEvent::ContinueListening,
+            true
+        ));
+    }
+
+    #[async_trait]
+    impl Tool for CountingTool {
+        fn name(&self) -> &str {
+            "memory"
+        }
+        fn description(&self) -> &str {
+            "test tool"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type":"object"})
+        }
+        async fn execute(&self, _input: &str) -> Result<ToolResult> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(if self.1 {
+                ToolResult::failure("deliberate failure")
+            } else {
+                ToolResult::success("ok")
+            })
+        }
+    }
 
     #[test]
     fn only_explicit_questions_open_follow_up_listening() {
@@ -702,5 +1713,743 @@ mod tests {
             "The timer is set for thirty minutes."
         ));
         assert!(!response_needs_reply("Done."));
+    }
+
+    #[tokio::test]
+    async fn emergency_interrupt_does_not_wait_forever_for_a_turn() {
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(std::future::pending());
+        let mut active = Some(ActiveTurn {
+            id: 1,
+            cancel: cancel.clone(),
+            handle,
+        });
+        let started = Instant::now();
+
+        interrupt_active(&mut active).await;
+
+        assert!(cancel.is_cancelled());
+        assert!(active.is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn internal_followup_does_not_send_into_a_full_actor_channel() {
+        use crate::types::HyuskEvent;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.send(HyuskEvent::StopRequested).await.unwrap();
+        let mut pending = VecDeque::from([HyuskEvent::ContinueListening]);
+
+        let first = tokio::time::timeout(
+            Duration::from_millis(50),
+            next_runtime_event(&mut rx, &mut pending),
+        )
+        .await
+        .expect("reading external events should not wait for internal send capacity");
+        assert!(matches!(first, Some(HyuskEvent::StopRequested)));
+
+        let second = tokio::time::timeout(
+            Duration::from_millis(50),
+            next_runtime_event(&mut rx, &mut pending),
+        )
+        .await
+        .expect("the pending internal event should be delivered locally");
+        assert!(matches!(second, Some(HyuskEvent::ContinueListening)));
+    }
+
+    #[tokio::test]
+    async fn stale_or_cancelled_sonic_completion_is_rejected() {
+        let active_handle = tokio::spawn(std::future::pending());
+        let mut active = Some(ActiveListen {
+            id: 9,
+            cancel: CancellationToken::new(),
+            handle: active_handle,
+            probe_id: None,
+        });
+        assert!(is_current_sonic_listen(9, &active));
+        assert!(!is_current_sonic_listen(8, &active));
+
+        active.as_ref().unwrap().cancel.cancel();
+        assert!(!is_current_sonic_listen(9, &active));
+        active.as_mut().unwrap().handle.abort();
+    }
+
+    #[tokio::test]
+    async fn stopping_clears_local_and_scheduled_followups() {
+        use crate::types::HyuskEvent;
+        let mut followups = VecDeque::from([
+            HyuskEvent::ContinueListening,
+            HyuskEvent::ScheduledAgentInput("later".into()),
+        ]);
+        let mut scheduled = VecDeque::from(["queued".to_string()]);
+
+        clear_pending_interactions(&mut followups, &mut scheduled);
+
+        assert!(followups.is_empty());
+        assert!(scheduled.is_empty());
+        assert!(should_defer_scheduled_input(true, false, false));
+        assert!(should_defer_scheduled_input(false, true, false));
+        assert!(should_defer_scheduled_input(false, false, true));
+        assert!(!should_defer_scheduled_input(false, false, false));
+    }
+
+    #[tokio::test]
+    async fn stale_voice_followups_are_removed_on_model_change() {
+        use crate::types::HyuskEvent;
+        let mut followups = VecDeque::from([
+            HyuskEvent::ContinueListening,
+            HyuskEvent::AwaitReplyListening { id: 4 },
+            HyuskEvent::ScheduledAgentInput("keep this".into()),
+        ]);
+
+        remove_stale_listen_followups(&mut followups);
+
+        assert!(matches!(
+            followups.front(),
+            Some(HyuskEvent::ScheduledAgentInput(text)) if text == "keep this"
+        ));
+        assert_eq!(followups.len(), 1);
+    }
+
+    #[test]
+    fn scheduled_input_waits_for_interaction_to_end() {
+        use crate::types::HyuskEvent;
+        let mut scheduled = VecDeque::from(["scheduled prompt".to_string()]);
+        let mut pending = VecDeque::new();
+
+        assert!(!release_next_scheduled_input(
+            &mut scheduled,
+            &mut pending,
+            true,
+            false,
+            false,
+            false,
+        ));
+        assert!(pending.is_empty());
+        assert!(release_next_scheduled_input(
+            &mut scheduled,
+            &mut pending,
+            false,
+            false,
+            false,
+            false,
+        ));
+        assert!(matches!(
+            pending.pop_front(),
+            Some(HyuskEvent::ScheduledAgentInput(text)) if text == "scheduled prompt"
+        ));
+    }
+
+    #[test]
+    fn scheduled_input_waits_for_a_pending_confirmation() {
+        use crate::types::HyuskEvent;
+        let mut scheduled = VecDeque::from(["scheduled prompt".to_string()]);
+        let mut pending = VecDeque::new();
+
+        assert!(!release_next_scheduled_input(
+            &mut scheduled,
+            &mut pending,
+            false,
+            false,
+            false,
+            true,
+        ));
+        assert!(pending.is_empty());
+        assert_eq!(scheduled.len(), 1, "the prompt is not consumed");
+
+        assert!(release_next_scheduled_input(
+            &mut scheduled,
+            &mut pending,
+            false,
+            false,
+            false,
+            false,
+        ));
+        assert!(matches!(
+            pending.pop_front(),
+            Some(HyuskEvent::ScheduledAgentInput(text)) if text == "scheduled prompt"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_running_turn_or_armed_approval_blocks_scheduled_input() {
+        let mut agent = Agent::new(
+            crate::model::openrouter::OpenRouterClient::new(
+                "test-key".into(),
+                "http://127.0.0.1".into(),
+            ),
+            "test-model".into(),
+            ToolRegistry::new(),
+        );
+        agent.arm_test_approval();
+        let agent = Arc::new(tokio::sync::Mutex::new(agent));
+
+        assert!(
+            approval_blocks_scheduled_input(&agent),
+            "an armed confirmation holds scheduled input"
+        );
+        assert!(agent.lock().await.clear_pending_approval());
+        assert!(!approval_blocks_scheduled_input(&agent), "disarmed");
+
+        // A held lock means a turn is running; defer conservatively.
+        let running_turn = agent.lock().await;
+        assert!(approval_blocks_scheduled_input(&agent), "running turn");
+        drop(running_turn);
+
+        assert!(!approval_blocks_scheduled_input(&agent));
+    }
+
+    #[tokio::test]
+    async fn approval_expiry_sleeps_until_the_deadline_or_forever() {
+        let mut agent = Agent::new(
+            crate::model::openrouter::OpenRouterClient::new(
+                "test-key".into(),
+                "http://127.0.0.1".into(),
+            ),
+            "test-model".into(),
+            ToolRegistry::new(),
+        );
+        agent.arm_test_approval_at(std::time::Instant::now());
+        let agent = Arc::new(tokio::sync::Mutex::new(agent));
+
+        tokio::time::timeout(Duration::from_secs(1), approval_expiry(&agent))
+            .await
+            .expect("an expired deadline resolves immediately");
+
+        agent.lock().await.clear_pending_approval();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), approval_expiry(&agent))
+                .await
+                .is_err(),
+            "no armed confirmation means no timer"
+        );
+
+        // A held lock is skipped so the event loop never waits on a running turn.
+        agent
+            .lock()
+            .await
+            .arm_test_approval_at(std::time::Instant::now());
+        let running_turn = agent.lock().await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), approval_expiry(&agent))
+                .await
+                .is_err(),
+            "a running turn defers the expiry check"
+        );
+        drop(running_turn);
+    }
+
+    #[tokio::test]
+    async fn an_expired_confirmation_releases_queued_scheduled_input() {
+        use crate::types::HyuskEvent;
+
+        let mut agent = Agent::new(
+            crate::model::openrouter::OpenRouterClient::new(
+                "test-key".into(),
+                "http://127.0.0.1".into(),
+            ),
+            "test-model".into(),
+            ToolRegistry::new(),
+        );
+        agent.arm_test_approval_at(std::time::Instant::now());
+        let agent = Arc::new(tokio::sync::Mutex::new(agent));
+
+        let mut scheduled = VecDeque::from(["scheduled prompt".to_string()]);
+        let mut pending = VecDeque::new();
+        assert!(!release_next_scheduled_input(
+            &mut scheduled,
+            &mut pending,
+            false,
+            false,
+            false,
+            approval_blocks_scheduled_input(&agent),
+        ));
+        assert_eq!(scheduled.len(), 1, "held while the confirmation is armed");
+
+        assert!(agent.lock().await.expire_stale_approval().is_some());
+
+        assert!(release_next_scheduled_input(
+            &mut scheduled,
+            &mut pending,
+            false,
+            false,
+            false,
+            approval_blocks_scheduled_input(&agent),
+        ));
+        assert!(matches!(
+            pending.pop_front(),
+            Some(HyuskEvent::ScheduledAgentInput(text)) if text == "scheduled prompt"
+        ));
+    }
+
+    #[tokio::test]
+    async fn event_loop_expires_an_abandoned_confirmation_then_runs_the_queued_task() {
+        use crate::types::{HyuskEvent, HyuskState};
+
+        let mut agent = Agent::new(
+            crate::model::openrouter::OpenRouterClient::new(
+                "test-key".into(),
+                // The released turn never reaches a model: the loop hands it
+                // over and the test stops there, well before this connects.
+                "http://127.0.0.1:9".into(),
+            ),
+            "test-model".into(),
+            ToolRegistry::new(),
+        );
+        /*
+         * Nobody answers this confirmation, so only the loop's timer resolves
+         * it. The deadline leaves the loop ample time to pick up the scheduled
+         * task below first, so the ordering being asserted does not depend on
+         * a fast machine.
+         */
+        agent.arm_test_approval_at(std::time::Instant::now() + Duration::from_millis(700));
+
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel(32);
+        let loop_handle = tokio::spawn(run_agent_task(
+            agent,
+            event_rx,
+            event_tx.clone(),
+            ui_tx,
+            crate::wake::detector::WakeResume::new(),
+            None,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        ));
+
+        // A scheduled task comes due while the confirmation is still armed.
+        event_tx
+            .send(HyuskEvent::ScheduledAgentTask {
+                id: 1,
+                prompt: "summarize the release notes".into(),
+            })
+            .await
+            .unwrap();
+
+        /*
+         * Nothing else is ever sent to the loop, so the first ui event can
+         * only be the expiry reply. A scheduled input that leaked into a turn
+         * while the confirmation was armed would announce "Thinking" first.
+         */
+        let expired = tokio::time::timeout(Duration::from_secs(5), ui_rx.recv())
+            .await
+            .expect("the approval timer fires without new input")
+            .expect("the ui channel stays open");
+        let HyuskEvent::Response(message) = expired else {
+            panic!("expected the expiry reply before any turn, got {expired:?}");
+        };
+        assert!(
+            message.contains("expired"),
+            "expected the abandoned confirmation to expire, got: {message}"
+        );
+
+        // With the confirmation gone, the queued prompt starts its own turn.
+        let started = tokio::time::timeout(Duration::from_secs(5), ui_rx.recv())
+            .await
+            .expect("the queued task is released after the expiry")
+            .expect("the ui channel stays open");
+        assert!(
+            matches!(started, HyuskEvent::StateChanged(HyuskState::Thinking)),
+            "expected the released scheduled task to start a turn, got {started:?}"
+        );
+
+        loop_handle.abort();
+        let _ = loop_handle.await;
+    }
+
+    #[tokio::test]
+    async fn interaction_cleanup_waits_concurrently_for_uncooperative_workers() {
+        let turn_cancel = CancellationToken::new();
+        let listen_cancel = CancellationToken::new();
+        let workflow_cancel = CancellationToken::new();
+        let mut turn = Some(ActiveTurn {
+            id: 1,
+            cancel: turn_cancel.clone(),
+            handle: tokio::spawn(std::future::pending()),
+        });
+        let mut listen = Some(ActiveListen {
+            id: 1,
+            cancel: listen_cancel.clone(),
+            handle: tokio::spawn(std::future::pending()),
+            probe_id: None,
+        });
+        let mut workflow = Some(ActiveWorkflow {
+            id: 1,
+            name: "slow".into(),
+            desktop: true,
+            cancel: workflow_cancel.clone(),
+            handle: tokio::spawn(std::future::pending()),
+        });
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(4);
+        let started = Instant::now();
+
+        interrupt_interaction(&mut turn, &mut listen, &mut workflow, &ui_tx, true).await;
+
+        assert!(turn_cancel.is_cancelled());
+        assert!(listen_cancel.is_cancelled());
+        assert!(workflow_cancel.is_cancelled());
+        assert!(started.elapsed() < Duration::from_millis(650));
+    }
+
+    #[tokio::test]
+    async fn transcription_timeout_stops_capture_without_ending_listen_lifecycle() {
+        let lifecycle_cancel = CancellationToken::new();
+        let capture_cancel = lifecycle_cancel.child_token();
+        let result = timeout_with_cancel(
+            Duration::from_millis(1),
+            &capture_cancel,
+            std::future::pending::<()>(),
+        )
+        .await;
+
+        assert!(result.is_none());
+        assert!(capture_cancel.is_cancelled());
+        assert!(!lifecycle_cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn external_listen_cancellation_still_suppresses_stale_capture_completion() {
+        let lifecycle_cancel = CancellationToken::new();
+        let capture_cancel = lifecycle_cancel.child_token();
+        let result = timeout_with_cancel(Duration::from_secs(1), &capture_cancel, async {
+            tokio::select! {
+                _ = lifecycle_cancel.cancelled() => None,
+                _ = std::future::pending::<()>() => Some(()),
+            }
+        });
+        lifecycle_cancel.cancel();
+
+        assert_eq!(result.await, Some(None));
+        assert!(lifecycle_cancel.is_cancelled());
+        assert!(capture_cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn queued_new_input_invalidates_an_older_voice_transcript() {
+        use crate::types::HyuskEvent;
+
+        let old_cancel = CancellationToken::new();
+        let old_handle = tokio::spawn(std::future::pending());
+        let listen = Some(ActiveListen {
+            id: 7,
+            cancel: old_cancel.clone(),
+            handle: old_handle,
+            probe_id: None,
+        });
+        let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+        tx.send(HyuskEvent::UserInput("new request".into()))
+            .await
+            .unwrap();
+        tx.send(HyuskEvent::VoiceTranscript {
+            id: 7,
+            text: "stale request".into(),
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            matches!(rx.recv().await, Some(HyuskEvent::UserInput(text)) if text == "new request")
+        );
+        // The UserInput dispatch interrupts the active capture before the next
+        // event is received, even if its worker had already queued a result.
+        old_cancel.cancel();
+        let Some(HyuskEvent::VoiceTranscript { id, text }) = rx.recv().await else {
+            panic!("expected queued voice transcript");
+        };
+        assert!(normalize_voice_transcript(id, text, &listen).is_none());
+    }
+
+    #[tokio::test]
+    async fn current_voice_transcript_normalizes_to_user_input() {
+        use crate::types::HyuskEvent;
+
+        let handle = tokio::spawn(std::future::pending());
+        let listen = Some(ActiveListen {
+            id: 8,
+            cancel: CancellationToken::new(),
+            handle,
+            probe_id: None,
+        });
+
+        assert!(matches!(
+            normalize_voice_transcript(8, "valid request".into(), &listen),
+            Some(HyuskEvent::UserInput(text)) if text == "valid request"
+        ));
+    }
+
+    #[tokio::test]
+    async fn stale_completion_cannot_end_a_newer_listen() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+        tx.send(crate::types::HyuskEvent::WakeWordDetected)
+            .await
+            .unwrap();
+        tx.send(crate::types::HyuskEvent::ListenCompleted {
+            id: 7,
+            continue_listening: false,
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(crate::types::HyuskEvent::WakeWordDetected)
+        ));
+        let new_listen = Some(ActiveListen {
+            id: 9,
+            cancel: CancellationToken::new(),
+            handle: tokio::spawn(std::future::pending()),
+            probe_id: None,
+        });
+        let Some(crate::types::HyuskEvent::ListenCompleted {
+            id,
+            continue_listening,
+        }) = rx.recv().await
+        else {
+            panic!("expected queued old listen completion");
+        };
+
+        assert!(normalize_listen_completed(id, continue_listening, &new_listen).is_none());
+        assert!(listen_capture_active(&new_listen));
+    }
+
+    #[tokio::test]
+    async fn normal_capture_events_do_not_match_a_busy_probe() {
+        let listen = Some(ActiveListen {
+            id: 1,
+            cancel: CancellationToken::new(),
+            handle: tokio::spawn(std::future::pending()),
+            probe_id: Some(1),
+        });
+
+        assert!(normalize_voice_transcript(1, "not a probe result".into(), &listen).is_none());
+        assert!(normalize_listen_completed(1, false, &listen).is_none());
+    }
+
+    #[test]
+    fn stopping_can_flush_queued_background_task_reports() {
+        let mut completed_tasks =
+            VecDeque::from([("backup".to_string(), true), ("sync".to_string(), false)]);
+
+        let announcements = take_completed_task_announcements(&mut completed_tasks);
+
+        assert_eq!(completed_tasks.len(), 0);
+        assert_eq!(announcements.len(), 2);
+        assert_eq!(
+            announcements[0],
+            "Background task backup completed. Its report is ready."
+        );
+        assert_eq!(
+            announcements[1],
+            "Background task sync failed. Its report is ready."
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_stops_before_an_action_that_needs_approval() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(CountingTool(calls.clone(), false));
+        let action = Action::Remember {
+            text: "ordinary note".into(),
+        };
+        let protected = Action::Shell {
+            command: "rm -rf /tmp/example".into(),
+        };
+
+        let result =
+            execute_workflow_actions(&[action, protected], &tools, &CancellationToken::new()).await;
+
+        assert!(result.unwrap_err().contains("requires user approval"));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn workflow_reports_tool_failures_without_model_fallback() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(CountingTool(calls.clone(), true));
+        let action = Action::Remember {
+            text: "ordinary note".into(),
+        };
+
+        let result = execute_workflow_actions(&[action], &tools, &CancellationToken::new()).await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            "step 1 (memory) failed: deliberate failure"
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn finished_listen_task_does_not_block_a_queued_desktop_workflow() {
+        let mut completed_listen = tokio::spawn(async {});
+        (&mut completed_listen).await.unwrap();
+        // Use a completed handle, mirroring a listen task that sent UserInput
+        // and has returned while its slot has not yet been cleared.
+        let listen = Some(ActiveListen {
+            id: 4,
+            cancel: CancellationToken::new(),
+            handle: completed_listen,
+            probe_id: None,
+        });
+        assert!(!listen_capture_active(&listen));
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(CountingTool(calls.clone(), false));
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(4);
+        let mut queue = VecDeque::from([WorkflowJob {
+            id: 4,
+            name: "deferred desktop".into(),
+            actions: vec![Action::Remember {
+                text: "note".into(),
+            }],
+            desktop: true,
+        }]);
+        let mut active = None;
+
+        start_next_workflow(
+            &mut queue,
+            &mut active,
+            false,
+            listen_capture_active(&listen),
+            &tools,
+            &event_tx,
+            &ui_tx,
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            event,
+            crate::types::HyuskEvent::WorkflowFinished { success: true, .. }
+        ));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn foreground_input_cancels_and_awaits_desktop_workflow() {
+        let cancel = CancellationToken::new();
+        let worker_cancel = cancel.clone();
+        let handle = tokio::spawn(async move { worker_cancel.cancelled().await });
+        let mut active = Some(ActiveWorkflow {
+            id: 9,
+            name: "open app".into(),
+            desktop: true,
+            cancel: cancel.clone(),
+            handle,
+        });
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel(4);
+
+        cancel_desktop_workflow(&mut active, &ui_tx).await;
+
+        assert!(cancel.is_cancelled());
+        assert!(active.is_none());
+        assert!(matches!(
+            ui_rx.try_recv(),
+            Ok(crate::types::HyuskEvent::Response(text)) if text == "Workflow open app cancelled."
+        ));
+    }
+
+    #[tokio::test]
+    async fn exact_workflow_voice_request_releases_desktop_queue() {
+        let mut voice_conversation = true;
+        let mut voice_listen_until = Some(std::time::Instant::now() + Duration::from_secs(30));
+        finish_voice_conversation(&mut voice_conversation, &mut voice_listen_until);
+        assert!(!voice_conversation);
+        assert!(voice_listen_until.is_none());
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(CountingTool(calls.clone(), false));
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(4);
+        let mut queue = VecDeque::from([WorkflowJob {
+            id: 5,
+            name: "voice workflow".into(),
+            actions: vec![Action::Remember {
+                text: "note".into(),
+            }],
+            desktop: true,
+        }]);
+        let mut active = None;
+
+        start_next_workflow(
+            &mut queue,
+            &mut active,
+            false,
+            listen_capture_active(&None) || voice_conversation,
+            &tools,
+            &event_tx,
+            &ui_tx,
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            event,
+            crate::types::HyuskEvent::WorkflowFinished { success: true, .. }
+        ));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn background_workflow_skips_a_deferred_desktop_job() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(CountingTool(calls.clone(), false));
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(4);
+        let action = || Action::Remember {
+            text: "note".into(),
+        };
+        let mut queue = VecDeque::from([
+            WorkflowJob {
+                id: 6,
+                name: "desktop first".into(),
+                actions: vec![action()],
+                desktop: true,
+            },
+            WorkflowJob {
+                id: 7,
+                name: "background second".into(),
+                actions: vec![action()],
+                desktop: false,
+            },
+        ]);
+        let mut active = None;
+
+        start_next_workflow(
+            &mut queue,
+            &mut active,
+            true,
+            false,
+            &tools,
+            &event_tx,
+            &ui_tx,
+        );
+
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.front().unwrap().id, 6);
+        assert_eq!(active.as_ref().unwrap().id, 7);
+        let event = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            event,
+            crate::types::HyuskEvent::WorkflowFinished {
+                id: 7,
+                success: true,
+                ..
+            }
+        ));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 }

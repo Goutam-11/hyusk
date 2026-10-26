@@ -273,22 +273,34 @@ impl PortalInput {
     /// Press and release an evdev keycode, holding Shift when requested.
     pub async fn keycode_click(&mut self, keycode: i32, shift: bool) -> Result<()> {
         if shift {
-            self.keycode(KEY_LEFTSHIFT, true).await?;
+            if let Err(error) = self.keycode(KEY_LEFTSHIFT, true).await {
+                let _ = self.keycode(KEY_LEFTSHIFT, false).await;
+                return Err(error.context("failed to press Shift; release was attempted"));
+            }
         }
 
-        self.keycode(keycode, true).await?;
-        self.keycode(keycode, false).await?;
+        // Always attempt release: the press may have reached the compositor
+        // even if its D-Bus reply was lost.
+        let press = self.keycode(keycode, true).await;
+        let release = self.keycode(keycode, false).await;
+        let shift_release = if shift {
+            self.keycode(KEY_LEFTSHIFT, false).await
+        } else {
+            Ok(())
+        };
 
-        if shift {
-            self.keycode(KEY_LEFTSHIFT, false).await?;
-        }
+        press.context("key press failed; key release was still attempted")?;
+        release.context("key could not be released")?;
+        shift_release.context("Shift could not be released")?;
 
         Ok(())
     }
 
     pub async fn key_click(&mut self, keysym: i32) -> Result<()> {
-        self.keysym(keysym, true).await?;
-        self.keysym(keysym, false).await
+        let press = self.keysym(keysym, true).await;
+        let release = self.keysym(keysym, false).await;
+        press.context("key press failed; key release was still attempted")?;
+        release.context("key could not be released")
     }
 
     pub async fn type_text(&mut self, text: &str) -> Result<()> {
@@ -334,18 +346,44 @@ impl PortalInput {
             bail!("Key combo must include at least one non-modifier key");
         }
 
-        for modifier in &modifiers {
-            self.keycode(*modifier, true).await?;
+        let mut held = Vec::new();
+        let operation: Result<()> = async {
+            for modifier in &modifiers {
+                // Include the key before sending Press, because an error reply
+                // does not prove the compositor never received the event.
+                held.push(*modifier);
+                self.keycode(*modifier, true).await?;
+            }
+
+            for (keycode, shift) in &presses {
+                self.keycode_click(*keycode, *shift).await?;
+            }
+
+            Ok(())
+        }
+        .await;
+        let mut release_errors = Vec::new();
+        for modifier in held.iter().rev() {
+            if let Err(error) = self.keycode(*modifier, false).await {
+                release_errors.push(error.to_string());
+            }
         }
 
-        for (keycode, shift) in &presses {
-            self.keycode_click(*keycode, *shift).await?;
+        if let Err(error) = operation {
+            if !release_errors.is_empty() {
+                return Err(error.context(format!(
+                    "modifier release also failed: {}",
+                    release_errors.join("; ")
+                )));
+            }
+            return Err(error);
         }
-
-        for modifier in modifiers.iter().rev() {
-            self.keycode(*modifier, false).await?;
+        if !release_errors.is_empty() {
+            bail!(
+                "key combo completed but modifier release failed: {}",
+                release_errors.join("; ")
+            );
         }
-
         Ok(())
     }
 
@@ -367,18 +405,42 @@ impl PortalInput {
             bail!("Key combo must include at least one non-modifier key");
         }
 
-        for modifier in &modifiers {
-            self.keysym(*modifier, true).await?;
+        let mut held = Vec::new();
+        let operation: Result<()> = async {
+            for modifier in &modifiers {
+                held.push(*modifier);
+                self.keysym(*modifier, true).await?;
+            }
+
+            for key in &presses {
+                self.key_click(*key).await?;
+            }
+
+            Ok(())
+        }
+        .await;
+        let mut release_errors = Vec::new();
+        for modifier in held.iter().rev() {
+            if let Err(error) = self.keysym(*modifier, false).await {
+                release_errors.push(error.to_string());
+            }
         }
 
-        for key in &presses {
-            self.key_click(*key).await?;
+        if let Err(error) = operation {
+            if !release_errors.is_empty() {
+                return Err(error.context(format!(
+                    "modifier release also failed: {}",
+                    release_errors.join("; ")
+                )));
+            }
+            return Err(error);
         }
-
-        for modifier in modifiers.iter().rev() {
-            self.keysym(*modifier, false).await?;
+        if !release_errors.is_empty() {
+            bail!(
+                "key combo completed but modifier release failed: {}",
+                release_errors.join("; ")
+            );
         }
-
         Ok(())
     }
 

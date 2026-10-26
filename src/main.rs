@@ -203,6 +203,9 @@ struct ExtensionControl {
     action: String,
     provider: Option<String>,
     model: Option<String>,
+    /// API key written by the indicator for a `set_api_key` action. The agent
+    /// stores it in the keyring and scrubs it from the control file.
+    key: Option<String>,
     /// Preferred workflow name field for standalone clients. `text` remains
     /// supported for the GNOME extension and older control writers.
     workflow: Option<String>,
@@ -233,26 +236,20 @@ fn control_workflow_name(control: &ExtensionControl) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
-async fn refresh_catalogs(
-    openrouter: Option<OpenRouterClient>,
-    openai: Option<OpenRouterClient>,
-    bedrock: Option<OpenRouterClient>,
-) {
+/// Publish the model catalog for every API provider.
+///
+/// Credentials are resolved per call, so a key saved from an indicator is
+/// reflected as soon as the catalogs are refreshed, with no restart.
+async fn refresh_catalogs() {
     let mut catalogs = Vec::new();
     let cached = load_cached_catalogs().unwrap_or_default();
-    for (provider, client) in [
-        ("openrouter", openrouter),
-        ("openai", openai),
-        ("bedrock", bedrock),
-    ] {
-        let Some(client) = client else {
-            if provider != "openrouter" {
-                catalogs.push(status::Catalog {
-                    provider: format!("{provider} (key needed)"),
-                    models: Vec::new(),
-                    fresh: true,
-                });
-            }
+    for provider in ["openrouter", "openai", "bedrock"] {
+        let Some(client) = model::configured_client(provider).await else {
+            catalogs.push(status::Catalog {
+                provider: format!("{provider} (key needed)"),
+                models: Vec::new(),
+                fresh: true,
+            });
             continue;
         };
         let (models, fresh) = match client.list_models().await {
@@ -429,7 +426,9 @@ async fn stt_test_mode() -> Result<()> {
 
     println!("🗣 Speak now (up to 6 seconds)...");
 
-    let text = stt.transcribe_from_microphone(6.0).await?;
+    let text = stt
+        .transcribe_from_microphone(6.0, &tokio_util::sync::CancellationToken::new())
+        .await?;
 
     println!("📝 Transcription: {:?}", text);
 
@@ -608,33 +607,15 @@ async fn main() -> Result<()> {
     tools::computer::cleanup_screenshots();
     let _ = std::fs::remove_file(emergency_stop_path());
 
-    // Keys saved from the extension take effect after its service restart,
-    // even when older environment keys are still present.
-    let openrouter_key = credentials::lookup("openrouter")
-        .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
-        .filter(|key| !key.trim().is_empty());
+    // Credentials are resolved keyring-first, then the environment, so a key
+    // saved from an indicator applies without a restart.
+    let openrouter_client = model::configured_client("openrouter").await;
+    let openai_client = model::configured_client("openai").await;
+    let bedrock_client = model::configured_client("bedrock").await;
 
     let model =
         std::env::var("OPENROUTER_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
 
-    let base_url = std::env::var("OPENROUTER_BASE_URL")
-        .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
-
-    let openrouter_client = openrouter_key.map(|key| OpenRouterClient::new(key, base_url));
-    let openai_client = credentials::lookup("openai")
-        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-        .filter(|key| !key.trim().is_empty())
-        .map(|key| OpenRouterClient::new(key, "https://api.openai.com/v1".to_string()));
-    let bedrock_client = credentials::lookup("bedrock")
-        .or_else(|| std::env::var("BEDROCK_API_KEY").ok())
-        .or_else(|| std::env::var("AWS_BEARER_TOKEN_BEDROCK").ok())
-        .or_else(|| std::env::var("AWS_API_KEY").ok())
-        .filter(|key| !key.trim().is_empty())
-        .map(|key| {
-            let region =
-                std::env::var("BEDROCK_REGION").unwrap_or_else(|_| "us-east-1".to_string());
-            OpenRouterClient::new(key, format!("https://bedrock-mantle.{region}.api.aws/v1"))
-        });
     let bedrock_sonic_client =
         match model::bedrock_sonic::BedrockSonicClient::from_aws_config().await {
             Ok(client) => Some(Arc::new(client)),
@@ -681,6 +662,11 @@ async fn main() -> Result<()> {
 
     let mut tools = ToolRegistry::new();
 
+    match tools::browser::BrowserTool::new() {
+        Ok(browser) => tools.register(browser),
+        Err(error) => eprintln!("[Browser] CDP configuration is unavailable: {error}"),
+    }
+
     tools.register(ComputerTool::new());
 
     #[cfg(target_os = "linux")]
@@ -701,9 +687,10 @@ async fn main() -> Result<()> {
     tools.register(MediaTool::new());
     tools.register(tools::timer::TimerTool::default());
 
-    let brave_search_key = std::env::var("BRAVE_SEARCH_API_KEY")
-        .ok()
-        .or_else(|| credentials::lookup("brave_search"));
+    let brave_search_key = match std::env::var("BRAVE_SEARCH_API_KEY") {
+        Ok(key) => Some(key),
+        Err(_) => credentials::lookup("brave_search").await,
+    };
     match tools::web_search::WebSearchTool::new(brave_search_key) {
         Ok(tool) => tools.register(tool),
         Err(error) => eprintln!("[Web] Native search unavailable: {error}"),
@@ -804,10 +791,16 @@ async fn main() -> Result<()> {
                                 status::card("mobile", message, false);
                             }
                             link::LinkCommand::MemorySync(value) => {
-                                eprintln!("[Link] Memory sync received ({} item(s)); merge support is pending", value.items.len());
+                                eprintln!(
+                                    "[Link] Memory sync received ({} item(s)); merge support is pending",
+                                    value.items.len()
+                                );
                             }
                             link::LinkCommand::WorkflowSync(value) => {
-                                eprintln!("[Link] Workflow sync received ({} item(s)); merge support is pending", value.workflows.len());
+                                eprintln!(
+                                    "[Link] Workflow sync received ({} item(s)); merge support is pending",
+                                    value.workflows.len()
+                                );
                             }
                         }
                     }
@@ -862,12 +855,7 @@ async fn main() -> Result<()> {
     if let Some(cached) = load_cached_catalogs() {
         status::catalogs(cached);
     }
-    let catalog_openrouter = openrouter_client.clone();
-    let catalog_openai = openai_client.clone();
-    let catalog_bedrock = bedrock_client.clone();
-    tokio::spawn(async move {
-        refresh_catalogs(catalog_openrouter, catalog_openai, catalog_bedrock).await;
-    });
+    tokio::spawn(refresh_catalogs());
 
     /*
      * Agent/runtime sends UI events through
@@ -959,9 +947,6 @@ async fn main() -> Result<()> {
     });
 
     let control_tx = agent_tx.clone();
-    let control_openrouter = openrouter_client.clone();
-    let control_openai = openai_client.clone();
-    let control_bedrock = bedrock_client.clone();
     let control_link = link_server.clone();
     tokio::spawn(async move {
         let path = control_path();
@@ -986,6 +971,12 @@ async fn main() -> Result<()> {
             }
             seen = control.revision;
             match control.action.as_str() {
+                "start_listening" => {
+                    let _ = control_tx.send(HyuskEvent::WakeWordDetected).await;
+                }
+                "stop_task" => {
+                    let _ = control_tx.send(HyuskEvent::StopRequested).await;
+                }
                 "set_model" => {
                     if let (Some(provider), Some(model)) = (control.provider, control.model) {
                         let _ = control_tx
@@ -993,13 +984,48 @@ async fn main() -> Result<()> {
                             .await;
                     }
                 }
+                "set_api_key" => {
+                    let provider = control.provider.unwrap_or_default().trim().to_string();
+                    let key = control
+                        .key
+                        .or(control.text)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    // The key was written by the indicator. Overwrite the file
+                    // right away so the secret does not linger in the runtime
+                    // directory; this revision is already consumed, so the
+                    // write cannot replay an action.
+                    let _ = std::fs::write(
+                        &path,
+                        format!("{{\"revision\":{seen},\"action\":\"key_received\"}}"),
+                    );
+                    if provider.is_empty() || key.is_empty() {
+                        status::card(
+                            "error",
+                            "Choose a provider and paste a key to save one.",
+                            false,
+                        );
+                    } else {
+                        match credentials::store(&provider, &key).await {
+                            Ok(()) => {
+                                let _ = control_tx
+                                    .send(HyuskEvent::ApiKeySaved {
+                                        provider: provider.clone(),
+                                    })
+                                    .await;
+                                tokio::spawn(refresh_catalogs());
+                            }
+                            Err(error) => status::card(
+                                "error",
+                                format!("Could not save the {provider} key: {error:#}"),
+                                false,
+                            ),
+                        }
+                    }
+                }
                 "refresh_models" => {
-                    let a = control_openrouter.clone();
-                    let b = control_openai.clone();
-                    let c = control_bedrock.clone();
-                    tokio::spawn(async move {
-                        refresh_catalogs(a, b, c).await;
-                    });
+                    tokio::spawn(refresh_catalogs());
                 }
                 "pair_phone" => {
                     if let Some(server) = control_link.as_ref() {
@@ -1034,7 +1060,9 @@ async fn main() -> Result<()> {
                         // request, so a standalone editor can save the file
                         // and run the workflow without a service restart.
                         let _ = control_tx
-                            .send(HyuskEvent::UserInput(format!("run {name}")))
+                            .send(HyuskEvent::RunWorkflow {
+                                name: name.to_string(),
+                            })
                             .await;
                     } else {
                         status::card("workflow", "A workflow name is required.", false);

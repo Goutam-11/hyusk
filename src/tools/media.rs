@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::time::Duration;
 use tokio::process::Command;
+
+const PLAYERCTL_TIMEOUT: Duration = Duration::from_secs(3);
 
 use super::{Tool, ToolResult};
 
@@ -35,12 +38,23 @@ enum MediaAction {
 
 /// Run `playerctl` and return trimmed stdout, or an empty string on failure.
 async fn playerctl_quiet(args: &[&str]) -> String {
-    match Command::new("playerctl").args(args).output().await {
-        Ok(output) if output.status.success() => {
+    let mut command = Command::new("playerctl");
+    command.args(args).kill_on_drop(true);
+    match tokio::time::timeout(PLAYERCTL_TIMEOUT, command.output()).await {
+        Ok(Ok(output)) if output.status.success() => {
             String::from_utf8_lossy(&output.stdout).trim().to_string()
         }
         _ => String::new(),
     }
+}
+
+async fn playerctl_succeeded(args: &[&str]) -> bool {
+    let mut command = Command::new("playerctl");
+    command.args(args).kill_on_drop(true);
+    matches!(
+        tokio::time::timeout(PLAYERCTL_TIMEOUT, command.status()).await,
+        Ok(Ok(status)) if status.success()
+    )
 }
 
 /// Pause the active MPRIS player if it is currently playing.
@@ -52,9 +66,7 @@ pub async fn pause_if_playing() -> bool {
         .await
         .eq_ignore_ascii_case("playing")
     {
-        let _ = playerctl_quiet(&["pause"]).await;
-
-        return true;
+        return playerctl_succeeded(&["pause"]).await;
     }
 
     false
@@ -71,18 +83,27 @@ impl MediaTool {
     }
 
     async fn run(playerctl_args: &[&str]) -> Result<ToolResult> {
-        let output = Command::new("playerctl")
-            .args(playerctl_args)
-            .output()
-            .await
-            .context("Failed to invoke playerctl. Is it installed?")?;
+        let mut command = Command::new("playerctl");
+        command.args(playerctl_args).kill_on_drop(true);
+        let output = match tokio::time::timeout(PLAYERCTL_TIMEOUT, command.output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                return Err(error).context("Failed to invoke playerctl. Is it installed?");
+            }
+            Err(_) => {
+                return Ok(ToolResult::failure(format!(
+                    "playerctl did not respond within {} seconds. The media service may be stuck.",
+                    PLAYERCTL_TIMEOUT.as_secs()
+                )));
+            }
+        };
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         if output.status.success() {
             let body = if stdout.trim().is_empty() {
-                "Command executed. No active MPRIS player responded with output.".to_string()
+                "Media command accepted by playerctl. Inspect status if playback needs verification.".to_string()
             } else {
                 stdout.trim().to_string()
             };
@@ -90,7 +111,14 @@ impl MediaTool {
         } else {
             // playerctl returns a non-zero status when no player is running.
             // Surface that as a normal failure the model can read.
-            Ok(ToolResult::failure(stderr.trim().to_string()))
+            let detail = if !stderr.trim().is_empty() {
+                stderr.trim().to_string()
+            } else if !stdout.trim().is_empty() {
+                stdout.trim().to_string()
+            } else {
+                format!("playerctl failed with {}", output.status)
+            };
+            Ok(ToolResult::failure(detail))
         }
     }
 }
@@ -132,7 +160,7 @@ impl Tool for MediaTool {
                 },
                 "offset": {
                     "type": "string",
-                    "description": "Seek offset for `seek`, e.g. '+10' or '-5' seconds."
+                    "description": "Seek '+10' or '-5' seconds relative to now; unsigned values are absolute seconds. Trailing-sign playerctl notation ('10+', '5-') is also accepted."
                 }
             },
             "required": ["action"]
@@ -194,18 +222,70 @@ impl Tool for MediaTool {
                     Some("off") | Some("none") => "None",
                     Some("one") | Some("track") => "Track",
                     Some("all") | Some("playlist") => "Playlist",
-                    _ => "Track",
+                    None => "Track",
+                    Some(_) => {
+                        return Ok(ToolResult::failure("Repeat mode must be off, one, or all."))
+                    }
                 };
                 Self::run(&["loop", value]).await
             }
-            MediaAction::Seek { offset } => {
-                let offset = offset.trim();
-                if offset.is_empty() {
-                    return Ok(ToolResult::failure("`seek` requires an `offset`."));
-                }
-                Self::run(&["position", offset]).await
-            }
+            MediaAction::Seek { offset } => match normalize_seek_offset(&offset) {
+                Some(position) => Self::run(&["position", &position]).await,
+                None => Ok(ToolResult::failure(
+                    "Seek requires finite seconds such as +10, -5, or an absolute position of 60.",
+                )),
+            },
             MediaAction::Position => Self::run(&["position"]).await,
+        }
+    }
+}
+
+/// playerctl uses trailing signs for relative seeks. Passing the documented
+/// `+10` directly instead jumps to absolute second ten, not ten seconds ahead.
+fn normalize_seek_offset(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let (number, direction) = if let Some(value) = raw.strip_prefix('+') {
+        (value, "+")
+    } else if let Some(value) = raw.strip_prefix('-') {
+        (value, "-")
+    } else if let Some(value) = raw.strip_suffix('+') {
+        (value, "+")
+    } else if let Some(value) = raw.strip_suffix('-') {
+        (value, "-")
+    } else {
+        (raw, "")
+    };
+    if number.starts_with(['+', '-']) || number.contains(char::is_whitespace) {
+        return None;
+    }
+    let seconds = number.parse::<f64>().ok()?;
+    if !seconds.is_finite() || seconds < 0.0 || seconds > i64::MAX as f64 / 1_000_000.0 {
+        return None;
+    }
+    Some(format!("{number}{direction}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_seek_offset;
+
+    #[test]
+    fn relative_seek_signs_match_playerctl_notation() {
+        for (input, expected) in [
+            ("+10", "10+"),
+            ("-5", "5-"),
+            ("1.5+", "1.5+"),
+            ("5-", "5-"),
+            ("60", "60"),
+        ] {
+            assert_eq!(normalize_seek_offset(input).as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn malformed_seek_arguments_are_not_forwarded() {
+        for input in ["", "NaN", "inf", "--help", "-5+", "++5", "1e999", " 1 2 "] {
+            assert!(normalize_seek_offset(input).is_none(), "accepted {input}");
         }
     }
 }

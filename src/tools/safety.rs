@@ -30,31 +30,71 @@ fn shell_requires_approval(args: &Value) -> bool {
     let Some(command) = args.get("command").and_then(Value::as_str) else {
         return true;
     };
-    let command = command.trim();
-    // Avoid shell grammar entirely in the no-approval path. Quoting, pipes,
-    // substitutions, redirection, chaining, and escapes all require approval.
-    if command.is_empty()
-        || command.chars().any(|c| {
-            matches!(
-                c,
-                ';' | '|' | '&' | '>' | '<' | '$' | '`' | '\\' | '\n' | '\r' | '\'' | '"'
-            )
-        })
-    {
-        return true;
-    }
-    let mut words = command.split_whitespace();
-    let Some(program) = words.next() else {
+    // Parse a single simple command. Quotes are allowed for ordinary search
+    // terms and paths; shell expansion, escapes, chaining, pipes and redirects
+    // remain approval-gated. This avoids a prompt for common read-only commands
+    // like `rg -n "text to find" src` without trying to interpret shell syntax.
+    let Some(mut words) = simple_command_words(command) else {
         return true;
     };
-    let program = program.rsplit('/').next().unwrap_or(program);
-    let rest: Vec<&str> = words.collect();
+    if words.is_empty() {
+        return true;
+    }
+    let program = words.remove(0);
+    let program = program.rsplit('/').next().unwrap_or(&program);
+    let rest = words;
     let safe = match program {
         "pwd" | "whoami" | "date" | "uname" | "ls" | "cat" | "head" | "tail" | "wc" | "file"
-        | "stat" | "ps" | "df" | "du" | "grep" | "which" | "type" => true,
-        "git" => rest
-            .first()
-            .is_some_and(|sub| matches!(*sub, "status" | "log" | "rev-parse")),
+        | "stat" | "ps" | "df" | "du" | "grep" | "which" | "type" | "uniq" | "cut" | "tr" => true,
+        "rg" => !rest.iter().any(|arg| {
+            matches!(arg.as_str(), "--pre" | "--pre-glob")
+                || arg.starts_with("--pre=")
+                || arg.starts_with("--pre-glob=")
+        }),
+        "sed" => !sed_requires_approval(&rest),
+        "find" => !rest.iter().any(|arg| {
+            matches!(
+                arg.as_str(),
+                "-delete"
+                    | "-exec"
+                    | "-execdir"
+                    | "-ok"
+                    | "-okdir"
+                    | "-fprint"
+                    | "-fprint0"
+                    | "-fprintf"
+                    | "-fls"
+            )
+        }),
+        "git" => {
+            rest.first()
+                .is_some_and(|sub| matches!(sub.as_str(), "status" | "log" | "rev-parse" | "show"))
+                || (rest.first().is_some_and(|sub| sub == "diff")
+                    && !rest.iter().any(|arg| {
+                        arg == "-o" || arg.starts_with("--output") || arg == "--ext-diff"
+                    }))
+                || (rest.first().is_some_and(|sub| sub == "branch")
+                    && rest.iter().skip(1).all(|arg| {
+                        matches!(
+                            arg.as_str(),
+                            "--list"
+                                | "-l"
+                                | "--all"
+                                | "-a"
+                                | "--remotes"
+                                | "-r"
+                                | "--show-current"
+                        )
+                    }))
+        }
+        "sort" => !rest.iter().any(|arg| {
+            long_option_abbreviation(arg, "output")
+                || long_option_abbreviation(arg, "compress-program")
+                || (arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains('o'))
+        }),
+        "cargo" => rest.first().is_some_and(|sub| {
+            matches!(sub.as_str(), "test" | "check" | "build" | "fmt" | "clippy")
+        }),
         // Permit ordinary bare GUI launches through shell, while arguments
         // and detached modes remain subject to the conservative checks below.
         "firefox" | "chromium" | "chromium-browser" | "google-chrome" | "spotify" | "nautilus"
@@ -82,30 +122,258 @@ fn shell_requires_approval(args: &Value) -> bool {
         )
 }
 
+fn simple_command_words(command: &str) -> Option<Vec<String>> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Quote {
+        None,
+        Single,
+        Double,
+    }
+
+    let mut quote = Quote::None;
+    let mut token = String::new();
+    let mut words = Vec::new();
+    for character in command.trim().chars() {
+        match quote {
+            Quote::None => match character {
+                '\'' => quote = Quote::Single,
+                '"' => quote = Quote::Double,
+                '\n' | '\r' => return None,
+                c if c.is_whitespace() => {
+                    if !token.is_empty() {
+                        words.push(std::mem::take(&mut token));
+                    }
+                }
+                ';' | '|' | '&' | '>' | '<' | '$' | '`' | '\\' | '(' | ')' => return None,
+                c => token.push(c),
+            },
+            Quote::Single => {
+                if character == '\'' {
+                    quote = Quote::None
+                } else {
+                    token.push(character)
+                }
+            }
+            Quote::Double => match character {
+                '"' => quote = Quote::None,
+                '$' | '`' | '\\' => return None,
+                c => token.push(c),
+            },
+        }
+    }
+    if quote != Quote::None {
+        return None;
+    }
+    if !token.is_empty() {
+        words.push(token);
+    }
+    Some(words)
+}
+
+fn sed_requires_approval(args: &[String]) -> bool {
+    let mut scripts = Vec::new();
+    let mut explicit_expression = false;
+    let mut index = 0;
+    let mut options_terminated = false;
+
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "-i"
+            || arg.starts_with("-i")
+            || arg == "--in-place"
+            || arg.starts_with("--in-place=")
+        {
+            return true;
+        }
+        if arg == "-f"
+            || arg == "--file"
+            || arg.starts_with("--file=")
+            || (arg.starts_with("-f") && arg.len() > 2)
+        {
+            // The script file's contents are not available to this policy.
+            return true;
+        }
+        if arg == "-e" || arg == "--expression" {
+            let Some(script) = args.get(index + 1) else {
+                return true;
+            };
+            scripts.push(script.as_str());
+            explicit_expression = true;
+            index += 2;
+            continue;
+        }
+        if let Some(script) = arg.strip_prefix("--expression=") {
+            scripts.push(script);
+            explicit_expression = true;
+            index += 1;
+            continue;
+        }
+        if let Some(script) = arg.strip_prefix("-e").filter(|script| !script.is_empty()) {
+            scripts.push(script);
+            explicit_expression = true;
+            index += 1;
+            continue;
+        }
+        if matches!(
+            arg.as_str(),
+            "-n" | "--quiet"
+                | "--silent"
+                | "-E"
+                | "-r"
+                | "--regexp-extended"
+                | "-s"
+                | "--separate"
+                | "-u"
+                | "--unbuffered"
+                | "-z"
+                | "--null-data"
+        ) {
+            index += 1;
+            continue;
+        }
+        if arg == "--" {
+            index += 1;
+            options_terminated = true;
+            break;
+        }
+        if arg.starts_with('-') {
+            return true;
+        }
+        break;
+    }
+
+    // Without -e, the first positional argument after options is the script.
+    // With -e, all positional arguments are input paths, so they aren't parsed
+    // as script text and filenames containing `w` or `W` remain prompt-free.
+    if index < args.len() && !explicit_expression {
+        scripts.push(args[index].as_str());
+    }
+    if !options_terminated {
+        // GNU sed accepts options after the positional script. Require `--`
+        // before filenames beginning with `-`, and catch write/external-script
+        // switches even when they follow an ordinary input path.
+        let first_input = index + usize::from(!explicit_expression && index < args.len());
+        let suffix = &args[first_input..];
+        let option_end = suffix
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(suffix.len());
+        if suffix[..option_end].iter().any(|arg| arg.starts_with('-')) {
+            return true;
+        }
+    }
+    !scripts
+        .iter()
+        .all(|script| read_only_sed_print_script(script))
+}
+
+fn long_option_abbreviation(argument: &str, option: &str) -> bool {
+    let Some(name) = argument.strip_prefix("--") else {
+        return false;
+    };
+    let name = name.split('=').next().unwrap_or(name);
+    !name.is_empty() && option.starts_with(name)
+}
+
+fn read_only_sed_print_script(script: &str) -> bool {
+    if script == "p" || script == "=" {
+        return true;
+    }
+    let Some(addresses) = script.strip_suffix('p') else {
+        return false;
+    };
+    let is_address = |address: &str| {
+        address == "$"
+            || (!address.is_empty() && address.chars().all(|character| character.is_ascii_digit()))
+            || is_simple_sed_regex_address(address)
+    };
+    if is_address(addresses) {
+        return true;
+    }
+    addresses
+        .split_once(',')
+        .is_some_and(|(start, end)| is_address(start) && is_address(end))
+}
+
+fn is_simple_sed_regex_address(address: &str) -> bool {
+    let Some(body) = address
+        .strip_prefix('/')
+        .and_then(|value| value.strip_suffix('/'))
+    else {
+        return false;
+    };
+    let mut escaped = false;
+    for character in body.chars() {
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == '/' {
+            // An unescaped delimiter here ends the address and could begin a
+            // write or execute command before the final slash.
+            return false;
+        }
+    }
+    !escaped
+}
+
 fn process_requires_approval(args: &Value) -> bool {
     let Some(program) = args.get("program").and_then(Value::as_str) else {
         return true;
     };
-    // The process tool can otherwise launch any executable, including a
-    // shell or a file-changing utility. Known app aliases are the ordinary
-    // no-approval path; an unknown executable needs a user decision.
-    if !crate::apps::resolves(program) {
-        return true;
-    }
-    let Some(arguments) = args.get("args").and_then(Value::as_array) else {
-        return false;
+    let arguments = match args.get("args") {
+        None => Vec::new(),
+        Some(value) => {
+            let Some(arguments) = value.as_array() else {
+                return true;
+            };
+            let Some(arguments) = arguments
+                .iter()
+                .map(Value::as_str)
+                .collect::<Option<Vec<_>>>()
+            else {
+                return true;
+            };
+            arguments
+        }
     };
+    // The process tool can otherwise launch any executable, including a
+    // shell or a file-changing utility. Workflow parsing may already have
+    // expanded a friendly alias (e.g. brave -> flatpak run ...), so recognize
+    // only an exact built-in expansion before rejecting unknown executables.
+    let (alias, consumed) = if crate::apps::resolves(program) {
+        (program, 0)
+    } else if let Some((alias, consumed)) = crate::apps::resolved_alias(
+        program,
+        &arguments
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect::<Vec<_>>(),
+    ) {
+        (alias, consumed)
+    } else {
+        return true;
+    };
+    let extra_arguments = &arguments[consumed..];
     let browser = matches!(
-        program.trim().to_ascii_lowercase().as_str(),
-        "firefox" | "brave" | "brave browser" | "chrome" | "google chrome" | "chromium"
+        alias.trim().to_ascii_lowercase().as_str(),
+        "firefox"
+            | "brave"
+            | "brave browser"
+            | "chrome"
+            | "google chrome"
+            | "google-chrome"
+            | "google-chrome-stable"
+            | "chromium"
+            | "chromium-browser"
+            | "youtube music"
+            | "youtube-music"
     );
-    !arguments.is_empty()
+    !extra_arguments.is_empty()
         && !(browser
-            && arguments.iter().all(|arg| {
-                arg.as_str().is_some_and(|value| {
-                    value.starts_with("https://") || value.starts_with("http://")
-                })
-            }))
+            && extra_arguments
+                .iter()
+                .all(|value| value.starts_with("https://") || value.starts_with("http://")))
 }
 
 fn computer_requires_approval(args: &Value) -> bool {
@@ -115,7 +383,10 @@ fn computer_requires_approval(args: &Value) -> bool {
             .and_then(Value::as_array)
             .map(|steps| steps.iter().any(computer_requires_approval))
             .unwrap_or(true),
-        "clipboard_set" | "clipboard_clear" | "clipboard_get" => true,
+        // Setting clipboard text is a routine, reversible local operation.
+        // Reading or clearing it can expose/remove unrelated user data.
+        "clipboard_set" => false,
+        "clipboard_clear" | "clipboard_get" => true,
         "click_text" => {
             is_consequential_text(args.get("text").and_then(Value::as_str).unwrap_or(""))
         }
@@ -182,8 +453,60 @@ fn mobile_requires_approval(args: &Value) -> bool {
     let Some(phone_action) = args.get("phone_action").and_then(Value::as_str) else {
         return true;
     };
-    let lowered = phone_action.to_ascii_lowercase();
-    if [
+    if phone_action_requires_confirmation(phone_action) {
+        return true;
+    }
+    !matches!(
+        phone_action.to_ascii_lowercase().as_str(),
+        "apps.list"
+            | "apps.launch"
+            | "url.open"
+            | "web.search"
+            | "device.status"
+            | "timer.create"
+            | "timer.cancel"
+            | "reminder.create"
+            | "ui.read"
+            | "ui.screenshot"
+            | "ui.find"
+            | "ui.snapshot"
+            | "ui.click"
+            | "ui.long_click"
+            | "ui.set_text"
+            | "ui.scroll"
+            | "ui.tap"
+            | "ui.swipe"
+            | "ui.press_enter"
+            | "media.play"
+            | "media.pause"
+            | "media.play_pause"
+            | "media.next"
+            | "media.previous"
+            | "media.status"
+            | "volume.up"
+            | "volume.down"
+            | "system.back"
+            | "system.home"
+            | "system.recents"
+            | "system.notifications"
+            | "system.quick_settings"
+            | "system.settings"
+            | "camera.open"
+            | "phone.dial"
+            | "sms.compose"
+            | "share.text"
+            | "clipboard.write"
+            | "memory.remember"
+    )
+}
+
+pub(crate) fn phone_action_requires_confirmation(action: &str) -> bool {
+    let action = action.to_ascii_lowercase();
+    let words = action
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    [
         "delete",
         "remove",
         "uninstall",
@@ -191,36 +514,37 @@ fn mobile_requires_approval(args: &Value) -> bool {
         "purchase",
         "payment",
         "pay",
+        "buy",
         "send",
-        "message",
-        "share",
+        "transfer",
+        "publish",
+        "post",
         "upload",
-        "call",
-        "sms",
-        "clipboard",
         "reset",
-        "shell",
+        "reboot",
+        "shutdown",
     ]
     .iter()
-    .any(|term| lowered.contains(term))
-    {
-        return true;
-    }
-    !matches!(
-        lowered.as_str(),
-        "apps.launch"
-            | "url.open"
-            | "device.status"
-            | "timer.create"
-            | "timer.cancel"
-            | "ui.read"
-            | "ui.screenshot"
-            | "ui.find"
-    )
+    .any(|term| words.iter().any(|word| word == term))
+        || matches!(
+            action.as_str(),
+            "call"
+                | "call.place"
+                | "phone.call"
+                | "clipboard.read"
+                | "clipboard.clear"
+                | "memory.forget"
+                | "shell.execute"
+        )
+        || action.starts_with("call.")
 }
 
 fn is_consequential_text(text: &str) -> bool {
-    let text = text.to_ascii_lowercase();
+    let words = text
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
     [
         "send",
         "delete",
@@ -237,11 +561,19 @@ fn is_consequential_text(text: &str) -> bool {
         "install",
         "uninstall",
         "reset",
-        "call",
-        "place order",
     ]
     .iter()
-    .any(|term| text.contains(term))
+    .any(|term| words.iter().any(|word| word == term))
+        || words.windows(2).any(|pair| pair == ["place", "order"])
+        || matches!(words.as_slice(), [call] if call == "call")
+        || matches!(words.as_slice(), [call, now] if call == "call" && now == "now")
+        || matches!(words.as_slice(), [place, call] if place == "place" && call == "call")
+        || (words.len() == 2
+            && words[0] == "call"
+            && !matches!(
+                words[1].as_str(),
+                "history" | "logs" | "settings" | "contacts"
+            ))
 }
 
 #[cfg(test)]
@@ -262,6 +594,58 @@ mod tests {
         ));
         assert!(!check("shell", r#"{"command":"ls -la"}"#));
         assert!(!check("shell", r#"{"command":"git status --short"}"#));
+    }
+
+    #[test]
+    fn common_read_only_and_build_commands_do_not_prompt() {
+        for command in [
+            r#"rg -n "tool result" src"#,
+            r#"sed -n '1,20p' src/tools/safety.rs"#,
+            r#"sed -n '1,20p' workflow.rs"#,
+            r#"sed -n '1,20p' -- -input-with-w.rs"#,
+            r#"sed -n '/word/p' new.rs"#,
+            r#"find . -name '*.rs'"#,
+            "git diff --stat",
+            "git show --stat",
+            "sort -r input",
+            "cargo test --lib",
+            "cargo check --workspace",
+        ] {
+            let input = serde_json::json!({"command": command}).to_string();
+            assert!(
+                !check("shell", &input),
+                "unexpected approval for: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_command_allowlist_still_blocks_mutating_flags_and_chaining() {
+        for command in [
+            "find . -delete",
+            "find . -exec rm {} ;",
+            "sed -i s/a/b/ file",
+            "sed -n '1,20w /tmp/out' file",
+            "sed -n '/foo/w/bar/p' file",
+            "sed 's/a/b/w /tmp/out' file",
+            "sed -f /tmp/script.sed workflow.rs",
+            "sed -n '1,20p' workflow.rs -i",
+            "sed -n '1,20p' workflow.rs -f /tmp/write.sed",
+            "rg --pre=cat pattern",
+            "sort -o /tmp/out input",
+            "sort -uo/tmp/out input",
+            "sort --output=/tmp/out input",
+            "sort --out=/tmp/out input",
+            "sort --compress-program=sh input",
+            "git branch -D main",
+            "git diff -o /tmp/out",
+            "git diff --ext-diff",
+            "cargo test; rm -rf target",
+            "rg \"$(touch /tmp/x)\" src",
+        ] {
+            let input = serde_json::json!({"command": command}).to_string();
+            assert!(check("shell", &input), "missing approval for: {command}");
+        }
     }
 
     #[test]
@@ -309,6 +693,18 @@ mod tests {
             "accessibility",
             r#"{"action":"set_text","text":"hello"}"#
         ));
+        assert!(!check(
+            "accessibility",
+            r#"{"action":"click","name":"Open callback settings"}"#
+        ));
+        assert!(!check(
+            "accessibility",
+            r#"{"action":"click","name":"Call history"}"#
+        ));
+        assert!(check(
+            "accessibility",
+            r#"{"action":"click","name":"Call Goutam"}"#
+        ));
         assert!(check(
             "mobile",
             r#"{"action":"invoke","phone_action":"messages.send"}"#
@@ -317,14 +713,49 @@ mod tests {
             "mobile",
             r#"{"action":"invoke","phone_action":"url.open"}"#
         ));
+        for phone_action in [
+            "system.back",
+            "ui.click",
+            "media.play",
+            "media.next",
+            "sms.compose",
+            "clipboard.write",
+        ] {
+            let input =
+                serde_json::json!({"action":"invoke", "phone_action":phone_action}).to_string();
+            assert!(
+                !check("mobile", &input),
+                "unexpected approval for {phone_action}"
+            );
+        }
+        assert!(check(
+            "mobile",
+            r#"{"action":"invoke","phone_action":"unsupported.future_action"}"#
+        ));
         assert!(check("window", r#"{"action":"close"}"#));
         assert!(check("memory", r#"{"action":"forget"}"#));
         assert!(check("computer", r#"{"action":"clipboard_get"}"#));
         assert!(check("computer", r#"{"action":"clipboard_clear"}"#));
         assert!(!check(
+            "computer",
+            r#"{"action":"clipboard_set","text":"hello"}"#
+        ));
+        assert!(check("computer", r#"{"action":"clipboard_clear"}"#));
+        assert!(!check(
             "process",
             r#"{"action":"launch","program":"firefox"}"#
         ));
+        for program in ["google-chrome", "google-chrome-stable", "chromium-browser"] {
+            assert!(!check(
+                "process",
+                &serde_json::json!({"action":"launch", "program":program, "args":["https://example.com"]}).to_string()
+            ));
+            assert!(check(
+                "process",
+                &serde_json::json!({"action":"launch", "program":program, "args":["--no-sandbox"]})
+                    .to_string()
+            ));
+        }
         assert!(check(
             "process",
             r#"{"action":"launch","program":"python3"}"#

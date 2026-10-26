@@ -6,10 +6,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::sleep;
 
-use crate::types::{
-    message::{FunctionCall, ToolCall},
-    Message,
-};
+use crate::types::Message;
+
+#[path = "openrouter/protocol.rs"]
+mod protocol;
+#[path = "openrouter/stream.rs"]
+mod stream;
+
+use protocol::{validate_assistant_message, validate_conversation};
+use stream::parse_sse_stream;
 
 const MAX_RETRIES: u32 = 3;
 const BASE_BACKOFF: Duration = Duration::from_millis(500);
@@ -150,6 +155,7 @@ impl OpenRouterClient {
         messages: &[Message],
         tools: &[Value],
     ) -> Result<Message> {
+        validate_conversation(messages)?;
         let request = ChatRequest {
             model: model.to_string(),
             messages: messages.to_vec(),
@@ -246,6 +252,8 @@ impl OpenRouterClient {
 
         let mut message = choice.message;
 
+        validate_assistant_message(&message)?;
+
         if choice
             .finish_reason
             .as_deref()
@@ -271,9 +279,10 @@ impl OpenRouterClient {
     /// Stream a chat completion, invoking `on_delta` for each text delta.
     ///
     /// Returns the assembled assistant message (text plus any streamed tool
-    /// calls). This is a single attempt with no retries: it is meant to make
-    /// replies feel fast, and the caller falls back to [`Self::chat`] when the
-    /// provider rejects streaming.
+    /// calls). Transient connection/HTTP errors are retried only before a
+    /// successful response starts. Once SSE decoding begins, never replay an
+    /// incomplete stream automatically. Explicit streaming-mode rejection can
+    /// be retried by the caller using [`Self::chat`].
     pub async fn chat_stream<F>(
         &self,
         model: &str,
@@ -284,6 +293,7 @@ impl OpenRouterClient {
     where
         F: FnMut(&str),
     {
+        validate_conversation(messages)?;
         let request = ChatRequest {
             model: model.to_string(),
             messages: messages.to_vec(),
@@ -295,158 +305,46 @@ impl OpenRouterClient {
             stream: Some(true),
         };
 
-        let response = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await
-            .map_err(|error| {
-                anyhow!(HttpError {
+        let mut attempt = 0;
+        let response = loop {
+            attempt += 1;
+            let result = self
+                .client
+                .post(format!("{}/chat/completions", self.base_url))
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .json(&request)
+                .send()
+                .await;
+            let error = match result {
+                Ok(response) if response.status().is_success() => break response,
+                Ok(response) => HttpError {
+                    status: Some(response.status()),
+                    retry_after: parse_retry_after(response.headers()),
+                    body: truncate(&response.text().await.unwrap_or_default(), 240),
+                },
+                Err(error) => HttpError {
                     status: None,
                     retry_after: None,
                     body: error.to_string(),
-                })
-            })
-            .context("Failed to reach model provider")?;
-
-        let status = response.status();
-
-        if !status.is_success() {
-            let retry_after = parse_retry_after(response.headers());
-            let body = response.text().await.unwrap_or_default();
-
-            return Err(anyhow!(HttpError {
-                status: Some(status),
-                retry_after,
-                body: truncate(&body, 240),
-            }));
-        }
+                },
+            };
+            if attempt > MAX_RETRIES
+                || error
+                    .status
+                    .is_some_and(|status| !is_transient_status(status))
+            {
+                return Err(anyhow!(error));
+            }
+            let delay = backoff_for(attempt, error.retry_after);
+            eprintln!(
+                "[Hyusk] Stream connection failed; retrying in {delay:?} (attempt {attempt}/{})",
+                MAX_RETRIES + 1
+            );
+            sleep(delay).await;
+        };
 
         parse_sse_stream(response, on_delta).await
     }
-}
-
-async fn parse_sse_stream<F>(response: reqwest::Response, on_delta: &mut F) -> Result<Message>
-where
-    F: FnMut(&str),
-{
-    use futures_util::StreamExt;
-
-    let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
-    let mut content = String::new();
-    let mut tool_calls: std::collections::BTreeMap<usize, ToolCall> =
-        std::collections::BTreeMap::new();
-    let mut done = false;
-    let mut finish_reason = None;
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("Model stream error")?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-        while let Some(position) = buffer.find('\n') {
-            let line = buffer[..position].trim_end_matches('\r').to_string();
-
-            buffer.drain(..position + 1);
-
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-
-            let data = data.trim();
-
-            if data == "[DONE]" {
-                done = true;
-                break;
-            }
-
-            let Ok(value) = serde_json::from_str::<Value>(data) else {
-                continue;
-            };
-
-            if let Some(reason) = value
-                .pointer("/choices/0/finish_reason")
-                .and_then(Value::as_str)
-            {
-                finish_reason = Some(reason.to_string());
-            }
-
-            let Some(delta) = value.pointer("/choices/0/delta") else {
-                continue;
-            };
-
-            if let Some(text) = delta.get("content").and_then(Value::as_str) {
-                if !text.is_empty() {
-                    content.push_str(text);
-                    on_delta(text);
-                }
-            }
-
-            if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
-                for call in calls {
-                    let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-
-                    let entry = tool_calls.entry(index).or_insert_with(|| ToolCall {
-                        id: String::new(),
-                        kind: "function".to_string(),
-                        function: FunctionCall {
-                            name: String::new(),
-                            arguments: String::new(),
-                        },
-                    });
-
-                    if let Some(id) = call.get("id").and_then(Value::as_str) {
-                        if !id.is_empty() {
-                            entry.id = id.to_string();
-                        }
-                    }
-
-                    if let Some(function) = call.get("function") {
-                        if let Some(name) = function.get("name").and_then(Value::as_str) {
-                            entry.function.name.push_str(name);
-                        }
-
-                        if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
-                            entry.function.arguments.push_str(arguments);
-                        }
-                    }
-                }
-            }
-        }
-
-        if done {
-            break;
-        }
-    }
-
-    if !done {
-        return Err(anyhow!("Model stream ended before [DONE]"));
-    }
-
-    if finish_reason
-        .as_deref()
-        .is_some_and(is_truncated_finish_reason)
-    {
-        return Err(anyhow!("Model response truncated (finish_reason=length)"));
-    }
-
-    if content.trim().is_empty() && tool_calls.is_empty() {
-        return Err(anyhow!("Model returned an empty streamed response"));
-    }
-
-    let mut message = Message::assistant(content.clone());
-
-    if !tool_calls.is_empty() {
-        if content.is_empty() {
-            message.content = None;
-        }
-
-        message.tool_calls = Some(tool_calls.into_values().collect());
-    }
-
-    Ok(message)
 }
 
 fn backoff_for(attempt: u32, retry_after: Option<Duration>) -> Duration {
@@ -492,6 +390,32 @@ fn is_transient_status(status: StatusCode) -> bool {
         || status.is_server_error()
 }
 
+/// A plain request can recover an explicitly unsupported streaming mode.
+/// Do not replay authentication/schema failures, or a response whose stream
+/// has already started: those are not evidence that streaming is unsupported.
+pub(crate) fn rejects_streaming(error: &anyhow::Error) -> bool {
+    let Some(http) = error.downcast_ref::<HttpError>() else {
+        return false;
+    };
+    if !matches!(
+        http.status.map(|status| status.as_u16()),
+        Some(400 | 422 | 501)
+    ) {
+        return false;
+    }
+    let body = http.body.to_ascii_lowercase();
+    body.contains("stream")
+        && [
+            "not supported",
+            "unsupported",
+            "not support",
+            "not implemented",
+            "disabled",
+        ]
+        .iter()
+        .any(|marker| body.contains(marker))
+}
+
 fn status_label(status: Option<StatusCode>) -> &'static str {
     match status {
         Some(s) => s.canonical_reason().unwrap_or("error"),
@@ -521,4 +445,41 @@ fn truncate(s: &str, max: usize) -> String {
 
 fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or(s)
+}
+
+#[cfg(test)]
+mod stream_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn only_explicit_pre_stream_rejection_allows_plain_fallback() {
+        let error = |status, body: &str| {
+            anyhow!(HttpError {
+                status: Some(status),
+                retry_after: None,
+                body: body.into(),
+            })
+        };
+        assert!(rejects_streaming(&error(
+            StatusCode::BAD_REQUEST,
+            "streaming is not supported"
+        )));
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
+            assert!(!rejects_streaming(&error(status, "streaming is disabled")));
+        }
+        assert!(!rejects_streaming(&error(
+            StatusCode::BAD_REQUEST,
+            "invalid tool schema"
+        )));
+        assert!(!rejects_streaming(&anyhow!(
+            "Model stream ended before [DONE]"
+        )));
+        assert!(!rejects_streaming(&anyhow!(
+            "Model stream provider error: streaming not supported"
+        )));
+    }
 }

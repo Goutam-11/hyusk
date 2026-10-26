@@ -5,6 +5,19 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+autobins = false
+
+[[bin]]
+name = "hyusk_agent"
+path = "src/main.rs"
+
+[[bin]]
+name = "hyusk-shell-agent"
+path = "src/bin/hyusk-shell-agent.rs"
+
+[[bin]]
+name = "hyusk-workflows"
+path = "src/bin/hyusk-workflows.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -25,7 +38,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 hmac = "0.12"
 sha2 = "0.10"
 rand = "0.8"
-whisper-rs = "0.5"
+whisper-rs = "0.16"
 cpal = "0.15"       # Audio input/output
 eframe = "0.33"
 egui = "0.33"

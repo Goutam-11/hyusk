@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
     process::Command,
-    sync::{mpsc::Sender, Mutex},
+    sync::{mpsc::Sender, oneshot, Mutex},
 };
 
 use crate::types::HyuskEvent;
@@ -128,36 +128,50 @@ impl SchedulerTool {
         let events = self.events.clone();
         let id = schedule.id;
         let run_at = schedule.run_at_unix;
+        let (start_tx, start_rx) = oneshot::channel();
         let task = tokio::spawn(async move {
-            let delay = run_at.saturating_sub(now_unix());
-            tokio::time::sleep(Duration::from_secs(delay)).await;
+            if start_rx.await.is_err() {
+                return;
+            }
+            loop {
+                let delay = run_at.saturating_sub(now_unix());
+                tokio::time::sleep(Duration::from_secs(delay)).await;
 
-            let action = {
-                let mut state = state.lock().await;
-                let Some(index) = state.schedules.iter().position(|item| item.id == id) else {
-                    return;
+                let action = {
+                    let mut state = state.lock().await;
+                    let Some(index) = state.schedules.iter().position(|item| item.id == id) else {
+                        return;
+                    };
+                    let schedule = state.schedules.remove(index);
+                    if let Err(error) = save_state(&state) {
+                        eprintln!("[Scheduler] Could not persist fired schedule {id}: {error}");
+                        state.schedules.insert(index, schedule);
+                        None
+                    } else {
+                        state.tasks.remove(&id);
+                        Some(schedule.action)
+                    }
                 };
-                let action = state.schedules.remove(index).action;
-                if let Err(error) = save_state(&state) {
-                    eprintln!("[Scheduler] Could not persist fired schedule {id}: {error}");
-                }
-                state.tasks.remove(&id);
-                action
-            };
 
-            fire(id, action, events).await;
+                if let Some(action) = action {
+                    fire(id, action, events).await;
+                    return;
+                }
+                // Keep the durable item armed and retry without busy-looping.
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }
         });
 
-        // The task cannot access the map until it is registered.  If a very
-        // short schedule fires first, its cleanup is still harmless.
+        // Release the worker only after registration so an immediately due
+        // schedule cannot be mistaken for a cancelled job during registration.
         let state = Arc::clone(&self.state);
         tokio::spawn(async move {
             let mut state = state.lock().await;
             if state.schedules.iter().any(|item| item.id == id) {
                 state.tasks.insert(id, task);
+                let _ = start_tx.send(());
             } else {
-                // The schedule fired (or was cancelled) before registration;
-                // do not retain a completed handle forever.
+                // Cancellation won before registration; never start the job.
                 task.abort();
             }
         });
@@ -260,7 +274,7 @@ impl Tool for SchedulerTool {
                     _ => {
                         return Ok(ToolResult::failure(
                             "type must be reminder, workflow, or agent_task.",
-                        ))
+                        ));
                     }
                 };
 
@@ -278,7 +292,11 @@ impl Tool for SchedulerTool {
                         run_at_unix,
                         action: action.clone(),
                     });
-                    save_state(&state)?;
+                    if let Err(error) = save_state(&state) {
+                        state.schedules.pop();
+                        state.next_id = id;
+                        return Err(error);
+                    }
                     (id, run_at_unix.saturating_sub(now_unix()))
                 };
                 self.spawn_schedule(Schedule {
@@ -319,11 +337,14 @@ impl Tool for SchedulerTool {
                         "No scheduled item named #{id}."
                     )));
                 };
-                state.schedules.remove(index);
+                let removed = state.schedules.remove(index);
+                if let Err(error) = save_state(&state) {
+                    state.schedules.insert(index, removed);
+                    return Err(error);
+                }
                 if let Some(task) = state.tasks.remove(&id) {
                     task.abort();
                 }
-                save_state(&state)?;
                 Ok(ToolResult::success(format!(
                     "Cancelled scheduled item #{id}."
                 )))
@@ -486,6 +507,193 @@ mod tests {
         assert!(cancelled.success);
         assert!(load_schedules(&path).expect("saved schedules").is_empty());
         tokio::time::sleep(Duration::from_millis(5)).await;
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[tokio::test]
+    async fn startup_rearms_persisted_due_schedule() {
+        let directory = std::env::temp_dir().join(format!("hyusk-scheduler-rearm-{}", now_unix()));
+        let path = directory.join("schedules.json");
+        let persisted = Schedule {
+            id: 17,
+            run_at_unix: now_unix(),
+            action: ScheduledAction::Workflow {
+                name: "morning routine".into(),
+            },
+        };
+        let state = SchedulerState {
+            path: path.clone(),
+            schedules: vec![persisted.clone()],
+            next_id: 18,
+            tasks: HashMap::new(),
+        };
+        save_state(&state).expect("persist schedule");
+        let (events, mut received) = mpsc::channel(2);
+        let _tool = SchedulerTool::with_path(path.clone(), events);
+
+        let event = tokio::time::timeout(Duration::from_secs(1), received.recv())
+            .await
+            .expect("schedule should fire")
+            .expect("event channel remains open");
+        assert!(matches!(
+            event,
+            HyuskEvent::ScheduledWorkflow { id: 17, name } if name == "morning routine"
+        ));
+        assert!(load_schedules(&path).expect("load after fire").is_empty());
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[tokio::test]
+    async fn immediate_schedule_delivery_survives_handle_registration() {
+        let directory =
+            std::env::temp_dir().join(format!("hyusk-scheduler-register-{}", now_unix()));
+        let path = directory.join("schedules.json");
+        let schedule = Schedule {
+            id: 31,
+            run_at_unix: now_unix(),
+            action: ScheduledAction::Workflow {
+                name: "queued routine".into(),
+            },
+        };
+        save_state(&SchedulerState {
+            path: path.clone(),
+            schedules: vec![schedule],
+            next_id: 32,
+            tasks: HashMap::new(),
+        })
+        .expect("persist due schedule");
+        let (events, mut received) = mpsc::channel(1);
+        events
+            .send(HyuskEvent::UserInput("occupy event queue".into()))
+            .await
+            .unwrap();
+        let _tool = SchedulerTool::with_path(path.clone(), events);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !load_schedules(&path).unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("due action should reach event delivery");
+        assert!(matches!(
+            received.recv().await,
+            Some(HyuskEvent::UserInput(_))
+        ));
+        let delivered = tokio::time::timeout(Duration::from_secs(1), received.recv())
+            .await
+            .expect("queued workflow should be delivered")
+            .expect("event channel remains open");
+        assert!(matches!(
+            delivered,
+            HyuskEvent::ScheduledWorkflow { id: 31, name } if name == "queued routine"
+        ));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[tokio::test]
+    async fn due_schedule_is_not_fired_when_removal_cannot_be_persisted() {
+        let directory =
+            std::env::temp_dir().join(format!("hyusk-scheduler-fire-fail-{}", now_unix()));
+        std::fs::create_dir_all(&directory).expect("create test directory");
+        let path = directory.join("schedules.json");
+        let (events, mut received) = mpsc::channel(1);
+        let tool = SchedulerTool::with_path(path.clone(), events);
+        tool.execute(
+            r#"{"action":"schedule","type":"workflow","workflow":"routine","after_seconds":3}"#,
+        )
+        .await
+        .expect("schedule");
+        let persisted = load_schedules(&path).expect("saved schedule");
+        assert_eq!(persisted.len(), 1);
+        let id = persisted[0].id;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !tool.state.lock().await.tasks.contains_key(&id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("timer should be registered");
+        std::fs::remove_file(&path).expect("remove schedule file");
+        std::fs::create_dir(&path).expect("block schedule file path");
+
+        tokio::time::sleep(Duration::from_millis(3_100)).await;
+
+        assert_eq!(tool.state.lock().await.schedules, persisted);
+        assert!(matches!(
+            received.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        tool.state
+            .lock()
+            .await
+            .tasks
+            .remove(&id)
+            .expect("retry task")
+            .abort();
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[tokio::test]
+    async fn failed_schedule_persistence_does_not_leave_an_unarmed_item() {
+        let directory = std::env::temp_dir().join(format!("hyusk-scheduler-fail-{}", now_unix()));
+        std::fs::create_dir_all(&directory).expect("create test directory");
+        let blocked_parent = directory.join("file");
+        std::fs::write(&blocked_parent, "not a directory").expect("create blocker");
+        let path = blocked_parent.join("schedules.json");
+        let (events, _received) = mpsc::channel(2);
+        let tool = SchedulerTool::with_path(path, events);
+
+        let result = tool
+            .execute(r#"{"action":"schedule","type":"reminder","text":"water","after_seconds":60}"#)
+            .await;
+        assert!(result.is_err());
+        let listed = tool.execute(r#"{"action":"list"}"#).await.expect("list");
+        assert_eq!(listed.output, "No scheduled reminders or workflows.");
+        assert_eq!(tool.state.lock().await.next_id, 1);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[tokio::test]
+    async fn failed_cancel_persistence_keeps_item_and_timer() {
+        let directory =
+            std::env::temp_dir().join(format!("hyusk-scheduler-cancel-fail-{}", now_unix()));
+        let path = directory.join("schedules.json");
+        let (events, _received) = mpsc::channel(2);
+        let tool = SchedulerTool::with_path(path.clone(), events);
+        tool.execute(
+            r#"{"action":"schedule","type":"reminder","text":"water","after_seconds":60}"#,
+        )
+        .await
+        .expect("schedule");
+        let id = load_schedules(&path).expect("saved schedule")[0].id;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if tool.state.lock().await.tasks.contains_key(&id) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("scheduled timer should be registered before cancellation");
+
+        std::fs::remove_file(&path).expect("remove schedule file");
+        std::fs::create_dir(&path).expect("block schedule file path");
+        let cancelled = tool
+            .execute(&format!(r#"{{"action":"cancel","id":{id}}}"#))
+            .await;
+        assert!(cancelled.is_err());
+        assert_eq!(tool.state.lock().await.schedules.len(), 1);
+        assert!(tool.state.lock().await.tasks.contains_key(&id));
+
+        tool.state
+            .lock()
+            .await
+            .tasks
+            .remove(&id)
+            .expect("timer handle")
+            .abort();
         let _ = std::fs::remove_dir_all(directory);
     }
 }

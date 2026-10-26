@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::time::sleep;
 
 use super::{Tool, ToolResult};
@@ -61,7 +61,7 @@ impl ProcessTool {
 
             Err(error) => {
                 return Ok(ToolResult::failure(format!(
-                    "Failed to launch '{}': {}",
+                    "Launch failed for '{}': {:#}. This is an execution failure, not an approval request. Check whether the application is installed; use friendly aliases such as 'brave' or 'chrome' for Flatpak browsers. For the separate automation browser, use browser status/start.",
                     program, error
                 )));
             }
@@ -82,18 +82,30 @@ impl ProcessTool {
                     )))
                 } else {
                     Ok(ToolResult::failure(format!(
-                        "'{}' exited immediately with status: {}",
+                        "'{}' exited immediately with status: {}. Launch failed; this is not an approval request. Check the installed application and its launch arguments.",
                         program, status
                     )))
                 }
             }
 
-            None => Ok(ToolResult::success(format!(
-                "'{}' launched and is still running. PID: {:?}",
-                program, pid
-            ))),
+            None => {
+                // GUI launchers often exit after handing work to an existing
+                // app instance. Keep a waiter alive so that launcher is reaped
+                // instead of becoming a zombie later in Hyusk's long session.
+                reap_child(child);
+                Ok(ToolResult::success(format!(
+                    "'{}' launched and is still running. PID: {:?}",
+                    program, pid
+                )))
+            }
         }
     }
+}
+
+fn reap_child(mut child: Child) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    })
 }
 
 #[async_trait]
@@ -117,7 +129,7 @@ impl Tool for ProcessTool {
                 },
                 "program": {
                     "type": "string",
-                    "description": "The program to launch, e.g. 'firefox' or '/usr/bin/spotify'."
+                    "description": "Prefer friendly app aliases: 'brave', 'chrome', 'firefox', 'terminal', 'files'. Aliases resolve Flatpak packaging automatically; do not probe guessed browser executable names. A spawn failure means launch failed, not that permission is needed."
                 },
                 "args": {
                     "type": "array",
@@ -139,5 +151,34 @@ impl Tool for ProcessTool {
         match input.action {
             ProcessAction::Launch => Self::launch(&input.program, &input.args).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn spawned_launcher_is_reaped_after_it_exits() {
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 0.35"])
+            .spawn()
+            .unwrap();
+        assert!(child.try_wait().unwrap().is_none());
+        tokio::time::timeout(Duration::from_secs(2), reap_child(child))
+            .await
+            .expect("reaper should finish after the launcher exits")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn missing_executable_reports_cause_not_permission_request() {
+        let result = ProcessTool::launch("/hyusk-test-missing-executable", &[])
+            .await
+            .unwrap();
+        assert!(!result.success);
+        let message = result.as_agent_message();
+        assert!(message.contains("No such file or directory"));
+        assert!(message.contains("not an approval request"));
     }
 }

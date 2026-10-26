@@ -5,6 +5,7 @@
 use std::{
     path::PathBuf,
     process::Stdio,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -12,6 +13,16 @@ use anyhow::{bail, Context, Result};
 use tokio::process::Command;
 
 use crate::types::Message;
+
+static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+struct TemporaryOutput(PathBuf);
+
+impl Drop for TemporaryOutput {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 #[derive(Clone)]
 pub struct CodexClient {
@@ -52,7 +63,11 @@ impl CodexClient {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let output = std::env::temp_dir().join(format!("hyusk-codex-{stamp}.txt"));
+        let sequence = OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let output = TemporaryOutput(std::env::temp_dir().join(format!(
+            "hyusk-codex-{}-{stamp}-{sequence}.txt",
+            std::process::id()
+        )));
         let mut command = Command::new("codex");
         command
             .args([
@@ -66,10 +81,13 @@ impl CodexClient {
             ])
             .arg(&self.workspace)
             .arg("--output-last-message")
-            .arg(&output)
+            .arg(&output.0)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            // If the parent task is cancelled, do not leave a hidden Codex
+            // process continuing to edit the workspace in the background.
+            .kill_on_drop(true);
         if model != "default" {
             command.arg("--model").arg(model);
         }
@@ -78,8 +96,9 @@ impl CodexClient {
             .output()
             .await
             .context("Failed to start Codex CLI")?;
-        let text = tokio::fs::read_to_string(&output).await.unwrap_or_default();
-        let _ = tokio::fs::remove_file(&output).await;
+        let text = tokio::fs::read_to_string(&output.0)
+            .await
+            .unwrap_or_default();
         if !result.status.success() {
             bail!(
                 "Codex CLI failed: {}",
@@ -91,5 +110,24 @@ impl CodexClient {
         } else {
             text
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temporary_output_is_removed_on_drop() {
+        let path = std::env::temp_dir().join(format!(
+            "hyusk-codex-output-test-{}-{}.txt",
+            std::process::id(),
+            OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, "temporary report").expect("create temporary report");
+        let guard = TemporaryOutput(path.clone());
+        assert!(path.exists());
+        drop(guard);
+        assert!(!path.exists());
     }
 }

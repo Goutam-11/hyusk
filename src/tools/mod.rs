@@ -1,5 +1,6 @@
 #[cfg(target_os = "linux")]
 pub mod accessibility;
+pub mod browser;
 pub mod computer;
 #[cfg(target_os = "linux")]
 pub mod gnome_doctor;

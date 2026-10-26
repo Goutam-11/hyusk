@@ -7,9 +7,9 @@ use std::env;
 use std::process::Stdio;
 use std::sync::mpsc;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 use crate::wake::detector::high_pass;
 
@@ -42,6 +42,65 @@ fn strip_markdown_links(text: &str) -> String {
     }
 
     output
+}
+
+/// Keep combining characters attached to their base letters. Rust's
+/// `char::is_alphanumeric` excludes Unicode marks, which silently removes
+/// vowel signs and viramas from decomposed text (notably Indic and Arabic
+/// scripts) during speech cleanup.
+fn is_combining_mark(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x0300..=0x036F
+            | 0x0483..=0x0489
+            | 0x0591..=0x05BD
+            | 0x05BF
+            | 0x05C1..=0x05C2
+            | 0x0610..=0x061A
+            | 0x064B..=0x065F
+            | 0x0670
+            | 0x06D6..=0x06ED
+            | 0x0900..=0x0903
+            | 0x093A..=0x094F
+            | 0x0951..=0x0957
+            | 0x0962..=0x0963
+            | 0x0981..=0x0983
+            | 0x09BC..=0x09CD
+            | 0x09D7
+            | 0x09E2..=0x09E3
+            | 0x0A01..=0x0A03
+            | 0x0A3C
+            | 0x0A3E..=0x0A4D
+            | 0x0A70..=0x0A71
+            | 0x0A75
+            | 0x0A81..=0x0A83
+            | 0x0ABC
+            | 0x0ABE..=0x0ACD
+            | 0x0AD7
+            | 0x0AE2..=0x0AE3
+            | 0x0B01..=0x0B03
+            | 0x0B3C
+            | 0x0B3E..=0x0B4D
+            | 0x0B55..=0x0B57
+            | 0x0B62..=0x0B63
+            | 0x0C00..=0x0C04
+            | 0x0C3C..=0x0C44
+            | 0x0C46..=0x0C4D
+            | 0x0C55..=0x0C56
+            | 0x0C62..=0x0C63
+            | 0x0C81..=0x0C83
+            | 0x0CBC
+            | 0x0CBE..=0x0CCD
+            | 0x0CD5..=0x0CD6
+            | 0x0CE2..=0x0CE3
+            | 0x0D00..=0x0D03
+            | 0x0D3B..=0x0D4D
+            | 0x0D57
+            | 0x0D62..=0x0D63
+            | 0x0B82..=0x0B83
+            | 0x0BBE..=0x0BCD
+            | 0x0BD7
+    )
 }
 
 /// Turn a model reply into text that sounds natural when spoken.
@@ -114,7 +173,7 @@ pub fn sanitize_for_speech(text: &str) -> String {
 
             // Keep letters, digits, whitespace, and basic punctuation. This
             // also drops emoji and symbols an engine would not say.
-            c if c.is_alphanumeric() || c.is_whitespace() => spoken.push(c),
+            c if c.is_alphanumeric() || c.is_whitespace() || is_combining_mark(c) => spoken.push(c),
             c if matches!(
                 c,
                 '.' | ',' | '!' | '?' | ':' | ';' | '\'' | '"' | '-' | '(' | ')' | '/'
@@ -188,17 +247,62 @@ fn default_piper_model_path() -> String {
 
     relative.to_string()
 }
+
+fn next_piper_output_path() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("hyusk_tts_{}_{}.wav", std::process::id(), sequence))
+}
+
+struct TemporaryAudioFile(std::path::PathBuf);
+
+impl Drop for TemporaryAudioFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 // use std::time::Duration;
 // use tokio::time::sleep;
 
+#[derive(Clone)]
 pub struct SpeechToText {
-    context: Arc<Mutex<Option<WhisperContext>>>,
+    context: Arc<std::sync::Mutex<Option<WhisperContext>>>,
+    inference_permit: Arc<Semaphore>,
     model_path: String,
     sample_rate: u32,
 }
 
 #[derive(Clone)]
 pub struct TextToSpeech;
+
+struct CancelOnDrop(CancellationToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+fn stt_inference_timeout() -> std::time::Duration {
+    let seconds = env::var("HYUSK_STT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| (1..=600).contains(seconds))
+        .unwrap_or(30);
+    std::time::Duration::from_secs(seconds)
+}
+
+#[cfg(test)]
+static WHISPER_ABORT_CALLBACK_OBSERVED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static WHISPER_NATIVE_CALLBACK_ENTERED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static WHISPER_TEST_HOLD_ABORT_CALLBACK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn stream_pulse_input(
     device: &str,
@@ -215,34 +319,67 @@ fn stream_pulse_input(
         .stderr(Stdio::null())
         .spawn()
         .context("Could not start echo-cancelled microphone capture (parec)")?;
-    let mut stdout = child.stdout.take().context("parec has no audio output")?;
-    let mut frame = [0_u8; 1_024]; // 32 ms at 16 kHz, 16-bit mono
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        anyhow::bail!("parec has no audio output");
+    };
+    // `read_exact` on a pipe can block forever if the audio server stalls.
+    // Keep that blocking read off this worker so cancellation can still kill
+    // parec and close the pipe promptly.
+    let (reader_tx, reader_rx) = mpsc::sync_channel(2);
+    let reader = std::thread::spawn(move || loop {
+        let mut frame = [0_u8; 1_024]; // 32 ms at 16 kHz, 16-bit mono
+        let result = stdout.read_exact(&mut frame).map(|()| frame);
+        let failed = result.is_err();
+        if reader_tx.send(result).is_err() || failed {
+            break;
+        }
+    });
     let mut onset_detector = SpeechOnsetDetector::new(320);
     let result = loop {
         if cancel.is_cancelled() {
             break Ok(());
         }
-        if let Err(error) = stdout.read_exact(&mut frame) {
-            break Err(anyhow::anyhow!(
-                "Echo-cancelled microphone stopped: {error}"
-            ));
-        }
+        let frame = match reader_rx.recv_timeout(std::time::Duration::from_millis(25)) {
+            Ok(Ok(frame)) => frame,
+            Ok(Err(error)) => {
+                break Err(anyhow::anyhow!(
+                    "Echo-cancelled microphone stopped: {error}"
+                ));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break Err(anyhow::anyhow!("Echo-cancelled microphone reader stopped"));
+            }
+        };
         for sample in frame.chunks_exact(2) {
             let value = i16::from_le_bytes([sample[0], sample[1]]) as f32 / 32768.0;
             if onset_detector.push(value) {
                 pulse_speech_onset(&speech_onsets);
             }
         }
-        if frames.blocking_send(frame.to_vec()).is_err() {
-            break Ok(());
+        match send_frame_cancellable(&frames, frame.to_vec(), Some(cancel)) {
+            FrameSendOutcome::Sent => {}
+            FrameSendOutcome::Cancelled => break Ok(()),
+            FrameSendOutcome::ReceiverClosed => {
+                if cancel.is_cancelled() {
+                    break Ok(());
+                }
+                break Err(anyhow::anyhow!(
+                    "Echo-cancelled microphone audio receiver stopped"
+                ));
+            }
         }
     };
     let _ = child.kill();
     let _ = child.wait();
+    drop(reader_rx);
+    let _ = reader.join();
     result
 }
 
-fn input_device(host: &cpal::Host) -> Result<cpal::Device> {
+pub(crate) fn input_device(host: &cpal::Host) -> Result<cpal::Device> {
     if let Some(requested) = env::var_os("HYUSK_INPUT_DEVICE") {
         let requested = requested.to_string_lossy();
         let devices = host
@@ -282,21 +419,37 @@ impl SpeechToText {
             // providers. Defer loading Whisper until transcription is actually
             // requested so Nova Sonic does not load an unused second speech
             // recognizer at startup.
-            context: Arc::new(Mutex::new(None)),
+            context: Arc::new(std::sync::Mutex::new(None)),
+            inference_permit: Arc::new(Semaphore::new(1)),
             model_path: model_path.to_string(),
             sample_rate: 16000,
         })
     }
 
-    pub async fn transcribe_from_microphone(&self, duration_secs: f32) -> Result<String> {
+    pub async fn transcribe_from_microphone(
+        &self,
+        duration_secs: f32,
+        cancel: &CancellationToken,
+    ) -> Result<String> {
+        let request_cancel = cancel.child_token();
+        let _capture_guard = CancelOnDrop(request_cancel.clone());
+        if request_cancel.is_cancelled() {
+            return Ok(String::new());
+        }
         println!(
             "🎤 Recording up to {} seconds (stops after speech ends)...",
             duration_secs
         );
 
-        let audio_data = self.record_audio(duration_secs, None, None)?;
+        let recorder = self.clone();
+        let capture_cancel = request_cancel.clone();
+        let audio_data = tokio::task::spawn_blocking(move || {
+            recorder.record_audio(duration_secs, None, Some(&capture_cancel))
+        })
+        .await
+        .context("Microphone capture task failed")??;
 
-        if audio_data.is_empty() {
+        if audio_data.is_empty() || request_cancel.is_cancelled() {
             return Ok(String::new());
         }
 
@@ -307,7 +460,7 @@ impl SpeechToText {
             self.sample_rate
         );
 
-        self.transcribe_audio(&audio_data).await
+        self.transcribe_audio(&audio_data, &request_cancel).await
     }
 
     /// Capture on a blocking worker and send 16 kHz mono PCM frames as the mic
@@ -426,7 +579,12 @@ impl SpeechToText {
                                     if onset_detector.push(value) {
                                         pulse_speech_onset(&speech_onsets);
                                     }
-                                    if !push_live_sample(value, &mut live_pcm, &frames) {
+                                    if !push_live_sample(
+                                        value,
+                                        &mut live_pcm,
+                                        &frames,
+                                        Some(cancel),
+                                    )? {
                                         return Ok(());
                                     }
                                 }
@@ -435,7 +593,12 @@ impl SpeechToText {
                             if onset_detector.push(interpolated) {
                                 pulse_speech_onset(&speech_onsets);
                             }
-                            if !push_live_sample(interpolated, &mut live_pcm, &frames) {
+                            if !push_live_sample(
+                                interpolated,
+                                &mut live_pcm,
+                                &frames,
+                                Some(cancel),
+                            )? {
                                 return Ok(());
                             }
                         }
@@ -586,9 +749,10 @@ impl SpeechToText {
         let mut hp_prev_in = 0.0f32;
         let mut hp_prev_out = 0.0f32;
         let mut live_pcm = Vec::with_capacity(1_024);
-        let mut live_denoiser = live_frames
-            .filter(|_| voice_denoise_enabled())
-            .map(|_| LiveDenoiser::new());
+        let mut live_denoiser = voice_denoise_enabled().then(LiveDenoiser::new);
+        let mut clean_audio =
+            Vec::with_capacity((duration_secs * self.sample_rate as f32) as usize);
+        let mut saw_neural_speech = false;
         let mut next_output_position = 0.0_f64;
         let output_step = sample_rate as f64 / self.sample_rate as f64;
         let mut previous_filtered = 0.0_f32;
@@ -603,7 +767,7 @@ impl SpeechToText {
                     hp_prev_in = sample;
                     hp_prev_out = filtered;
 
-                    if let Some(sender) = live_frames {
+                    if live_frames.is_some() || live_denoiser.is_some() {
                         let position = collected as f64;
                         while next_output_position <= position {
                             let fraction =
@@ -612,14 +776,24 @@ impl SpeechToText {
                                 previous_filtered * (1.0 - fraction) + filtered * fraction;
                             if let Some(denoiser) = live_denoiser.as_mut() {
                                 if let Some(clean) = denoiser.push(interpolated) {
-                                    for sample in clean {
-                                        if !push_live_sample(sample, &mut live_pcm, sender) {
-                                            return Ok(Vec::new());
+                                    clean_audio.extend_from_slice(&clean);
+                                    if let Some(sender) = live_frames {
+                                        for sample in clean {
+                                            if !push_live_sample(
+                                                sample,
+                                                &mut live_pcm,
+                                                sender,
+                                                cancel,
+                                            )? {
+                                                return Ok(Vec::new());
+                                            }
                                         }
                                     }
                                 }
-                            } else if !push_live_sample(interpolated, &mut live_pcm, sender) {
-                                return Ok(Vec::new());
+                            } else if let Some(sender) = live_frames {
+                                if !push_live_sample(interpolated, &mut live_pcm, sender, cancel)? {
+                                    return Ok(Vec::new());
+                                }
                             }
                             next_output_position += output_step;
                         }
@@ -645,7 +819,9 @@ impl SpeechToText {
                     // Ignore the first frames while the capture stream settles
                     // (opening the microphone usually produces a click); track
                     // the quietest of them as the starting noise floor.
-                    if total_frames <= warmup_frames {
+                    let probability = live_denoiser.as_ref().map(|state| state.speech_probability);
+                    let neural_speech = probability.is_some_and(|value| value >= 0.6);
+                    if total_frames <= warmup_frames && !neural_speech {
                         warmup_min = warmup_min.min(frame_rms);
                         noise_floor = warmup_min.max(1e-4);
 
@@ -653,7 +829,7 @@ impl SpeechToText {
                     }
 
                     if noise_frames == 0 {
-                        noise_floor = warmup_min.max(1e-4);
+                        noise_floor = warmup_min.clamp(1e-4, 0.02);
                     }
 
                     noise_frames += 1;
@@ -666,12 +842,13 @@ impl SpeechToText {
                         );
                     }
 
-                    if frame_rms >= threshold {
+                    if capture_frame_is_speech(frame_rms, threshold, probability, saw_speech) {
                         speech_frames += 1;
                         silence_frames = 0;
 
                         if speech_frames >= speech_start_frames {
                             saw_speech = true;
+                            saw_neural_speech |= neural_speech;
                         }
                     } else {
                         silence_frames += 1;
@@ -691,7 +868,9 @@ impl SpeechToText {
                         break;
                     }
 
-                    if !saw_speech && total_frames - warmup_frames >= no_speech_timeout_frames {
+                    if !saw_speech
+                        && total_frames.saturating_sub(warmup_frames) >= no_speech_timeout_frames
+                    {
                         println!("🎤 No speech detected; stopping early");
                         break;
                     }
@@ -710,16 +889,31 @@ impl SpeechToText {
 
         drop(stream);
 
-        if let Some(sender) = live_frames {
-            if let Some(denoiser) = live_denoiser.as_mut() {
-                for clean in denoiser.finish() {
-                    if !push_live_sample(clean, &mut live_pcm, sender) {
+        if let Some(denoiser) = live_denoiser.as_mut() {
+            let tail = denoiser.finish();
+            clean_audio.extend_from_slice(&tail);
+            if let Some(sender) = live_frames {
+                for clean in tail {
+                    if !push_live_sample(clean, &mut live_pcm, sender, cancel)? {
                         return Ok(Vec::new());
                     }
                 }
             }
+        }
+        if let Some(sender) = live_frames {
             if !live_pcm.is_empty() {
-                let _ = sender.blocking_send(live_pcm);
+                match send_frame_cancellable(sender, live_pcm, cancel) {
+                    FrameSendOutcome::Sent => {}
+                    FrameSendOutcome::Cancelled => return Ok(Vec::new()),
+                    FrameSendOutcome::ReceiverClosed
+                        if cancel.is_some_and(CancellationToken::is_cancelled) =>
+                    {
+                        return Ok(Vec::new());
+                    }
+                    FrameSendOutcome::ReceiverClosed => {
+                        anyhow::bail!("Live microphone audio receiver stopped")
+                    }
+                }
             }
         }
 
@@ -744,22 +938,28 @@ impl SpeechToText {
             raw_peak
         );
 
+        if !saw_speech || cancel.is_some_and(CancellationToken::is_cancelled) {
+            println!("🔇 No sustained speech detected; skipping transcription");
+            return Ok(Vec::new());
+        }
+
         // Remove DC offset and sub-vocal rumble before anything else. Laptop
         // captures carry most of their energy below ~100 Hz, which Whisper
         // otherwise turns into hallucinated text.
-        audio_samples = high_pass(&audio_samples, sample_rate as f32);
-
+        if live_denoiser.is_some() {
+            audio_samples = clean_audio;
+        } else {
+            audio_samples = high_pass(&audio_samples, sample_rate as f32);
+            if sample_rate != self.sample_rate {
+                audio_samples =
+                    self.resample_audio(&audio_samples, sample_rate, self.sample_rate)?;
+            }
+        }
+        // Normalize after suppression, not before: avoid boosting room noise
+        // into the denoiser and preserve a single continuous filter state.
         self.normalize_audio(&mut audio_samples);
 
-        if sample_rate != self.sample_rate {
-            audio_samples = self.resample_audio(&audio_samples, sample_rate, self.sample_rate)?;
-        }
-
-        if voice_denoise_enabled() {
-            audio_samples = denoise_for_stt(&audio_samples);
-        }
-
-        if !self.has_speech_energy(&audio_samples) {
+        if !saw_neural_speech && !self.has_speech_energy(&audio_samples) {
             println!("🔇 Background noise / silence discarded");
             return Ok(Vec::new());
         }
@@ -838,60 +1038,54 @@ impl SpeechToText {
         signal >= 0.01 && signal >= background * 2.5
     }
 
-    async fn transcribe_audio(&self, audio_data: &[f32]) -> Result<String> {
+    async fn transcribe_audio(
+        &self,
+        audio_data: &[f32],
+        cancel: &CancellationToken,
+    ) -> Result<String> {
+        if audio_data.is_empty() || cancel.is_cancelled() {
+            return Ok(String::new());
+        }
         println!("🔍 Transcribing {} samples...", audio_data.len());
 
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        let request_cancel = cancel.child_token();
+        let _drop_guard = CancelOnDrop(request_cancel.clone());
+        let timeout = stt_inference_timeout();
+        let deadline = tokio::time::Instant::now() + timeout;
+        let acquire = self.inference_permit.clone().acquire_owned();
+        let permit = tokio::select! {
+            _ = request_cancel.cancelled() => return Ok(String::new()),
+            result = tokio::time::timeout_at(deadline, acquire) => match result {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => anyhow::bail!("Whisper inference semaphore was closed"),
+                Err(_) => anyhow::bail!("Whisper inference timed out waiting for an available worker"),
+            }
+        };
 
-        // Use the machine's cores (capped so we do not oversubscribe an SMT
-        // machine); the old hard-coded 4 left most of a modern CPU idle.
-        let threads = std::thread::available_parallelism()
-            .map(|count| count.get())
-            .unwrap_or(4)
-            .clamp(1, 8);
-
-        params.set_n_threads(threads as i32);
-        params.set_translate(false);
-        params.set_language(configured_stt_language());
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        params.set_temperature(0.0);
-        params.set_temperature_inc(0.2);
-        params.set_suppress_blank(true);
-        // Each call is an independent short recording, not a continuation of a
-        // longer stream -- carrying context from a previous utterance (the old
-        // `false` here) can bias/hallucinate the next transcription.
-        params.set_no_context(true);
-        params.set_single_segment(false);
-        params.set_max_tokens(256);
-        params.set_audio_ctx(0);
-        params.set_offset_ms(0);
-        params.set_duration_ms(0);
-        params.set_thold_pt(0.02);
-        params.set_thold_ptsum(0.02);
-        params.set_max_len(0);
-        params.set_speed_up(false);
-        params.set_entropy_thold(2.4);
-        params.set_logprob_thold(-1.0);
-        // Default 0.6 is conservative and can classify a quieter/farther mic as
-        // "no speech" and skip it entirely. Loosen this a bit.
-        params.set_no_speech_thold(0.55);
-        params.set_length_penalty(-1.0);
-        params.set_max_initial_ts(1.0);
+        if request_cancel.is_cancelled() {
+            return Ok(String::new());
+        }
 
         let context = Arc::clone(&self.context);
         let model_path = self.model_path.clone();
         let audio_data = audio_data.to_vec();
+        let worker_cancel = request_cancel.clone();
 
         // Whisper is CPU-heavy; run it (and the segment extraction, which
         // reads state written by `full`) on the blocking pool so the async
         // runtime (the event loop, tool execution, cancellation) stays live.
-        tokio::task::spawn_blocking(move || {
-            let mut context_slot = context.blocking_lock();
+        let worker = tokio::task::spawn_blocking(move || {
+            let _permit: OwnedSemaphorePermit = permit;
+            if worker_cancel.is_cancelled() {
+                return Ok(String::new());
+            }
+
+            let mut context_slot = context
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Whisper model lock was poisoned"))?;
             if context_slot.is_none() {
-                let loaded = WhisperContext::new(&model_path).map_err(|error| {
+                let parameters = WhisperContextParameters::new();
+                let loaded = WhisperContext::new_with_params(&model_path, parameters).map_err(|error| {
                     anyhow::anyhow!(
                         "Failed to load Whisper model '{}': {:?}. Download with: curl -L -o {} https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
                         model_path,
@@ -902,53 +1096,139 @@ impl SpeechToText {
                 println!("✅ Loaded Whisper model: {model_path}");
                 *context_slot = Some(loaded);
             }
+            if worker_cancel.is_cancelled() {
+                return Ok(String::new());
+            }
+
+            let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+            // Use the machine's cores (capped so we do not oversubscribe an
+            // SMT machine); the old hard-coded 4 left modern CPUs idle.
+            let threads = std::thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(4)
+                .clamp(1, 8);
+            params.set_n_threads(threads as i32);
+            params.set_translate(false);
+            params.set_language(configured_stt_language());
+            params.set_print_special(false);
+            params.set_print_progress(false);
+            params.set_print_realtime(false);
+            params.set_print_timestamps(false);
+            params.set_temperature(0.0);
+            params.set_temperature_inc(0.2);
+            params.set_suppress_blank(true);
+            // This is an independent short recording, not a continuation of a
+            // longer stream; carrying old context can bias the next request.
+            params.set_no_context(true);
+            params.set_single_segment(false);
+            params.set_max_tokens(256);
+            params.set_audio_ctx(0);
+            params.set_offset_ms(0);
+            params.set_duration_ms(0);
+            params.set_thold_pt(0.02);
+            params.set_thold_ptsum(0.02);
+            params.set_max_len(0);
+            params.set_entropy_thold(2.4);
+            params.set_logprob_thold(-1.0);
+            // Loosen the no-speech threshold for quieter or farther mics.
+            params.set_no_speech_thold(0.55);
+            params.set_length_penalty(-1.0);
+            params.set_max_initial_ts(1.0);
+
             let context = context_slot
-                .as_mut()
+                .as_ref()
                 .expect("Whisper context was initialized above");
+            let mut state = context
+                .create_state()
+                .map_err(|error| anyhow::anyhow!("Failed to create Whisper state: {error:?}"))?;
+            // The state owns a reference to the context internals. The
+            // semaphore still serializes use, so release this lock now.
+            drop(context_slot);
 
-            context
-                .full(params, &audio_data)
-                .map_err(|e| anyhow::anyhow!("Transcription failed: {:?}", e))
-                .and_then(|_| {
-                    let num_segments = context.full_n_segments();
-                    println!("📝 Got {} segments", num_segments);
-
-                    if num_segments == 0 {
-                        return Err(anyhow::anyhow!("No transcription segments found"));
+            // whisper-rs 0.16's safe callback setter has a mismatched erased
+            // callback cast and drops its ownership of the boxed closure. Use
+            // the raw API with a concrete, scoped payload instead. The payload
+            // remains alive until `full` returns; the callback is synchronous
+            // within that call and never escapes this blocking worker.
+            unsafe extern "C" fn should_abort(user_data: *mut std::ffi::c_void) -> bool {
+                // SAFETY: user_data points to the CancellationToken box below,
+                // which stays alive for the entire synchronous state.full call.
+                let token = unsafe { &*(user_data as *const CancellationToken) };
+                #[cfg(test)]
+                {
+                    WHISPER_NATIVE_CALLBACK_ENTERED
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    while WHISPER_TEST_HOLD_ABORT_CALLBACK
+                        .load(std::sync::atomic::Ordering::Acquire)
+                        && !token.is_cancelled()
+                    {
+                        std::thread::yield_now();
                     }
+                }
+                let cancelled = token.is_cancelled();
+                #[cfg(test)]
+                if cancelled {
+                    WHISPER_ABORT_CALLBACK_OBSERVED
+                        .store(true, std::sync::atomic::Ordering::Release);
+                }
+                cancelled
+            }
+            let abort_token = Box::new(worker_cancel.clone());
+            let abort_user_data = (&*abort_token as *const CancellationToken)
+                .cast_mut()
+                .cast::<std::ffi::c_void>();
+            // SAFETY: the callback and its matching concrete userdata are
+            // installed together and used only by the synchronous full call.
+            unsafe {
+                params.set_abort_callback(Some(should_abort));
+                params.set_abort_callback_user_data(abort_user_data);
+            }
 
-                    let mut full_text = String::new();
-                    for i in 0..num_segments {
-                        match context.full_get_segment_text(i) {
-                            Ok(text) => {
-                                if !text.is_empty() {
-                                    full_text.push_str(&text);
-                                    full_text.push(' ');
-                                }
-                            }
+            let full_result = state.full(params, &audio_data);
+            if worker_cancel.is_cancelled() {
+                return Ok(String::new());
+            }
+            full_result.map_err(|e| anyhow::anyhow!("Transcription failed: {:?}", e))?;
 
-                            Err(e) => {
-                                return Err(anyhow::anyhow!(
-                                    "Failed to get segment text: {:?}",
-                                    e
-                                ));
-                            }
-                        }
-                    }
+            let num_segments = state.full_n_segments();
+            println!("📝 Got {} segments", num_segments);
 
-                    let result = full_text.trim().to_string();
+            if num_segments == 0 {
+                return Ok(String::new());
+            }
 
-                    if result.is_empty() {
-                        return Err(anyhow::anyhow!(
-                            "Transcription produced empty text. Try speaking louder or check your microphone."
-                        ));
-                    }
+            let mut full_text = String::new();
+            for segment in state.as_iter() {
+                if worker_cancel.is_cancelled() {
+                    return Ok(String::new());
+                }
+                let text = segment
+                    .to_str()
+                    .map_err(|e| anyhow::anyhow!("Failed to get segment text: {e:?}"))?;
+                if !text.is_empty() {
+                    full_text.push_str(text);
+                    full_text.push(' ');
+                }
+            }
 
-                    Ok(result)
-                })
-        })
-        .await
-        .context("Whisper task panicked")?
+            let result = clean_transcript(&full_text);
+            Ok(result)
+        });
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        tokio::select! {
+            _ = request_cancel.cancelled() => Ok(String::new()),
+            result = tokio::time::timeout(remaining, worker) => match result {
+                Ok(Ok(_)) if request_cancel.is_cancelled() => Ok(String::new()),
+                Ok(Ok(result)) => result,
+                Ok(Err(_error)) if request_cancel.is_cancelled() => Ok(String::new()),
+                Ok(Err(error)) => Err(error).context("Whisper task panicked"),
+                Err(_) => {
+                    request_cancel.cancel();
+                    anyhow::bail!("Whisper inference timed out after {} seconds", timeout.as_secs())
+                }
+            }
+        }
     }
 
     fn resample_audio(&self, audio: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
@@ -983,6 +1263,34 @@ fn voice_denoise_enabled() -> bool {
     )
 }
 
+fn capture_frame_is_speech(
+    rms: f32,
+    threshold: f32,
+    probability: Option<f32>,
+    speaking: bool,
+) -> bool {
+    match probability {
+        // Neural VAD rescues quieter speech that a noisy warmup can hide.
+        Some(value) => rms >= 0.001 && value >= if speaking { 0.35 } else { 0.6 },
+        None => rms >= threshold,
+    }
+}
+
+fn clean_transcript(text: &str) -> String {
+    let mut text = text.to_string();
+    for marker in [
+        "[BLANK_AUDIO]",
+        "[NO_SPEECH]",
+        "[SILENCE]",
+        "[MUSIC]",
+        "(silence)",
+        "(music)",
+    ] {
+        text = text.replace(marker, "");
+    }
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Whisper language code configured for short commands. `auto` is useful for
 /// multilingual households; an explicit code is usually more accurate and
 /// faster for short utterances. Common Indian language codes are accepted
@@ -1014,23 +1322,77 @@ fn configured_stt_language() -> Option<&'static str> {
     }
 }
 
+enum FrameSendOutcome {
+    Sent,
+    Cancelled,
+    ReceiverClosed,
+}
+
+/// Send from a blocking audio worker without becoming unresponsive to task
+/// cancellation when the bounded receiver stops consuming frames.
+fn send_frame_cancellable(
+    sender: &tokio::sync::mpsc::Sender<Vec<u8>>,
+    mut frame: Vec<u8>,
+    cancel: Option<&CancellationToken>,
+) -> FrameSendOutcome {
+    loop {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            return FrameSendOutcome::Cancelled;
+        }
+        match sender.try_send(frame) {
+            Ok(()) => return FrameSendOutcome::Sent,
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                return FrameSendOutcome::ReceiverClosed;
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(returned_frame)) => {
+                frame = returned_frame;
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
+}
+
 fn push_live_sample(
     sample: f32,
     frame: &mut Vec<u8>,
     sender: &tokio::sync::mpsc::Sender<Vec<u8>>,
-) -> bool {
+    cancel: Option<&CancellationToken>,
+) -> Result<bool> {
     let pcm = (sample * 5.0).clamp(-1.0, 1.0);
     frame.extend_from_slice(&((pcm * i16::MAX as f32).round() as i16).to_le_bytes());
     if frame.len() == 1_024 {
         let complete = std::mem::replace(frame, Vec::with_capacity(1_024));
-        sender.blocking_send(complete).is_ok()
+        match send_frame_cancellable(sender, complete, cancel) {
+            FrameSendOutcome::Sent => Ok(true),
+            FrameSendOutcome::Cancelled => Ok(false),
+            FrameSendOutcome::ReceiverClosed
+                if cancel.is_some_and(CancellationToken::is_cancelled) =>
+            {
+                Ok(false)
+            }
+            FrameSendOutcome::ReceiverClosed => {
+                anyhow::bail!("Live microphone audio receiver stopped")
+            }
+        }
     } else {
-        true
+        Ok(true)
     }
 }
 
 fn pulse_speech_onset(sender: &tokio::sync::mpsc::Sender<()>) {
     let _ = sender.try_send(());
+}
+
+fn align_pcm16(pending: &mut Option<u8>, pcm: &[u8]) -> Vec<u8> {
+    let mut aligned = Vec::with_capacity(pcm.len() + usize::from(pending.is_some()));
+    if let Some(byte) = pending.take() {
+        aligned.push(byte);
+    }
+    aligned.extend_from_slice(pcm);
+    if aligned.len() % 2 != 0 {
+        *pending = aligned.pop();
+    }
+    aligned
 }
 
 /// Frame based onset detector for the continuous 16 kHz microphone stream.
@@ -1104,6 +1466,7 @@ struct LiveDenoiser {
     input: Vec<f32>,
     output: Vec<f32>,
     previous: Option<f32>,
+    speech_probability: f32,
 }
 
 impl LiveDenoiser {
@@ -1119,6 +1482,7 @@ impl LiveDenoiser {
             input: Vec::with_capacity(nnnoiseless::DenoiseState::FRAME_SIZE),
             output,
             previous: None,
+            speech_probability: 0.0,
         }
     }
 
@@ -1135,7 +1499,7 @@ impl LiveDenoiser {
         if self.input.len() != nnnoiseless::DenoiseState::FRAME_SIZE {
             return None;
         }
-        self.state.process_frame(&mut self.output, &self.input);
+        self.speech_probability = self.state.process_frame(&mut self.output, &self.input);
         self.input.clear();
         Some(
             self.output
@@ -1164,6 +1528,7 @@ impl LiveDenoiser {
 /// RNNoise reduces persistent environmental noise before Whisper transcribes a
 /// command. It is denoising rather than biometric speaker separation: nearby
 /// voices can still be heard by a single laptop microphone.
+#[cfg(test)]
 fn denoise_for_stt(samples: &[f32]) -> Vec<f32> {
     use nnnoiseless::DenoiseState;
 
@@ -1307,14 +1672,14 @@ impl TextToSpeech {
             return Err(anyhow::anyhow!("Piper model not found at '{}'", model_path));
         }
 
-        let tmp_wav = std::env::temp_dir().join("hyusk_tts_output.wav");
+        let tmp_wav = TemporaryAudioFile(next_piper_output_path());
 
         let mut command = AsyncCommand::new("piper");
         command.args([
             "--model",
             &model_path,
             "--output_file",
-            tmp_wav.to_str().unwrap(),
+            tmp_wav.0.to_str().unwrap(),
         ]);
         if let Some(speaker) = speaker.as_deref() {
             command.args(["--speaker", speaker]);
@@ -1329,10 +1694,16 @@ impl TextToSpeech {
             .context("Failed to spawn 'piper' (is it installed and on PATH?)")?;
 
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(text.as_bytes())
-                .await
-                .context("Failed to write text to piper stdin")?;
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    return Ok(());
+                }
+                result = stdin.write_all(text.as_bytes()) => {
+                    result.context("Failed to write text to piper stdin")?;
+                }
+            }
         }
 
         let status = tokio::select! {
@@ -1356,7 +1727,7 @@ impl TextToSpeech {
             }
         }
         let mut play = match paplay
-            .arg(&tmp_wav)
+            .arg(&tmp_wav.0)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true)
@@ -1365,7 +1736,7 @@ impl TextToSpeech {
             Ok(child) => child,
 
             Err(_) => AsyncCommand::new("aplay")
-                .arg(&tmp_wav)
+                .arg(&tmp_wav.0)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .kill_on_drop(true)
@@ -1461,6 +1832,7 @@ impl TextToSpeech {
 /// A single player for Nova Sonic's 24 kHz mono PCM response stream.
 pub struct Pcm16Player {
     child: tokio::process::Child,
+    trailing_byte: Option<u8>,
 }
 
 impl Pcm16Player {
@@ -1500,21 +1872,32 @@ impl Pcm16Player {
 
     pub fn start() -> Result<Self> {
         let child = Self::spawn_player()?;
-        Ok(Self { child })
+        Ok(Self {
+            child,
+            trailing_byte: None,
+        })
     }
 
     pub async fn write(&mut self, pcm: &[u8]) -> Result<()> {
         use tokio::io::AsyncWriteExt;
-        self.child
-            .stdin
-            .as_mut()
-            .context("Nova Sonic audio player is closed")?
-            .write_all(pcm)
-            .await
-            .context("Could not feed audio to the PCM player")
+        let aligned = align_pcm16(&mut self.trailing_byte, pcm);
+        if !aligned.is_empty() {
+            self.child
+                .stdin
+                .as_mut()
+                .context("Nova Sonic audio player is closed")?
+                .write_all(&aligned)
+                .await
+                .context("Could not feed audio to the PCM player")?;
+        }
+        Ok(())
     }
 
     pub async fn finish(mut self) -> Result<()> {
+        if self.trailing_byte.is_some() {
+            let _ = self.stop().await;
+            anyhow::bail!("Nova Sonic PCM stream ended mid-sample");
+        }
         self.child.stdin.take();
         let output = self
             .child
@@ -1567,7 +1950,43 @@ pub async fn test_audio() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{denoise_for_stt, sanitize_for_speech, LiveDenoiser, SpeechOnsetDetector};
+    use super::{
+        align_pcm16, capture_frame_is_speech, clean_transcript, denoise_for_stt,
+        next_piper_output_path, sanitize_for_speech, send_frame_cancellable, FrameSendOutcome,
+        LiveDenoiser, SpeechOnsetDetector,
+    };
+
+    struct ResetAbortCallbackHold;
+
+    impl Drop for ResetAbortCallbackHold {
+        fn drop(&mut self) {
+            super::WHISPER_TEST_HOLD_ABORT_CALLBACK
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn transcript_annotations_never_become_user_requests() {
+        assert_eq!(clean_transcript(" [BLANK_AUDIO] "), "");
+        assert_eq!(clean_transcript("[MUSIC] (silence)"), "");
+        assert_eq!(clean_transcript("[BLANK_AUDIO] set a timer"), "set a timer");
+        assert_eq!(clean_transcript("Open [my notes]"), "Open [my notes]");
+    }
+
+    #[test]
+    fn neural_capture_vad_rejects_noise_and_keeps_quiet_speech() {
+        assert!(!capture_frame_is_speech(0.3, 0.02, Some(0.05), false));
+        assert!(capture_frame_is_speech(0.003, 0.02, Some(0.8), false));
+        assert!(!capture_frame_is_speech(0.003, 0.02, Some(0.4), false));
+        assert!(capture_frame_is_speech(0.003, 0.02, Some(0.4), true));
+        assert!(!capture_frame_is_speech(0.0, 0.02, Some(0.8), true));
+        assert!(capture_frame_is_speech(0.03, 0.02, None, false));
+    }
+
+    #[test]
+    fn piper_output_path_is_unique_per_speech_call() {
+        assert_ne!(next_piper_output_path(), next_piper_output_path());
+    }
 
     fn push_vad_frames(vad: &mut SpeechOnsetDetector, level: f32, count: usize) -> usize {
         let mut onsets = 0;
@@ -1632,6 +2051,166 @@ mod tests {
         assert_eq!(
             sanitize_for_speech("Done! 🎉 50% + 1 = 2"),
             "Done! 50 percent plus 1 equals 2"
+        );
+    }
+
+    #[test]
+    fn preserves_unicode_combining_marks_in_spoken_text() {
+        assert_eq!(
+            sanitize_for_speech("cafe\u{301} क\u{93f} தமிழ் മലയാളം"),
+            "cafe\u{301} क\u{93f} தமிழ் മലയാളം"
+        );
+    }
+
+    #[test]
+    fn pcm16_alignment_carries_bytes_across_arbitrary_chunk_boundaries() {
+        let mut pending = None;
+        assert_eq!(align_pcm16(&mut pending, &[1]), Vec::<u8>::new());
+        assert_eq!(pending, Some(1));
+        assert_eq!(align_pcm16(&mut pending, &[2, 3, 4]), vec![1, 2, 3, 4]);
+        assert_eq!(pending, None);
+        assert_eq!(align_pcm16(&mut pending, &[5, 6, 7]), vec![5, 6]);
+        assert_eq!(pending, Some(7));
+    }
+
+    #[test]
+    fn full_audio_receiver_does_not_block_capture_after_cancellation() {
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        sender.try_send(vec![0]).unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let worker_cancel = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            send_frame_cancellable(&sender, vec![1], Some(&worker_cancel))
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        cancel.cancel();
+        assert!(matches!(
+            worker.join().unwrap(),
+            FrameSendOutcome::Cancelled
+        ));
+    }
+
+    #[test]
+    fn full_audio_receiver_preserves_frame_order_when_it_resumes() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        sender.try_send(vec![0]).unwrap();
+        let worker = std::thread::spawn(move || send_frame_cancellable(&sender, vec![1], None));
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(receiver.try_recv().unwrap(), vec![0]);
+        assert!(matches!(worker.join().unwrap(), FrameSendOutcome::Sent));
+        assert_eq!(receiver.try_recv().unwrap(), vec![1]);
+    }
+
+    #[tokio::test]
+    async fn cancelled_microphone_request_never_opens_audio_or_loads_model() {
+        let stt = super::SpeechToText::new("/missing/whisper-model.bin").unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        assert_eq!(
+            stt.transcribe_from_microphone(8.0, &cancel).await.unwrap(),
+            ""
+        );
+        assert!(stt.context.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn queued_or_pre_cancelled_whisper_requests_do_not_load_a_model() {
+        let stt = super::SpeechToText::new("/missing/whisper-model.bin").unwrap();
+        let permit = stt.inference_permit.clone().acquire_owned().await.unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let worker_stt = stt.clone();
+        let worker_cancel = cancel.clone();
+        let worker = tokio::spawn(async move {
+            worker_stt
+                .transcribe_audio(&[0.0; 16_000], &worker_cancel)
+                .await
+        });
+        tokio::task::yield_now().await;
+        cancel.cancel();
+        assert_eq!(worker.await.unwrap().unwrap(), "");
+        drop(permit);
+        assert!(stt.context.lock().unwrap().is_none());
+
+        let already_cancelled = tokio_util::sync::CancellationToken::new();
+        already_cancelled.cancel();
+        assert_eq!(
+            stt.transcribe_audio(&[0.0; 16_000], &already_cancelled)
+                .await
+                .unwrap(),
+            ""
+        );
+        assert!(stt.context.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "loads the local Whisper model and runs native inference"]
+    async fn whisper_native_cancel_reuses_cached_context() {
+        let model =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("models/ggml-base.en.bin");
+        assert!(
+            model.exists(),
+            "required Whisper model missing: {}",
+            model.display()
+        );
+
+        let stt = super::SpeechToText::new(&model.to_string_lossy()).unwrap();
+        // Synthetic tone avoids microphone access and gives native inference
+        // enough work that the abort callback is exercised after startup.
+        let audio: Vec<f32> = (0..160_000)
+            .map(|sample| (sample as f32 * 0.031).sin() * 0.1)
+            .collect();
+        let warmup_cancel = tokio_util::sync::CancellationToken::new();
+        let _ = stt.transcribe_audio(&audio[..32_000], &warmup_cancel).await;
+        assert!(
+            stt.context.lock().unwrap().is_some(),
+            "Whisper model was not cached during warmup"
+        );
+
+        super::WHISPER_ABORT_CALLBACK_OBSERVED.store(false, std::sync::atomic::Ordering::Release);
+        super::WHISPER_NATIVE_CALLBACK_ENTERED.store(false, std::sync::atomic::Ordering::Release);
+        let _hold_reset = ResetAbortCallbackHold;
+        super::WHISPER_TEST_HOLD_ABORT_CALLBACK.store(true, std::sync::atomic::Ordering::Release);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let worker_cancel = cancel.clone();
+        let worker_stt = stt.clone();
+        let worker_audio = audio.clone();
+        let worker = tokio::spawn(async move {
+            worker_stt
+                .transcribe_audio(&worker_audio, &worker_cancel)
+                .await
+        });
+        // Hold the test callback at a native graph boundary until the spawned
+        // async transcription future is dropped. This makes callback
+        // observation deterministic even on fast machines.
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            while !super::WHISPER_NATIVE_CALLBACK_ENTERED.load(std::sync::atomic::Ordering::Acquire)
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("native Whisper callback was never entered");
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        super::WHISPER_TEST_HOLD_ABORT_CALLBACK.store(false, std::sync::atomic::Ordering::Release);
+
+        // A fresh request after native abort proves the cached model remains
+        // usable and that no partial transcript escaped from the cancelled run.
+        let retry = stt
+            .transcribe_audio(
+                &audio[..32_000],
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await;
+        assert!(
+            retry.is_ok(),
+            "Whisper context failed after cancellation: {retry:?}"
+        );
+        assert!(
+            super::WHISPER_ABORT_CALLBACK_OBSERVED.load(std::sync::atomic::Ordering::Acquire),
+            "Whisper's native abort callback was not observed"
         );
     }
 

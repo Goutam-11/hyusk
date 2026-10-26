@@ -165,7 +165,11 @@ async fn create_schema(pool: &SqlitePool) -> Result<()> {
 }
 
 async fn migrate_legacy_json(pool: &SqlitePool) -> Result<()> {
-    let legacy = match std::fs::read_to_string(memory_json_path()) {
+    migrate_legacy_json_from(pool, &memory_json_path()).await
+}
+
+async fn migrate_legacy_json_from(pool: &SqlitePool, path: &std::path::Path) -> Result<()> {
+    let legacy = match std::fs::read_to_string(path) {
         Ok(contents) => match serde_json::from_str::<MemoryStore>(&contents) {
             Ok(store) => Some(store),
             Err(error) => {
@@ -174,7 +178,15 @@ async fn migrate_legacy_json(pool: &SqlitePool) -> Result<()> {
                 );
             }
         },
-        Err(_) => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Could not read legacy memory file {}; leaving it untouched for recovery",
+                    path.display()
+                )
+            });
+        }
     };
 
     let mut transaction = pool
@@ -1043,6 +1055,32 @@ impl Tool for MemoryTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_memory_read_error_does_not_mark_migration_complete() -> Result<()> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        create_schema(&pool).await?;
+        let directory = std::env::temp_dir().join(format!("hyusk-memory-migration-{}", now_unix()));
+        std::fs::create_dir_all(&directory)?;
+
+        let error = migrate_legacy_json_from(&pool, &directory)
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Could not read legacy memory file"));
+        let marker: Option<String> =
+            sqlx::query_scalar("SELECT value FROM memory_meta WHERE key = 'legacy_json_migrated'")
+                .fetch_optional(&pool)
+                .await?;
+        assert_eq!(marker, None);
+
+        let _ = std::fs::remove_dir_all(directory);
+        Ok(())
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn sqlite_fts_finds_text_and_tags() -> Result<()> {

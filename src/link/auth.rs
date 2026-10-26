@@ -73,6 +73,7 @@ impl PairingState {
     pub fn expires_at(&self) -> u64 {
         self.expires_at
     }
+    #[cfg(test)]
     pub fn is_valid(&self, presented: &str) -> bool {
         self.expires_at > unix_now()
             && !self.consumed.load(Ordering::Acquire)
@@ -80,13 +81,53 @@ impl PairingState {
                 .map(|v| constant_eq(&v, &self.secret))
                 .unwrap_or(false)
     }
+    #[cfg(test)]
     pub fn consume(&self, presented: &str) -> bool {
-        if !self.is_valid(presented) {
+        let Ok(reservation) = self.reserve(presented) else {
             return false;
+        };
+        reservation.commit();
+        true
+    }
+
+    fn reserve(&self, presented: &str) -> Result<PairingReservation, AuthError> {
+        if self.expires_at <= unix_now() {
+            return Err(AuthError::Expired);
         }
-        self.consumed
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+        let valid = decode_secret(presented)
+            .map(|value| constant_eq(&value, &self.secret))
+            .unwrap_or(false);
+        if !valid
+            || self
+                .consumed
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return Err(AuthError::Invalid);
+        }
+        Ok(PairingReservation {
+            consumed: Arc::clone(&self.consumed),
+            committed: false,
+        })
+    }
+}
+
+struct PairingReservation {
+    consumed: Arc<AtomicBool>,
+    committed: bool,
+}
+
+impl PairingReservation {
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PairingReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.consumed.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -150,6 +191,8 @@ impl DeviceStore {
         pairing: &PairingState,
     ) -> Result<(), AuthError> {
         let mut devices = self.devices.lock().await;
+        let original = devices.clone();
+        let mut pairing_reservation = None;
         if let Some(device) = devices.get_mut(device_id) {
             if device.revoked {
                 return Err(AuthError::Revoked);
@@ -160,13 +203,7 @@ impl DeviceStore {
             device.last_seen = unix_now();
         } else {
             let provided = pairing_secret.ok_or(AuthError::Invalid)?;
-            if !pairing.consume(provided) {
-                return Err(if pairing.expires_at() <= unix_now() {
-                    AuthError::Expired
-                } else {
-                    AuthError::Invalid
-                });
-            }
+            pairing_reservation = Some(pairing.reserve(provided)?);
             devices.insert(
                 device_id.to_string(),
                 StoredDevice {
@@ -177,7 +214,13 @@ impl DeviceStore {
                 },
             );
         }
-        self.persist_locked(&devices)?;
+        if let Err(error) = self.persist_locked(&devices) {
+            *devices = original;
+            return Err(error);
+        }
+        if let Some(reservation) = pairing_reservation {
+            reservation.commit();
+        }
         Ok(())
     }
 
@@ -317,6 +360,59 @@ mod tests {
         assert!(store.revoke("phone").await.unwrap());
         let reloaded = DeviceStore::load(&path).unwrap();
         assert!(reloaded.is_revoked("phone").await);
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn failed_auth_persistence_rolls_back_in_memory_update() {
+        let directory = std::env::temp_dir().join(format!(
+            "hyusk-link-auth-fail-{}.json",
+            encode_secret(&random_secret())
+        ));
+        let store = DeviceStore::load(&directory).unwrap();
+        let pairing = PairingState::new();
+        let secret = random_secret();
+        store
+            .authenticate("phone", &secret, Some(&pairing.secret()), &pairing)
+            .await
+            .unwrap();
+        let previous = store.list().await[0].last_seen;
+
+        fs::remove_file(&directory).unwrap();
+        fs::create_dir(&directory).unwrap();
+        assert!(store
+            .authenticate("phone", &secret, None, &pairing)
+            .await
+            .is_err());
+        assert_eq!(store.list().await[0].last_seen, previous);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[tokio::test]
+    async fn failed_first_pairing_write_does_not_consume_pairing_secret() {
+        let path = std::env::temp_dir().join(format!(
+            "hyusk-link-pair-fail-{}.json",
+            encode_secret(&random_secret())
+        ));
+        let store = DeviceStore::load(&path).unwrap();
+        let pairing = PairingState::new();
+        let pairing_secret = pairing.secret();
+        let device_secret = random_secret();
+        fs::create_dir(&path).unwrap();
+
+        assert!(store
+            .authenticate("phone", &device_secret, Some(&pairing_secret), &pairing)
+            .await
+            .is_err());
+        assert!(pairing.is_valid(&pairing_secret));
+        assert!(store.list().await.is_empty());
+
+        fs::remove_dir(&path).unwrap();
+        store
+            .authenticate("phone", &device_secret, Some(&pairing_secret), &pairing)
+            .await
+            .unwrap();
+        assert!(!pairing.is_valid(&pairing_secret));
         let _ = fs::remove_file(path);
     }
 

@@ -32,7 +32,13 @@ fn table() -> HashMap<&'static str, Vec<&'static str>> {
         ),
         ("chrome", vec!["flatpak", "run", "com.google.Chrome"]),
         ("google chrome", vec!["flatpak", "run", "com.google.Chrome"]),
+        ("google-chrome", vec!["flatpak", "run", "com.google.Chrome"]),
+        (
+            "google-chrome-stable",
+            vec!["flatpak", "run", "com.google.Chrome"],
+        ),
         ("chromium", vec!["chromium"]),
+        ("chromium-browser", vec!["chromium"]),
         ("terminal", vec!["ptyxis", "--new-window"]),
         ("console", vec!["ptyxis", "--new-window"]),
         ("ptyxis", vec!["ptyxis", "--new-window"]),
@@ -96,6 +102,28 @@ pub fn resolves(name: &str) -> bool {
     table().contains_key(name.trim().to_lowercase().as_str())
 }
 
+/// Identify a command vector previously expanded from a built-in app alias.
+///
+/// The deterministic workflow parser expands aliases before the process safety
+/// check. Returning the number of arguments consumed by that trusted mapping
+/// lets the check distinguish built-in launcher arguments from additional
+/// model- or workflow-supplied arguments.
+pub fn resolved_alias(program: &str, args: &[String]) -> Option<(&'static str, usize)> {
+    table()
+        .into_iter()
+        .filter_map(|(alias, command)| {
+            let (resolved_program, resolved_args) = command.split_first()?;
+            let matches = *resolved_program == program
+                && args.len() >= resolved_args.len()
+                && args
+                    .iter()
+                    .zip(resolved_args)
+                    .all(|(actual, expected)| actual == expected);
+            matches.then_some((alias, resolved_args.len()))
+        })
+        .max_by_key(|(_, consumed)| *consumed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +145,15 @@ mod tests {
 
         assert_eq!(program, "firefox");
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn browser_executable_names_use_the_same_launch_aliases() {
+        assert_eq!(resolve("google-chrome"), resolve("chrome"));
+        assert_eq!(resolve("google-chrome-stable"), resolve("chrome"));
+        assert_eq!(resolve("chromium-browser"), resolve("chromium"));
+        assert!(resolves("google-chrome"));
+        assert!(resolves("chromium-browser"));
     }
 
     #[test]

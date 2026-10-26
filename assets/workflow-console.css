@@ -1,0 +1,32 @@
+/* Native GTK controls remain keyboard accessible and inherit the system theme. */
+.hyusk-console { background: @window_bg_color; }
+.console-library { background: #242a30; color: #f2f4f5; padding: 22px 16px 16px; }
+.console-library .dim-label { color: #bcc7d2; opacity: 1; }
+.console-library .console-brand { font-size: 26px; font-weight: 800; }
+.console-library entry { background: #343d46; color: #f2f4f5; border-color: #56616d; }
+.console-library list { background: transparent; }
+.console-library row { border-radius: 10px; margin-bottom: 6px; }
+.console-library row:hover { background: #35414d; }
+.console-library row:selected { background: #215bc9; color: #ffffff; }
+.console-library row:selected .dim-label { color: #e0eaff; }
+.console-library button { min-height: 34px; }
+.console-title { font-size: 26px; font-weight: 800; }
+.console-toolbar { background: @window_bg_color; }
+.console-run { background: #215bc9; color: #ffffff; font-weight: 700; padding: 8px 18px; }
+.console-run:hover { background: #194aa5; }
+.console-run:disabled { background: alpha(@window_fg_color, 0.10); color: alpha(@window_fg_color, 0.45); }
+.console-form { padding: 24px; }
+.console-form entry { min-height: 32px; }
+.console-form textview { border-radius: 8px; padding: 10px; background: @view_bg_color; }
+.console-form .step-row { padding: 12px; border-radius: 12px; border: 1px solid alpha(@window_fg_color, 0.14); background: @card_bg_color; }
+.console-form .step-row button { min-width: 28px; min-height: 28px; }
+.module-number { min-width: 30px; min-height: 36px; padding: 0 6px; border-radius: 9px; font-size: 18px; font-weight: 800; background: #dbe6ff; color: #123575; }
+.module-timer { background: #ffe0b9; color: #633907; }
+.module-media { background: #c0ebd7; color: #164d37; }
+.module-system { background: #e1d9ed; color: #453158; }
+.module-kind { font-size: 12px; font-weight: 700; }
+.console-footer { padding: 12px 22px; border-top: 1px solid alpha(@window_fg_color, 0.12); background: @headerbar_bg_color; }
+.console-footer .success { color: @window_fg_color; }
+.console-live { padding: 5px 10px; border-radius: 8px; background: #343d46; color: #d9e5f2; font-weight: 600; }
+.console-schedule { margin-top: 8px; padding: 12px; border-radius: 10px; background: @card_bg_color; }
+button:focus-visible, entry:focus-visible, dropdown:focus-visible { outline: 2px solid #82aaff; outline-offset: 2px; }

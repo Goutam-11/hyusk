@@ -311,6 +311,10 @@ def matches_query(accessible, name_query, role_query, text_query):
 
 
 def find_matches(name_query, role_query, app_index, limit, max_nodes, text_query=""):
+    # These values can also arrive directly over the bridge, without JSON
+    # Schema validation. Keep every tree walk and response size bounded here.
+    limit = max(1, min(int(limit), 200))
+    max_nodes = max(1, min(int(max_nodes), 20000))
     root = desktop()
     start_path = []
 
@@ -436,23 +440,27 @@ def element_from_request(request):
     if path:
         return resolve(path), path
 
+    index = int(request.get("index", 0))
+    if index < 0:
+        return None, None
+
     matches = find_matches(
         request.get("name", ""),
         request.get("role", ""),
         request.get("app"),
-        int(request.get("index", 0)) + 1,
+        index + 1,
         5000,
         request.get("text", ""),
     )
 
-    if len(matches) <= int(request.get("index", 0)):
+    if len(matches) <= index:
         return None, None
 
-    match = matches[int(request.get("index", 0))]
+    match = matches[index]
     return resolve(match["path"]), match["path"]
 
 
-CLICK_EQUIVALENT_ACTIONS = ("click", "press", "toggle")
+CLICK_EQUIVALENT_ACTIONS = ("click", "press", "activate", "toggle")
 
 
 def select_click_action(names, requested=""):
@@ -474,17 +482,20 @@ def handle_click(request):
     action = safe(accessible.queryAction)
     if action is None:
         bounds = bounds_of(accessible)
-        if bounds and bounds.get("width", 0) > 0:
-            hint = (
-                "element has no action interface; its screen bounds are "
-                f"x={bounds['x']} y={bounds['y']} w={bounds['width']} "
-                f"h={bounds['height']} - use the computer tool "
-                "mouse_click at the center of that box"
-            )
+        if bounds and bounds.get("width", 0) > 0 and bounds.get("height", 0) > 0:
+            return {
+                "ok": False,
+                "error": "element has no AT-SPI action interface; click its screen bounds with computer.mouse_click",
+                "coordinate_fallback": {
+                    "x": bounds["x"] + bounds["width"] // 2,
+                    "y": bounds["y"] + bounds["height"] // 2,
+                    "bounds": bounds,
+                    "path": path,
+                    "element": describe(accessible),
+                },
+            }
         else:
-            hint = "element has no action interface and no screen bounds"
-
-        return {"ok": False, "error": hint}
+            return {"ok": False, "error": "element has no AT-SPI action interface or screen bounds; use computer.screenshot/OCR and click the visible control"}
 
     count = safe(lambda: action.nActions, 0) or 0
     names = [safe(lambda index=index: action.getActionName(index), "") or "" for index in range(count)]
@@ -493,12 +504,23 @@ def handle_click(request):
     if chosen is None:
         if requested_action:
             return {"ok": False, "error": f"element has no action named {requested_action!r} (available: {names})"}
+        bounds = bounds_of(accessible)
+        fallback = None
+        if bounds and bounds.get("width", 0) > 0 and bounds.get("height", 0) > 0:
+            fallback = {
+                "x": bounds["x"] + bounds["width"] // 2,
+                "y": bounds["y"] + bounds["height"] // 2,
+                "bounds": bounds,
+                "path": path,
+                "element": describe(accessible),
+            }
         return {
             "ok": False,
             "error": (
                 f"element has no click/press/toggle action (available: {names}). "
-                "Use action_name explicitly for other actions, or mouse_click at its bounds."
+                "Use action_name explicitly for another action, or click its screen bounds with computer.mouse_click."
             ),
+            "coordinate_fallback": fallback,
         }
 
     # doAction failures were silently swallowed before (they were passed to
@@ -530,9 +552,11 @@ def handle_focus(request):
         return {"ok": False, "error": "element has no component interface"}
 
     try:
-        component.grabFocus()
+        focused = component.grabFocus()
     except Exception as error:
         return {"ok": False, "error": f"grabFocus failed: {error}"}
+    if focused is False:
+        return {"ok": False, "error": "AT-SPI grabFocus returned false; verify the app state"}
 
     return {"ok": True, "path": path, "element": describe(accessible)}
 
@@ -562,9 +586,11 @@ def handle_set_text(request):
         return {"ok": False, "error": "element is not editable"}
 
     try:
-        editable.setTextContents(request["text"])
+        updated = editable.setTextContents(request["text"])
     except Exception as error:
         return {"ok": False, "error": f"setTextContents failed: {error}"}
+    if updated is False:
+        return {"ok": False, "error": "AT-SPI setTextContents returned false; verify the field contents"}
 
     return {"ok": True, "path": path, "element": describe(accessible)}
 
@@ -593,8 +619,8 @@ def handle_read(request):
     """
     app_index = request.get("app")
     path = request.get("path")
-    max_chars = int(request.get("max_chars", 4000))
-    max_nodes = int(request.get("max_nodes", 1500))
+    max_chars = max(200, min(int(request.get("max_chars", 4000)), 20000))
+    max_nodes = max(1, min(int(request.get("max_nodes", 1500)), 20000))
 
     root = desktop()
     start_path = []
@@ -627,6 +653,7 @@ def handle_read(request):
     lines = []
     used = 0
     visited = 0
+    truncated = False
 
     while queue and visited < max_nodes and used < max_chars:
         accessible, path, depth = queue.popleft()
@@ -639,16 +666,37 @@ def handle_read(request):
 
         if value and ("SHOWING" in [s.upper() for s in states] or not states):
             label = f"{role}" if not name else f"{role} '{name}'"
-            lines.append(f"[{'>'.join(map(str, path))}] {label}: {value}")
-            used += len(value) + 24
+            line = f"[{'>'.join(map(str, path))}] {label}: {value}"
         elif name and role in ("frame", "window", "dialog", "alert"):
-            lines.append(f"[{'>'.join(map(str, path))}] {role} '{name}'")
-            used += len(name) + 24
+            line = f"[{'>'.join(map(str, path))}] {role} '{name}'"
+        else:
+            line = None
 
-        for index, child in indexed_children_of(accessible):
+        if line is not None:
+            remaining_chars = max_chars - used
+            if len(line) > remaining_chars:
+                lines.append(line[:remaining_chars])
+                used += remaining_chars
+                truncated = True
+                break
+            lines.append(line)
+            used += len(line)
+
+        remaining = max_nodes - visited - len(queue)
+        if remaining <= 0:
+            truncated |= (safe(lambda: accessible.childCount, 0) or 0) > 0
+            continue
+        children = indexed_children_of(accessible, remaining)
+        truncated |= (safe(lambda: accessible.childCount, 0) or 0) > len(children)
+        for index, child in children:
             queue.append((child, path + [index], depth + 1))
 
-    return {"ok": True, "lines": lines, "visited": visited}
+    return {
+        "ok": True,
+        "lines": lines,
+        "visited": visited,
+        "truncated": truncated or bool(queue),
+    }
 
 
 def handle_windows(request):
@@ -802,7 +850,16 @@ def main():
             print(json.dumps({"ok": False, "error": f"invalid json: {error}"}), flush=True)
             continue
 
-        handler = HANDLERS.get(request.get("action"))
+        if not isinstance(request, dict):
+            print(json.dumps({"ok": False, "error": "request must be a JSON object"}), flush=True)
+            continue
+
+        action = request.get("action")
+        if not isinstance(action, str):
+            print(json.dumps({"ok": False, "error": "request action must be a string"}), flush=True)
+            continue
+
+        handler = HANDLERS.get(action)
 
         if handler is None:
             response = {"ok": False, "error": f"unknown action {request.get('action')!r}"}

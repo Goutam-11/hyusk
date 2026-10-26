@@ -62,11 +62,24 @@ impl OrbApp {
     fn handle_event(&mut self, event: HyuskEvent) {
         match event {
             HyuskEvent::StateChanged(state) => {
+                // A new turn starts thinking; the previous answer no longer
+                // belongs on screen.
+                if state == HyuskState::Thinking {
+                    self.response = None;
+                }
                 self.state = state;
             }
 
             HyuskEvent::Response(response) => {
                 self.response = Some(response);
+            }
+
+            HyuskEvent::ResponseDelta(delta) => {
+                let response = self.response.get_or_insert_with(String::new);
+                if !response.is_empty() {
+                    response.push(' ');
+                }
+                response.push_str(&delta);
             }
 
             HyuskEvent::ToolStarted { name } => {

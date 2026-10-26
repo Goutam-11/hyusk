@@ -31,6 +31,7 @@ pub struct SonicToolCall {
     pub id: String,
     pub name: String,
     pub arguments: Value,
+    pub validation_error: Option<String>,
 }
 
 pub enum SonicEvent {
@@ -62,6 +63,7 @@ pub struct SonicSession {
     output_role: String,
     output_type: String,
     output_stage: String,
+    pending_tool_call: Option<SonicToolCall>,
 }
 
 impl BedrockSonicClient {
@@ -80,7 +82,9 @@ impl BedrockSonicClient {
             .load()
             .await;
         if config.region().is_none() {
-            anyhow::bail!("No AWS region configured; set AWS_REGION or AWS_DEFAULT_REGION, or configure a region in your AWS CLI profile");
+            anyhow::bail!(
+                "No AWS region configured; set AWS_REGION or AWS_DEFAULT_REGION, or configure a region in your AWS CLI profile"
+            );
         }
         let client = aws_sdk_bedrockruntime::Client::new(&config);
         Ok(Self { client, model })
@@ -162,6 +166,7 @@ impl BedrockSonicClient {
             output_role: String::new(),
             output_type: String::new(),
             output_stage: String::new(),
+            pending_tool_call: None,
         })
     }
 }
@@ -212,7 +217,9 @@ impl SonicSession {
             send_audio_tail_and_end(&input, &prompt_name, &content, &mut cadence).await?;
             if std::env::var_os("HYUSK_SONIC_DEBUG").is_some() {
                 let rms = (sample_power / sample_count.max(1) as f64).sqrt();
-                eprintln!("[Nova Sonic] sent {count} live microphone frames; PCM rms {rms:.4}, peak {sample_peak:.4}");
+                eprintln!(
+                    "[Nova Sonic] sent {count} live microphone frames; PCM rms {rms:.4}, peak {sample_peak:.4}"
+                );
             }
             Ok(())
         }))
@@ -255,16 +262,10 @@ impl SonicSession {
         success: bool,
     ) -> Result<()> {
         let content = self.next_content_name("tool-result");
-        let tool_payload = serde_json::to_string(&json!({
-            "success": success,
-            "result": result,
-        }))?;
-        self.send_json(json!({"event":{"contentStart":{"promptName":self.prompt_name,"contentName":content,"interactive":false,"type":"TOOL","role":"TOOL","toolResultInputConfiguration":{"toolUseId":call.id,"type":"TEXT","textInputConfiguration":{"mediaType":"text/plain"}}}}})).await?;
-        self.send_json(json!({"event":{"toolResult":{"promptName":self.prompt_name,"contentName":content,"content":tool_payload}}})).await?;
-        self.send_json(
-            json!({"event":{"contentEnd":{"promptName":self.prompt_name,"contentName":content}}}),
-        )
-        .await
+        for event in tool_result_events(&self.prompt_name, &content, call, result, success)? {
+            self.send_json(event).await?;
+        }
+        Ok(())
     }
 
     fn next_content_name(&self, kind: &str) -> String {
@@ -273,12 +274,29 @@ impl SonicSession {
     }
 
     pub async fn recv(&mut self) -> Result<SonicEvent> {
-        let Some(output) = self
-            .output
-            .recv()
-            .await
-            .context("Nova Sonic response stream failed")?
-        else {
+        let output = self.output.recv().await.map_err(|error| {
+            let detail = match error.as_service_error() {
+                Some(
+                    aws_sdk_bedrockruntime::types::error::InvokeModelWithBidirectionalStreamOutputError::ModelStreamErrorException(
+                        stream_error,
+                    ),
+                ) => format!(
+                    "ModelStreamErrorException (original status {:?}): {}",
+                    stream_error.original_status_code(),
+                    stream_error
+                        .original_message()
+                        .or_else(|| stream_error.message())
+                        .unwrap_or("AWS did not provide an original error message")
+                ),
+                Some(service_error) => service_error.to_string(),
+                None => error.to_string(),
+            };
+            anyhow::anyhow!("Nova Sonic response stream failed: {detail}")
+        })?;
+        let Some(output) = output else {
+            if self.pending_tool_call.is_some() {
+                anyhow::bail!("Nova Sonic stream ended before the pending tool block closed");
+            }
             return Ok(SonicEvent::StreamEnd);
         };
         let Ok(chunk) = output.as_chunk() else {
@@ -323,6 +341,9 @@ impl SonicSession {
             .and_then(|value| value.get("content"))
             .and_then(Value::as_str)
         {
+            if self.output_role == "ASSISTANT" && is_interruption_text(text) {
+                return Ok(SonicEvent::Interrupted);
+            }
             return Ok(if self.output_role == "USER" {
                 SonicEvent::UserText(text.into())
             } else if self.output_stage == "SPECULATIVE" {
@@ -353,6 +374,21 @@ impl SonicSession {
                     self.output_role, self.output_type
                 );
             }
+            if self.output_type == "TOOL" {
+                if reason != "TOOL_USE" {
+                    anyhow::bail!(
+                        "Nova Sonic tool block ended with unexpected stop reason '{reason}'"
+                    );
+                }
+                return self
+                    .pending_tool_call
+                    .take()
+                    .map(SonicEvent::ToolUse)
+                    .context("Nova Sonic ended a tool block without a toolUse event");
+            }
+            if self.pending_tool_call.is_some() {
+                anyhow::bail!("Nova Sonic ended a non-tool block while a tool call was pending");
+            }
             if self.output_role == "USER" && self.output_type == "TEXT" {
                 return Ok(SonicEvent::UserTranscriptEnd);
             }
@@ -366,25 +402,21 @@ impl SonicSession {
             }
         }
         if let Some(call) = event.get("toolUse") {
-            return Ok(SonicEvent::ToolUse(SonicToolCall {
-                id: call
-                    .get("toolUseId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .into(),
-                name: call
-                    .get("toolName")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .into(),
-                arguments: call
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .and_then(|value| serde_json::from_str(value).ok())
-                    .unwrap_or(Value::Null),
-            }));
+            if self.output_role != "TOOL" || self.output_type != "TOOL" {
+                anyhow::bail!("Nova Sonic emitted toolUse outside a TOOL content block");
+            }
+            if self.pending_tool_call.is_some() {
+                anyhow::bail!(
+                    "Nova Sonic emitted another toolUse before closing the previous tool block"
+                );
+            }
+            self.pending_tool_call = Some(parse_tool_use(call)?);
+            return Ok(SonicEvent::Other);
         }
         if let Some(end) = event.get("completionEnd") {
+            if self.pending_tool_call.is_some() {
+                anyhow::bail!("Nova Sonic completed while a tool call was still pending");
+            }
             return Ok(SonicEvent::CompletionEnd(
                 end.get("stopReason")
                     .and_then(Value::as_str)
@@ -402,6 +434,61 @@ impl SonicSession {
         self.input.take();
         Ok(())
     }
+}
+
+fn parse_tool_use(call: &Value) -> Result<SonicToolCall> {
+    let id = call
+        .get("toolUseId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .context("Nova Sonic toolUse is missing a valid toolUseId")?;
+    let name = call
+        .get("toolName")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let mut validation_error = if call.get("role").and_then(Value::as_str) != Some("TOOL") {
+        Some("toolUse has an unexpected role; expected TOOL".to_string())
+    } else if name.is_empty() {
+        Some("toolUse is missing a valid toolName".to_string())
+    } else {
+        None
+    };
+    let mut arguments = Value::Null;
+    if validation_error.is_none() {
+        match call.get("content").and_then(Value::as_str) {
+            Some(content) => match serde_json::from_str::<Value>(content) {
+                Ok(value) if value.is_object() => arguments = value,
+                Ok(_) => validation_error = Some("toolUse content must be a JSON object".into()),
+                Err(error) => {
+                    validation_error = Some(format!("toolUse content is not valid JSON: {error}"))
+                }
+            },
+            None => validation_error = Some("toolUse content must be a JSON string".into()),
+        }
+    }
+    Ok(SonicToolCall {
+        id: id.to_string(),
+        name,
+        arguments,
+        validation_error,
+    })
+}
+
+fn tool_result_events(
+    prompt_name: &str,
+    content_name: &str,
+    call: &SonicToolCall,
+    result: &str,
+    success: bool,
+) -> Result<[Value; 3]> {
+    let content = serde_json::to_string(&json!({"success": success, "result": result}))?;
+    Ok([
+        json!({"event":{"contentStart":{"promptName":prompt_name,"contentName":content_name,"interactive":false,"type":"TOOL","role":"TOOL","toolResultInputConfiguration":{"toolUseId":call.id,"type":"TEXT","textInputConfiguration":{"mediaType":"text/plain"}}}}}),
+        json!({"event":{"toolResult":{"promptName":prompt_name,"contentName":content_name,"content":content}}}),
+        json!({"event":{"contentEnd":{"promptName":prompt_name,"contentName":content_name}}}),
+    ])
 }
 
 #[cfg(test)]
@@ -464,6 +551,22 @@ fn audio_content_start(prompt_name: &str, content_name: &str) -> Value {
 
 fn is_interruption_event(event: &Value) -> bool {
     event.get("interrupted").is_some()
+}
+
+fn is_interruption_text(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return false;
+    };
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.len() == 1
+        && ["interrupted", "interrutped"].iter().any(|key| {
+            object
+                .get(*key)
+                .and_then(Value::as_bool)
+                .is_some_and(|interrupted| interrupted)
+        })
 }
 
 async fn send_audio_tail_and_end(
@@ -571,7 +674,8 @@ fn sanitize_property_schema(value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_interruption_event, openai_tool_to_sonic, send_audio_frames, send_persistent_audio,
+        is_interruption_event, is_interruption_text, openai_tool_to_sonic, parse_tool_use,
+        send_audio_frames, send_persistent_audio, tool_result_events,
     };
     use base64::Engine as _;
     use serde_json::json;
@@ -614,6 +718,70 @@ mod tests {
         assert!(!is_interruption_event(
             &json!({"completionEnd": {"stopReason": "END_TURN"}})
         ));
+        assert!(is_interruption_text(r#"{"interrupted": true}"#));
+        assert!(is_interruption_text(r#"{"interrutped": true}"#));
+        assert!(!is_interruption_text(r#"{"interrupted": false}"#));
+        assert!(!is_interruption_text(r#"The word interrupted was spoken."#));
+    }
+
+    #[test]
+    fn parses_only_well_formed_sonic_tool_use_events() {
+        let call = parse_tool_use(&json!({
+            "role": "TOOL",
+            "toolUseId": "tool-1",
+            "toolName": "status",
+            "content": "{\"app\":\"browser\"}"
+        }))
+        .unwrap();
+        assert_eq!(call.id, "tool-1");
+        assert_eq!(call.name, "status");
+        assert_eq!(call.arguments, json!({"app":"browser"}));
+
+        assert!(parse_tool_use(&json!({
+            "role":"TOOL","toolName":"status","content":"{}"
+        }))
+        .is_err());
+        for malformed in [
+            json!({"role":"TOOL","toolUseId":"tool-1","content":"{}"}),
+            json!({"role":"ASSISTANT","toolUseId":"tool-1","toolName":"status","content":"{}"}),
+            json!({"role":"TOOL","toolUseId":"tool-1","toolName":"status","content":"not-json"}),
+            json!({"role":"TOOL","toolUseId":"tool-1","toolName":"status","content":"null"}),
+        ] {
+            assert!(
+                parse_tool_use(&malformed)
+                    .unwrap()
+                    .validation_error
+                    .is_some(),
+                "{malformed}"
+            );
+        }
+    }
+
+    #[test]
+    fn sonic_tool_result_is_a_correlated_three_event_sequence() {
+        let call = super::SonicToolCall {
+            id: "tool-42".into(),
+            name: "status".into(),
+            arguments: json!({}),
+            validation_error: None,
+        };
+        let events = tool_result_events("prompt-1", "result-1", &call, "done", true).unwrap();
+
+        assert_eq!(events[0]["event"]["contentStart"]["type"], "TOOL");
+        assert_eq!(events[0]["event"]["contentStart"]["role"], "TOOL");
+        assert_eq!(
+            events[0]["event"]["contentStart"]["toolResultInputConfiguration"]["toolUseId"],
+            "tool-42"
+        );
+        assert_eq!(events[1]["event"]["toolResult"]["contentName"], "result-1");
+        let result: serde_json::Value = serde_json::from_str(
+            events[1]["event"]["toolResult"]["content"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result, json!({"success":true,"result":"done"}));
+        assert_eq!(events[2]["event"]["contentEnd"]["contentName"], "result-1");
     }
 
     #[tokio::test]

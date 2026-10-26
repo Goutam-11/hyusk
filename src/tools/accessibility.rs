@@ -42,7 +42,7 @@ impl Bridge {
             bail!("AT-SPI bridge script is missing: {}", script.display());
         }
 
-        let mut child = tokio::process::Command::new("python3")
+        let child = tokio::process::Command::new("python3")
             .arg(&script)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -51,6 +51,10 @@ impl Bridge {
             .spawn()
             .with_context(|| format!("Failed to spawn python3 with {}", script.display()))?;
 
+        Self::from_child(child)
+    }
+
+    fn from_child(mut child: Child) -> Result<Self> {
         let stdin = child.stdin.take().context("bridge stdin missing")?;
         let stdout = child.stdout.take().context("bridge stdout missing")?;
 
@@ -65,21 +69,24 @@ impl Bridge {
         let mut line = serde_json::to_vec(request).context("Failed to encode bridge request")?;
         line.push(b'\n');
 
-        self.stdin
-            .write_all(&line)
-            .await
-            .context("Failed to write to the accessibility bridge")?;
-        self.stdin
-            .flush()
-            .await
-            .context("Failed to flush bridge stdin")?;
-
         let mut response = String::new();
 
-        let read = tokio::time::timeout(REQUEST_TIMEOUT, self.stdout.read_line(&mut response))
-            .await
-            .context("Accessibility bridge timed out")?
-            .context("Failed to read from the accessibility bridge")?;
+        let read = tokio::time::timeout(REQUEST_TIMEOUT, async {
+            self.stdin
+                .write_all(&line)
+                .await
+                .context("Failed to write to the accessibility bridge")?;
+            self.stdin
+                .flush()
+                .await
+                .context("Failed to flush bridge stdin")?;
+            self.stdout
+                .read_line(&mut response)
+                .await
+                .context("Failed to read from the accessibility bridge")
+        })
+        .await
+        .context("Accessibility bridge request timed out")??;
 
         if read == 0 {
             bail!("Accessibility bridge closed unexpectedly");
@@ -87,6 +94,18 @@ impl Bridge {
 
         serde_json::from_str(&response).context("Accessibility bridge returned invalid JSON")
     }
+}
+
+/// Keep an in-flight bridge out of the shared slot. If this future is
+/// cancelled, dropping its local Bridge kills the child and leaves the slot
+/// empty, so the next request cannot consume a stale reply.
+async fn request_owned(bridge_slot: &mut Option<Bridge>, request: &Value) -> Result<Value> {
+    let mut bridge = bridge_slot
+        .take()
+        .context("accessibility bridge was not initialized")?;
+    let response = bridge.request(request).await?;
+    *bridge_slot = Some(bridge);
+    Ok(response)
 }
 
 pub struct AccessibilityTool {
@@ -123,9 +142,7 @@ impl AccessibilityTool {
                 }
             }
 
-            let bridge = guard.as_mut().expect("bridge initialized above");
-
-            match bridge.request(&request).await {
+            match request_owned(&mut guard, &request).await {
                 Ok(response) => return Ok(response),
 
                 Err(error) => {
@@ -186,7 +203,9 @@ impl Tool for AccessibilityTool {
          inspects one, `find` locates an element by name/role/text, and `read` \
          dumps the visible text content of an app (the native replacement for \
          screenshot+OCR). Act on returned paths with `click` (optionally \
-         `action_name`), `focus`, `set_text`, or `get_text`. Some apps \
+         `action_name`); if the element has bounds but no clickable AT-SPI action, \
+         `click` falls back to a desktop mouse click at its center. Use `focus`, \
+         `set_text`, or `get_text` for other interactions. Some apps \
          (Chromium/Electron, or any app while toolkit-accessibility is off) \
          expose no tree; responses include `warnings` when that is the case, \
          and you should then fall back to the `computer` tool."
@@ -214,7 +233,7 @@ impl Tool for AccessibilityTool {
                 },
                 "action_name": {
                     "type": "string",
-                    "description": "Optional exact AT-SPI action name for `click` (e.g. 'press', 'open'). Without it, only click/press/toggle actions are selected."
+                    "description": "Optional exact AT-SPI action name for `click` (e.g. 'press', 'open'). Without it, click/press/activate/toggle actions are selected; if none exists and bounds are available, the tool uses a computer mouse click at the element center."
                 },
                 "read": {
                     "type": "boolean",
@@ -273,8 +292,61 @@ impl Tool for AccessibilityTool {
     async fn execute(&self, input: &str) -> Result<ToolResult> {
         let request: Value = serde_json::from_str(input)
             .context("Accessibility tool input must be a JSON object")?;
+        if !request.is_object() {
+            return Ok(ToolResult::failure(
+                "Accessibility tool input must be a JSON object.",
+            ));
+        }
+        if !request.get("action").is_some_and(Value::is_string) {
+            return Ok(ToolResult::failure(
+                "Accessibility tool input requires a string `action` field.",
+            ));
+        }
 
+        let is_click = request.get("action").and_then(Value::as_str) == Some("click");
         let response = self.send(request).await?;
+
+        if is_click {
+            if let Some(fallback) = response.get("coordinate_fallback") {
+                let x = fallback.get("x").and_then(Value::as_i64);
+                let y = fallback.get("y").and_then(Value::as_i64);
+                if let (Some(x), Some(y)) = (x, y) {
+                    let click = super::computer::ComputerTool::new()
+                        .execute(&json!({"action":"mouse_click", "x":x, "y":y}).to_string())
+                        .await;
+                    match click {
+                        Ok(result) if result.success => {
+                            return Ok(ToolResult::success(pretty(&json!({
+                                "ok": true,
+                                "fallback": "computer.mouse_click at the AT-SPI element bounds center",
+                                "click": {"x": x, "y": y},
+                                "element": fallback.get("element"),
+                                "accessibility_error": response.get("error"),
+                            }))));
+                        }
+                        Ok(result) => {
+                            let error = result.error.unwrap_or(result.output);
+                            return Ok(ToolResult::failure(format!(
+                                "{}; coordinate click at ({x}, {y}) also failed: {error}. Use computer.screenshot/OCR to inspect the visible control.",
+                                response
+                                    .get("error")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("AT-SPI click was unavailable")
+                            )));
+                        }
+                        Err(error) => {
+                            return Ok(ToolResult::failure(format!(
+                                "{}; coordinate click at ({x}, {y}) also failed: {error:#}. Use computer.screenshot/OCR to inspect the visible control.",
+                                response
+                                    .get("error")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("AT-SPI click was unavailable")
+                            )));
+                        }
+                    }
+                }
+            }
+        }
 
         if let Some(error) = bridge_error(&response) {
             return Ok(ToolResult::failure(error));
@@ -295,6 +367,35 @@ mod tests {
         assert!(action_may_change_ui(&json!({"action":"focus"})));
         assert!(!action_may_change_ui(&json!({"action":"tree"})));
         assert!(!action_may_change_ui(&json!({"action":"read"})));
+    }
+
+    #[tokio::test]
+    async fn cancelling_bridge_request_leaves_slot_empty() {
+        let child = tokio::process::Command::new("python3")
+            .args([
+                "-u",
+                "-c",
+                "import sys, time; sys.stdin.readline(); time.sleep(30)",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn fake bridge");
+        let mut slot = Some(Bridge::from_child(child).expect("capture bridge pipes"));
+
+        {
+            let request = json!({"action": "tree"});
+            let pending = request_owned(&mut slot, &request);
+            tokio::pin!(pending);
+            tokio::select! {
+                result = &mut pending => panic!("fake bridge unexpectedly responded: {result:?}"),
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+        }
+
+        assert!(slot.is_none(), "cancelled bridge must not remain reusable");
     }
 
     #[tokio::test]

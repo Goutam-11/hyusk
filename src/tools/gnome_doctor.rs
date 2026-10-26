@@ -47,6 +47,7 @@ impl Check {
         }
         Some(match self.name {
             "GNOME session" => "run Hyusk from a GNOME desktop session",
+            "display session type" => "run Hyusk in a supported GNOME Wayland or X11 session",
             "AT-SPI Python bindings" => {
                 "install python3-pyatspi; import success does not prove an app exposes a live tree"
             }
@@ -64,29 +65,36 @@ impl Check {
     }
 }
 
-fn environment_check(name: &'static str, var: &str) -> Check {
-    match env::var(var).ok().filter(|value| !value.is_empty()) {
-        Some(value) => Check {
-            name,
-            level: Level::Pass,
-            detail: value,
+fn display_session_check(configured: Option<&str>, has_wayland: bool, has_x11: bool) -> Check {
+    let inferred = if has_wayland {
+        Some("Wayland")
+    } else if has_x11 {
+        Some("X11")
+    } else {
+        None
+    };
+    let (level, detail) = match configured {
+        Some("wayland") => (Level::Pass, "Wayland".to_string()),
+        Some("x11") => (Level::Pass, "X11".to_string()),
+        Some(value) => (
+            Level::Warn,
+            format!("unsupported XDG_SESSION_TYPE={value}; expected wayland or x11"),
+        ),
+        None => match inferred {
+            Some(kind) => (
+                Level::Info,
+                format!("XDG_SESSION_TYPE is unset; inferred {kind} from display environment"),
+            ),
+            None => (
+                Level::Warn,
+                "XDG_SESSION_TYPE is unset and display type is unknown".into(),
+            ),
         },
-        None => Check {
-            name,
-            level: if session_kind() == "unknown display server" {
-                Level::Warn
-            } else {
-                Level::Info
-            },
-            detail: if session_kind() == "unknown display server" {
-                format!("{var} is not set; display type is unknown")
-            } else {
-                format!(
-                    "{var} is not set; inferred {} from display environment",
-                    session_kind()
-                )
-            },
-        },
+    };
+    Check {
+        name: "display session type",
+        level,
+        detail,
     }
 }
 
@@ -149,7 +157,10 @@ fn screenshot_check() -> Check {
             detail: if candidates.is_empty() {
                 "no executable backend checked for this session; GNOME Shell D-Bus or the screenshot portal may still be available".into()
             } else {
-                format!("none of {} found; GNOME Shell D-Bus or screenshot portal may still be available", candidates.join(", "))
+                format!(
+                    "none of {} found; GNOME Shell D-Bus or screenshot portal may still be available",
+                    candidates.join(", ")
+                )
             },
         }
     } else {
@@ -167,7 +178,11 @@ fn screenshot_check() -> Check {
 async fn command_check(name: &'static str, command: &str, args: &[&str], optional: bool) -> Check {
     let result = tokio::time::timeout(
         Duration::from_secs(3),
-        tokio::process::Command::new(command).args(args).output(),
+        tokio::process::Command::new(command)
+            .args(args)
+            // A timed-out probe must not keep running in the background.
+            .kill_on_drop(true)
+            .output(),
     )
     .await;
     match result {
@@ -196,9 +211,10 @@ async fn command_check(name: &'static str, command: &str, args: &[&str], optiona
 
 async fn diagnostics() -> Vec<Check> {
     let mut checks = vec![gnome_session_check()];
-    checks.push(environment_check(
-        "display session type",
-        "XDG_SESSION_TYPE",
+    checks.push(display_session_check(
+        env::var("XDG_SESSION_TYPE").ok().as_deref(),
+        env::var_os("WAYLAND_DISPLAY").is_some(),
+        env::var_os("DISPLAY").is_some(),
     ));
     checks.push(command_check("Python 3", "python3", &["--version"], false).await);
     checks.push(
@@ -221,6 +237,7 @@ async fn diagnostics() -> Vec<Check> {
                 "org.gnome.desktop.interface",
                 "toolkit-accessibility",
             ])
+            .kill_on_drop(true)
             .output(),
     )
     .await;
@@ -437,6 +454,17 @@ mod tests {
         );
         assert_eq!(value["checks"][2]["status"], "unknown");
         assert!(value["limitations"].as_array().unwrap().len() >= 3);
+    }
+
+    #[test]
+    fn display_session_check_does_not_mark_unsupported_values_available() {
+        let check = display_session_check(Some("tty"), false, false);
+        assert_eq!(check.level, Level::Warn);
+        assert!(check.detail.contains("expected wayland or x11"));
+
+        let inferred = display_session_check(None, true, false);
+        assert_eq!(inferred.level, Level::Info);
+        assert!(inferred.detail.contains("inferred Wayland"));
     }
 
     #[test]

@@ -29,8 +29,6 @@ struct Input {
     #[serde(default)]
     arguments: Value,
     #[serde(default)]
-    risk: Option<String>,
-    #[serde(default)]
     timeout_ms: Option<u64>,
 }
 
@@ -52,7 +50,6 @@ impl Tool for MobileTool {
                 "device_id": { "type": "string" },
                 "phone_action": { "type": "string", "description": "For example apps.launch, url.open, ui.click, timer.create, or device.status" },
                 "arguments": { "type": "object" },
-                "risk": { "type": "string", "enum": ["safe", "confirm"] },
                 "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 60000 }
             },
             "required": ["action"]
@@ -83,13 +80,13 @@ impl Tool for MobileTool {
                         "Raw remote shell is disabled; use a structured phone action",
                     ));
                 }
-                // The laptop never grants a consequential phone action a
-                // lower risk level by default. Android independently makes
-                // the final confirmation decision from the action itself.
-                let risk = remote_action_requires_confirmation(&phone_action)
-                    .then_some("confirm".to_string())
-                    .or(input.risk)
-                    .unwrap_or_else(|| "confirm".to_string());
+                // Ordinary phone actions should not cause a redundant laptop
+                // approval. The phone still applies its own action-level check.
+                let risk = if remote_action_requires_confirmation(&phone_action) {
+                    "confirm"
+                } else {
+                    "safe"
+                };
                 let invocation = self
                     .server
                     .invoke(
@@ -126,26 +123,7 @@ impl Tool for MobileTool {
 }
 
 fn remote_action_requires_confirmation(action: &str) -> bool {
-    let action = action.to_ascii_lowercase();
-    [
-        "delete",
-        "remove",
-        "uninstall",
-        "install",
-        "purchase",
-        "payment",
-        "pay",
-        "send",
-        "message",
-        "share",
-        "upload",
-        "call",
-        "sms",
-        "clipboard",
-        "reset",
-    ]
-    .iter()
-    .any(|needle| action.contains(needle))
+    crate::tools::safety::phone_action_requires_confirmation(action)
 }
 
 #[cfg(test)]

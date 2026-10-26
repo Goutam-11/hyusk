@@ -135,15 +135,18 @@ impl PendingInvocations {
     /// Returns false for late, duplicate, or cross-device results.  Those
     /// results are harmless and must never complete another phone's action.
     async fn resolve(&self, device_id: &str, value: super::InvocationResult) -> bool {
-        let pending = self.0.lock().await.remove(&value.invocation_id);
-        match pending {
-            Some(pending) if pending.device_id == device_id => pending.result.send(value).is_ok(),
-            Some(pending) => {
-                self.0.lock().await.insert(value.invocation_id, pending);
-                false
+        let pending = {
+            let mut invocations = self.0.lock().await;
+            if invocations
+                .get(&value.invocation_id)
+                .is_some_and(|pending| pending.device_id == device_id)
+            {
+                invocations.remove(&value.invocation_id)
+            } else {
+                None
             }
-            None => false,
-        }
+        };
+        pending.is_some_and(|pending| pending.result.send(value).is_ok())
     }
 
     async fn disconnect_device(&self, device_id: &str) {
@@ -415,38 +418,78 @@ async fn connection(
     }
     connected.insert(hello.device_id.clone(), sender);
     drop(connected);
-    send_response(
-        &mut socket,
-        JsonRpcResponse::result(
-            hello_request.id,
-            json!({"ok": true, "protocol": super::PROTOCOL}),
-        ),
-    )
-    .await?;
     let device_id = hello.device_id;
-    let mut sequence = 0u64;
-    loop {
-        tokio::select! {
-            frame = receiver.recv() => { let Some(frame) = frame else { break }; send_frame(&mut socket, frame).await?; }
-            incoming = timeout(IDLE_TIMEOUT, socket.next()) => {
-                let incoming = incoming.map_err(|_| LinkServerError::Config("idle timeout".into()))?;
-                let Some(message) = incoming else { break };
-                let message = message?;
-                let Message::Text(text) = message else { continue };
-                if text.len() > MAX_MESSAGE { return Err(LinkServerError::Config("frame too large".into())); }
-                let request: super::JsonRpcRequest = match serde_json::from_str(&text) { Ok(r) => r, Err(e) => { send_response(&mut socket, JsonRpcResponse::error(Value::Null, super::JsonRpcError::parse(e.to_string()))).await?; continue; } };
-                if request.jsonrpc != super::JSONRPC { send_response(&mut socket, JsonRpcResponse::error(request.id, super::JsonRpcError::invalid_request("jsonrpc must be 2.0"))).await?; continue; }
-                let Some(request_auth) = request.auth.as_ref() else { send_response(&mut socket, JsonRpcResponse::error(request.id, super::JsonRpcError::unauthorized("request authentication required"))).await?; continue; };
-                if request_auth.sequence <= sequence || !verify_request_mac(&request, &device_secret) { send_response(&mut socket, JsonRpcResponse::error(request.id, super::JsonRpcError::unauthorized("invalid or replayed request"))).await?; continue; }
-                sequence = request_auth.sequence;
-                let response = handle_request(request, &device_id, &pending, &events, &commands).await;
-                send_response(&mut socket, response).await?;
+    let result: Result<(), LinkServerError> = async {
+        send_response(
+            &mut socket,
+            JsonRpcResponse::result(
+                hello_request.id,
+                json!({"ok": true, "protocol": super::PROTOCOL}),
+            ),
+        )
+        .await?;
+        let mut sequence = 0u64;
+        loop {
+            tokio::select! {
+                frame = receiver.recv() => {
+                    let Some(frame) = frame else { break };
+                    send_frame(&mut socket, frame).await?;
+                }
+                incoming = timeout(IDLE_TIMEOUT, socket.next()) => {
+                    let incoming = incoming.map_err(|_| LinkServerError::Config("idle timeout".into()))?;
+                    let Some(message) = incoming else { break };
+                    let message = message?;
+                    let Message::Text(text) = message else { continue };
+                    if text.len() > MAX_MESSAGE {
+                        return Err(LinkServerError::Config("frame too large".into()));
+                    }
+                    let request: super::JsonRpcRequest = match serde_json::from_str(&text) {
+                        Ok(request) => request,
+                        Err(error) => {
+                            send_response(&mut socket, JsonRpcResponse::error(
+                                Value::Null,
+                                super::JsonRpcError::parse(error.to_string()),
+                            )).await?;
+                            continue;
+                        }
+                    };
+                    if request.jsonrpc != super::JSONRPC {
+                        send_response(&mut socket, JsonRpcResponse::error(
+                            request.id,
+                            super::JsonRpcError::invalid_request("jsonrpc must be 2.0"),
+                        )).await?;
+                        continue;
+                    }
+                    let Some(request_auth) = request.auth.as_ref() else {
+                        send_response(&mut socket, JsonRpcResponse::error(
+                            request.id,
+                            super::JsonRpcError::unauthorized("request authentication required"),
+                        )).await?;
+                        continue;
+                    };
+                    if request_auth.sequence <= sequence || !verify_request_mac(&request, &device_secret) {
+                        send_response(&mut socket, JsonRpcResponse::error(
+                            request.id,
+                            super::JsonRpcError::unauthorized("invalid or replayed request"),
+                        )).await?;
+                        continue;
+                    }
+                    sequence = request_auth.sequence;
+                    let response = handle_request(request, &device_id, &pending, &events, &commands).await;
+                    send_response(&mut socket, response).await?;
+                }
             }
         }
+        Ok(())
     }
-    clients.0.lock().await.remove(&device_id);
-    pending.disconnect_device(&device_id).await;
-    Ok(())
+    .await;
+    cleanup_connection(&clients, &pending, &device_id).await;
+    result
+}
+
+async fn cleanup_connection(clients: &ClientMap, pending: &PendingInvocations, device_id: &str) {
+    clients.0.lock().await.remove(device_id);
+    pending.disconnect_device(device_id).await;
 }
 
 async fn handle_request(
@@ -671,5 +714,22 @@ mod tests {
         assert!(pending.resolve("phone-a", result.clone()).await);
         assert_eq!(receiver.await.unwrap(), result);
         assert!(!pending.resolve("phone-a", result).await);
+    }
+
+    #[tokio::test]
+    async fn connection_cleanup_removes_client_and_pending_calls() {
+        let clients = ClientMap(Arc::new(Mutex::new(HashMap::new())));
+        let (frame_tx, _frame_rx) = mpsc::channel(1);
+        clients.0.lock().await.insert("phone-a".into(), frame_tx);
+        let pending = PendingInvocations::default();
+        let (result_tx, result_rx) = oneshot::channel();
+        pending
+            .insert("inv-1".into(), "phone-a".into(), result_tx)
+            .await;
+
+        cleanup_connection(&clients, &pending, "phone-a").await;
+
+        assert!(!clients.0.lock().await.contains_key("phone-a"));
+        assert!(result_rx.await.is_err());
     }
 }

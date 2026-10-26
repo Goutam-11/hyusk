@@ -1,14 +1,3 @@
-//! THESIS: Make an automation read like a clear sequence of desktop actions,
-//! refusing the cramped settings-form editor used by the Shell extension.
-//! OWN-WORLD: Native Adwaita surfaces, blue-violet Hyusk accents, a searchable
-//! library rail, and full-width action rows with platform-standard controls.
-//! STORY: Find or create a workflow, understand its voice triggers and ordered
-//! actions, save it safely, then run it through the Hyusk service.
-//! FIRST VIEWPORT: Workflow library and search on the left; focused name,
-//! triggers, action sequence, save, and run controls on the right.
-//! FORM: Native GNOME utility following the requested Shortcuts-style canon.
-//! FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
-//!
 //! Native GNOME workflow editor for Hyusk.
 //!
 //! The editor deliberately speaks the version-one `commands.json` format. It
@@ -23,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
     cell::RefCell,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     error::Error,
     fs,
     path::PathBuf,
@@ -33,7 +22,7 @@ use std::{
 
 type AppResult<T> = Result<T, Box<dyn Error>>;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 struct Workflow {
     name: String,
     #[serde(default)]
@@ -52,6 +41,8 @@ struct Config {
 struct AppState {
     config: Config,
     selected: Option<usize>,
+    drafts: HashMap<Option<String>, Workflow>,
+    refreshing: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -179,6 +170,54 @@ fn read_phrases(ui: &Ui) -> Vec<String> {
     let start = buffer.start_iter();
     let end = buffer.end_iter();
     split_items(&buffer.text(&start, &end, false))
+}
+
+fn editor_workflow(ui: &Ui) -> Workflow {
+    Workflow {
+        name: ui.name_entry.text().trim().to_string(),
+        phrases: read_phrases(ui),
+        steps: read_steps(ui),
+    }
+}
+
+fn remember_draft(ui: &Ui, state: &Rc<RefCell<AppState>>) {
+    let draft = editor_workflow(ui);
+    let mut state = state.borrow_mut();
+    if state.refreshing {
+        return;
+    }
+    let saved = state
+        .selected
+        .and_then(|index| state.config.workflows.get(index));
+    let key = saved.map(|workflow| workflow.name.clone());
+    if saved == Some(&draft) || (key.is_none() && draft.name.is_empty() && draft.steps.is_empty()) {
+        state.drafts.remove(&key);
+    } else {
+        state.drafts.insert(key, draft);
+    }
+}
+
+fn update_run_readiness(ui: &Ui, state: &Rc<RefCell<AppState>>) {
+    if state.borrow().refreshing {
+        return;
+    }
+    let draft = editor_workflow(ui);
+    let saved = state
+        .borrow()
+        .selected
+        .and_then(|index| state.borrow().config.workflows.get(index).cloned());
+    let ready = saved.as_ref() == Some(&draft);
+    ui.run_button.set_sensitive(ready);
+    ui.run_button.set_tooltip_text(Some(if ready {
+        "Run this saved workflow"
+    } else {
+        "Save your changes before running"
+    }));
+    if !ready && saved.is_some() {
+        set_status(ui, "Unsaved changes · Save before running", false);
+    } else if ui.status.text() == "Unsaved changes · Save before running" {
+        set_status(ui, "Workflow loaded", false);
+    }
 }
 
 fn read_steps(ui: &Ui) -> Vec<String> {
@@ -863,14 +902,15 @@ fn rebuild_steps(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>, values: &[String]) 
         let number = gtk::Label::new(Some(&format!("{}", index + 1)));
         number.set_width_chars(2);
         number.set_xalign(0.5);
-        number.add_css_class("dim-label");
+        number.add_css_class("module-number");
+        set_module_color(&number, step_kind(value));
         number.set_tooltip_text(Some("Step number"));
         row.append(&number);
 
         let kind = gtk::Label::new(Some(step_kind(value)));
-        kind.set_width_chars(11);
+        kind.set_width_chars(8);
         kind.set_xalign(0.0);
-        kind.add_css_class("dim-label");
+        kind.add_css_class("module-kind");
         row.append(&kind);
 
         let entry = gtk::Entry::new();
@@ -878,8 +918,13 @@ fn rebuild_steps(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>, values: &[String]) 
         entry.set_hexpand(true);
         entry.set_placeholder_text(Some("e.g. open Firefox"));
         let kind_for_entry = kind.clone();
+        let number_for_entry = number.clone();
+        let ui_for_entry = Rc::clone(ui);
+        let state_for_entry = Rc::clone(state);
         entry.connect_changed(move |entry| {
             kind_for_entry.set_text(step_kind(&entry.text()));
+            set_module_color(&number_for_entry, step_kind(&entry.text()));
+            update_run_readiness(&ui_for_entry, &state_for_entry);
         });
         row.append(&entry);
 
@@ -926,13 +971,31 @@ fn rebuild_steps(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>, values: &[String]) 
 
         ui.steps_box.append(&row);
     }
+    update_run_readiness(ui, state);
+}
+
+fn set_module_color(label: &gtk::Label, kind: &str) {
+    for class in ["module-timer", "module-media", "module-system"] {
+        label.remove_css_class(class);
+    }
+    match kind {
+        "Timer" => label.add_css_class("module-timer"),
+        "Media" | "Audio" => label.add_css_class("module-media"),
+        "System" | "Memory" => label.add_css_class("module-system"),
+        _ => {}
+    }
 }
 
 fn refresh_editor(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
-    let workflow = state
-        .borrow()
-        .selected
-        .and_then(|index| state.borrow().config.workflows.get(index).cloned());
+    state.borrow_mut().refreshing = true;
+    let workflow = {
+        let current = state.borrow();
+        let saved = current
+            .selected
+            .and_then(|index| current.config.workflows.get(index));
+        let key = saved.map(|workflow| workflow.name.clone());
+        current.drafts.get(&key).cloned().or_else(|| saved.cloned())
+    };
 
     match workflow {
         Some(workflow) => {
@@ -956,18 +1019,34 @@ fn refresh_editor(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
             ui.run_button.set_sensitive(false);
         }
     }
+    state.borrow_mut().refreshing = false;
+    update_run_readiness(ui, state);
 }
 
 fn select_workflow(index: usize, ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
-    if index >= state.borrow().config.workflows.len() {
+    if state.borrow().refreshing || index >= state.borrow().config.workflows.len() {
         return;
     }
+    remember_draft(ui, state);
     state.borrow_mut().selected = Some(index);
     refresh_editor(ui, state);
+    state.borrow_mut().refreshing = true;
+    let mut child = ui.list_box.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if let Ok(row) = widget.downcast::<gtk::ListBoxRow>() {
+            if row.widget_name() == format!("workflow-row-{index}") {
+                ui.list_box.select_row(Some(&row));
+                break;
+            }
+        }
+    }
+    state.borrow_mut().refreshing = false;
     set_status(ui, "Workflow loaded", false);
 }
 
 fn rebuild_workflow_list(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
+    state.borrow_mut().refreshing = true;
     clear_children_list(&ui.list_box);
     let query = ui.search.text().trim().to_lowercase();
     let selected = state.borrow().selected;
@@ -995,6 +1074,7 @@ fn rebuild_workflow_list(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
 
         let title = gtk::Label::new(Some(&workflow.name));
         title.set_xalign(0.0);
+        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
         title.add_css_class("heading");
         let detail = gtk::Label::new(Some(&format!(
             "{} step{}  ·  {} trigger{}",
@@ -1032,6 +1112,7 @@ fn rebuild_workflow_list(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
         empty.add_css_class("dim-label");
         ui.list_box.append(&empty);
     }
+    state.borrow_mut().refreshing = false;
 }
 
 fn clear_children_list(list: &gtk::ListBox) {
@@ -1043,6 +1124,7 @@ fn clear_children_list(list: &gtk::ListBox) {
 }
 
 fn new_workflow(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
+    remember_draft(ui, state);
     state.borrow_mut().selected = None;
     ui.list_box.select_row(None::<&gtk::ListBoxRow>);
     refresh_editor(ui, state);
@@ -1101,6 +1183,14 @@ fn save_workflow(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
 
     {
         let mut current = state.borrow_mut();
+        let old_key = current
+            .selected
+            .and_then(|index| current.config.workflows.get(index))
+            .map(|workflow| workflow.name.clone());
+        current.drafts.remove(&old_key);
+        current
+            .drafts
+            .remove(&Some(config.workflows[index].name.clone()));
         current.config = config;
         current.selected = Some(index);
     }
@@ -1138,6 +1228,7 @@ fn delete_workflow(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
                 match save_config(&config) {
                     Ok(()) => {
                         let mut current = state_for_dialog.borrow_mut();
+                        current.drafts.remove(&Some(workflow.name.clone()));
                         current.config = config;
                         current.selected = None;
                         drop(current);
@@ -1171,6 +1262,11 @@ fn run_workflow(ui: &Rc<Ui>, state: &Rc<RefCell<AppState>>) {
     else {
         return;
     };
+    let draft = editor_workflow(ui);
+    if state.borrow().config.workflows[index] != draft {
+        set_status(ui, "Save your changes before running this workflow.", true);
+        return;
+    }
     match write_control("run_workflow", &name) {
         Ok(()) => set_status(ui, &format!("Sent “{}” to Hyusk", name), false),
         Err(error) => set_status(ui, &format!("Could not contact Hyusk: {error}"), true),
@@ -1209,18 +1305,30 @@ fn action_template(index: u32) -> Option<&'static str> {
     }
 }
 
-fn build_ui(app: &adw::Application) {
+fn build_ui(app: &adw::Application) -> (Rc<Ui>, Rc<RefCell<AppState>>) {
+    let css = gtk::CssProvider::new();
+    css.load_from_data(include_str!("../../assets/workflow-console.css"));
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &css,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
     let state = Rc::new(RefCell::new(AppState {
         config: load_config(),
         selected: None,
+        drafts: HashMap::new(),
+        refreshing: false,
     }));
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Hyusk Workflows")
-        .default_width(1040)
-        .default_height(700)
+        .default_width(1120)
+        .default_height(760)
         .build();
+    window.add_css_class("hyusk-console");
 
     let list_box = gtk::ListBox::new();
     list_box.set_selection_mode(gtk::SelectionMode::Single);
@@ -1233,6 +1341,8 @@ fn build_ui(app: &adw::Application) {
     let editor_title = gtk::Label::new(Some("New workflow"));
     editor_title.set_xalign(0.0);
     editor_title.add_css_class("title-2");
+    editor_title.add_css_class("console-title");
+    editor_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
 
     let name_entry = gtk::Entry::new();
     name_entry.set_placeholder_text(Some("Focus mode"));
@@ -1251,14 +1361,16 @@ fn build_ui(app: &adw::Application) {
     let status = gtk::Label::new(Some("Ready"));
     status.set_xalign(0.0);
     status.set_wrap(true);
-    status.add_css_class("dim-label");
+    status.set_hexpand(true);
+    status.set_lines(3);
+    status.set_ellipsize(gtk::pango::EllipsizeMode::End);
 
     let save_button = gtk::Button::with_label("Save");
     save_button.add_css_class("suggested-action");
     let delete_button = gtk::Button::from_icon_name("user-trash-symbolic");
     delete_button.set_tooltip_text(Some("Delete workflow"));
-    let run_button = gtk::Button::with_label("Run");
-    run_button.add_css_class("pill");
+    let run_button = gtk::Button::with_label("Run workflow");
+    run_button.add_css_class("console-run");
 
     let ui = Rc::new(Ui {
         window: window.clone(),
@@ -1273,8 +1385,22 @@ fn build_ui(app: &adw::Application) {
         delete_button: delete_button.clone(),
         run_button: run_button.clone(),
     });
+    let draft_ui = Rc::downgrade(&ui);
+    let draft_state = Rc::clone(&state);
+    name_entry.connect_changed(move |_| {
+        if let Some(ui) = draft_ui.upgrade() {
+            update_run_readiness(&ui, &draft_state);
+        }
+    });
+    let draft_ui = Rc::downgrade(&ui);
+    let draft_state = Rc::clone(&state);
+    phrases_view.buffer().connect_changed(move |_| {
+        if let Some(ui) = draft_ui.upgrade() {
+            update_run_readiness(&ui, &draft_state);
+        }
+    });
 
-    let new_button = gtk::Button::from_icon_name("document-new-symbolic");
+    let new_button = gtk::Button::with_label("New workflow");
     new_button.set_tooltip_text(Some("New workflow"));
     let add_step_button = gtk::Button::with_label("Add custom step");
     add_step_button.add_css_class("flat");
@@ -1294,10 +1420,21 @@ fn build_ui(app: &adw::Application) {
     action_picker.set_tooltip_text(Some("Choose a common Hyusk action, then edit its details"));
 
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    sidebar.set_margin_top(18);
-    sidebar.set_margin_bottom(12);
-    sidebar.set_margin_start(14);
-    sidebar.set_margin_end(14);
+    sidebar.add_css_class("console-library");
+    let brand_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let butterfly = gtk::Image::from_file(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/brand/logo_hyusk_butterfly_20260916_dark.svg"),
+    );
+    butterfly.set_pixel_size(38);
+    let brand = gtk::Label::new(Some("Hyusk"));
+    brand.add_css_class("console-brand");
+    brand_row.append(&butterfly);
+    brand_row.append(&brand);
+    brand_row.set_margin_bottom(18);
+    sidebar.append(&brand_row);
+    new_button.set_margin_bottom(18);
+    sidebar.append(&new_button);
     sidebar.append(&search);
     let list_scroll = gtk::ScrolledWindow::builder()
         .vexpand(true)
@@ -1305,15 +1442,16 @@ fn build_ui(app: &adw::Application) {
         .child(&list_box)
         .build();
     sidebar.append(&list_scroll);
+    let live = gtk::Label::new(Some("Checking agent…"));
+    live.set_margin_top(16);
+    live.add_css_class("console-live");
+    sidebar.append(&live);
 
     let form = gtk::Box::new(gtk::Orientation::Vertical, 18);
-    form.set_margin_top(28);
-    form.set_margin_bottom(28);
-    form.set_margin_start(32);
-    form.set_margin_end(32);
+    form.add_css_class("console-form");
 
     let intro = gtk::Label::new(Some(
-        "Build a dependable shortcut from the same commands Hyusk understands by voice.",
+        "Connect your everyday actions. Run them with a click or your voice.",
     ));
     intro.set_xalign(0.0);
     intro.set_wrap(true);
@@ -1339,19 +1477,16 @@ fn build_ui(app: &adw::Application) {
     form.append(&phrase_hint);
     form.append(&phrases_view);
 
-    let schedule_label = gtk::Label::new(Some("One-time scheduling"));
-    schedule_label.set_xalign(0.0);
-    schedule_label.add_css_class("heading");
     let schedule_hint = gtk::Label::new(Some(
         "Send a delayed run or reminder request to a Hyusk service with schedule support. Delays accept 30s, 15m, or 2h.",
     ));
     schedule_hint.set_xalign(0.0);
     schedule_hint.set_wrap(true);
     schedule_hint.add_css_class("dim-label");
-    form.append(&schedule_label);
-    form.append(&schedule_hint);
+    let schedule_content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    schedule_content.append(&schedule_hint);
 
-    let schedule_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let schedule_row = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let schedule_delay = gtk::Entry::new();
     schedule_delay.set_width_chars(8);
     schedule_delay.set_placeholder_text(Some("15m"));
@@ -1366,21 +1501,24 @@ fn build_ui(app: &adw::Application) {
     schedule_row.append(&schedule_button);
     schedule_row.append(&reminder_entry);
     schedule_row.append(&reminder_button);
-    form.append(&schedule_row);
+    schedule_content.append(&schedule_row);
 
-    let steps_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let steps_header = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let steps_label = gtk::Label::new(Some("Steps"));
     steps_label.set_xalign(0.0);
     steps_label.add_css_class("heading");
     steps_header.append(&steps_label);
-    let steps_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    steps_spacer.set_hexpand(true);
-    steps_header.append(&steps_spacer);
-    steps_header.append(&action_picker);
-    steps_header.append(&add_step_button);
+    let step_controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    action_picker.set_hexpand(true);
+    step_controls.append(&action_picker);
+    step_controls.append(&add_step_button);
+    steps_header.append(&step_controls);
     form.append(&steps_header);
     form.append(&steps_box);
-    form.append(&status);
+    let schedule_expander = gtk::Expander::new(Some("Schedule a run or reminder"));
+    schedule_expander.add_css_class("console-schedule");
+    schedule_expander.set_child(Some(&schedule_content));
+    form.append(&schedule_expander);
 
     let form_scroll = gtk::ScrolledWindow::builder()
         .vexpand(true)
@@ -1389,21 +1527,27 @@ fn build_ui(app: &adw::Application) {
         .build();
 
     let header = adw::HeaderBar::new();
-    header.pack_start(&new_button);
+    header.add_css_class("console-toolbar");
     header.pack_end(&delete_button);
     header.pack_end(&run_button);
     header.pack_end(&save_button);
 
     let detail_toolbar = adw::ToolbarView::new();
     detail_toolbar.add_top_bar(&header);
-    detail_toolbar.set_content(Some(&form_scroll));
+    let editor_body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    editor_body.append(&form_scroll);
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    footer.add_css_class("console-footer");
+    footer.append(&status);
+    editor_body.append(&footer);
+    detail_toolbar.set_content(Some(&editor_body));
 
     let sidebar_page = adw::NavigationPage::builder()
         .title("Workflows")
         .child(&sidebar)
         .build();
     let detail_page = adw::NavigationPage::builder()
-        .title("Edit workflow")
+        .title("Workflow studio")
         .child(&detail_toolbar)
         .build();
     let split = adw::NavigationSplitView::new();
@@ -1493,20 +1637,134 @@ fn build_ui(app: &adw::Application) {
 
     rebuild_steps(&ui, &state, &[String::new()]);
     rebuild_workflow_list(&ui, &state);
+    if !state.borrow().config.workflows.is_empty() {
+        select_workflow(0, &ui, &state);
+    }
+    let weak_ui = Rc::downgrade(&ui);
+    let mut last_workflow_message = String::new();
+    gtk::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+        let Some(ui) = weak_ui.upgrade() else {
+            return gtk::glib::ControlFlow::Break;
+        };
+        let status_file =
+            PathBuf::from(std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into()))
+                .join("hyusk-status.json");
+        if let Some(snapshot) = fs::read_to_string(status_file)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        {
+            let state = snapshot["state"].as_str().unwrap_or("idle");
+            live.set_text(&format!(
+                "Agent · {}",
+                if state.eq_ignore_ascii_case("hidden") || state.is_empty() {
+                    "Ready"
+                } else {
+                    state
+                }
+            ));
+            let workflow_message = format!(
+                "{}:{}",
+                snapshot["latest"]["kind"], snapshot["latest"]["text"]
+            );
+            if workflow_message != last_workflow_message
+                && snapshot["latest"]["kind"]
+                    .as_str()
+                    .is_some_and(|kind| kind.starts_with("workflow"))
+            {
+                last_workflow_message = workflow_message;
+                set_status(
+                    &ui,
+                    snapshot["latest"]["text"]
+                        .as_str()
+                        .unwrap_or("Workflow updated"),
+                    snapshot["latest"]["kind"].as_str() == Some("workflow_error"),
+                );
+            }
+        } else {
+            live.set_text("Start Hyusk to run workflows");
+        }
+        gtk::glib::ControlFlow::Continue
+    });
     window.present();
+    // Capture this GTK widget directly for design review without reading the
+    // user's desktop or other windows. Enabled only by an explicit test env.
+    if let Some(path) = std::env::var_os("HYUSK_WORKFLOW_CAPTURE") {
+        let capture_window = window.clone();
+        let capture_app = app.clone();
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(1200), move || {
+            let snapshot = gtk::Snapshot::new();
+            gtk::WidgetPaintable::new(Some(&capture_window)).snapshot(
+                &snapshot,
+                capture_window.width() as f64,
+                capture_window.height() as f64,
+            );
+            if let (Some(node), Some(renderer)) = (snapshot.to_node(), capture_window.renderer()) {
+                if let Err(error) = renderer
+                    .render_texture(&node, None)
+                    .save_to_png(PathBuf::from(path))
+                {
+                    eprintln!("Workflow capture failed: {error}");
+                }
+            }
+            capture_app.quit();
+        });
+    }
+    (ui, state)
 }
 
 fn main() {
-    let app = adw::Application::builder()
-        .application_id("io.github.hyusk.Workflows")
-        .build();
-    app.connect_activate(build_ui);
+    let mut builder = adw::Application::builder().application_id("io.github.hyusk.Workflows");
+    if std::env::var_os("HYUSK_WORKFLOW_CAPTURE").is_some() {
+        builder = builder.flags(gtk::gio::ApplicationFlags::NON_UNIQUE);
+    }
+    let app = builder.build();
+    app.connect_activate(|app| {
+        build_ui(app);
+    });
     app.run();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a graphical session and an isolated config with at least two workflows"]
+    fn native_editor_preserves_drafts_and_requires_saved_steps_to_run() {
+        assert_eq!(std::env::var("HYUSK_WORKFLOW_UI_TEST").as_deref(), Ok("1"));
+        adw::init().expect("GTK session");
+        let app = adw::Application::builder()
+            .application_id("io.github.hyusk.WorkflowEditorTest")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let (ui, state) = build_ui(&app);
+        assert!(
+            state.borrow().config.workflows.len() >= 2,
+            "Use an isolated fixture config"
+        );
+        let original = editor_workflow(&ui);
+        assert!(ui.run_button.is_sensitive());
+        assert_eq!(
+            ui.list_box.selected_row().unwrap().widget_name(),
+            "workflow-row-0"
+        );
+        ui.name_entry.set_text("Unsaved draft for UI regression");
+        assert!(!ui.run_button.is_sensitive());
+        ui.search.set_text("no matching workflow");
+        rebuild_workflow_list(&ui, &state);
+        assert_eq!(ui.name_entry.text(), "Unsaved draft for UI regression");
+        ui.search.set_text("");
+        rebuild_workflow_list(&ui, &state);
+        select_workflow(1, &ui, &state);
+        select_workflow(0, &ui, &state);
+        assert_eq!(ui.name_entry.text(), "Unsaved draft for UI regression");
+        assert!(!ui.run_button.is_sensitive());
+        ui.name_entry.set_text(&original.name);
+        assert!(ui.run_button.is_sensitive());
+        assert_eq!(editor_workflow(&ui), original);
+        ui.window.close();
+    }
 
     #[test]
     fn desktop_exec_preserves_quoted_arguments_and_removes_field_codes() {

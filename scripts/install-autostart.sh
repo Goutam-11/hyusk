@@ -25,6 +25,15 @@ sed \
   -e "s|@BINARY@|$BINARY|g" \
   "$UNIT_SOURCE" > "$UNIT_PATH"
 
+# Optional dedicated noise/echo cancellation. Existing audio overrides are
+# otherwise preserved, including users who deliberately choose raw capture.
+if [[ "${1:-}" == "--voice-audio" ]]; then
+  mkdir -p "$UNIT_DIR/hyusk.service.d"
+  sed -e "s|@WORKDIR@|$PROJECT_DIR|g" \
+    "$PROJECT_DIR/systemd/hyusk-audio.conf.in" \
+    > "$UNIT_DIR/hyusk.service.d/10-aec.conf"
+fi
+
 systemctl --user daemon-reload
 systemctl --user enable hyusk.service
 systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR || true

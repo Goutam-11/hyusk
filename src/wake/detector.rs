@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use cpal::{
-    traits::{DeviceTrait, HostTrait, StreamTrait},
+    traits::{DeviceTrait, StreamTrait},
     SampleFormat,
 };
 use livekit_wakeword::WakeWordModel;
@@ -456,9 +456,7 @@ fn run_microphone_loop(
 
     let host = cpal::default_host();
 
-    let device = host
-        .default_input_device()
-        .context("No default microphone found")?;
+    let device = crate::speech::speech::input_device(&host)?;
 
     let device_name = device
         .name()
@@ -617,7 +615,6 @@ fn run_microphone_loop(
      * made the adaptive filter start from scratch each time, injecting
      * level jumps into the signal the classifier sees.
      */
-    let mut denoiser_state: Option<Box<nnnoiseless::DenoiseState<'static>>> = None;
 
     let mut last_level_log = Instant::now();
 
@@ -769,7 +766,9 @@ fn run_microphone_loop(
 
         let processed = if denoise {
             let filtered = high_pass(&samples, TARGET_SAMPLE_RATE as f32);
-
+            // These inference buffers overlap. Carrying RNNoise state across
+            // them replays old audio out of chronological order.
+            let mut denoiser_state = None;
             denoise_for_wake(&mut denoiser_state, &filtered)
         } else {
             high_pass(&samples, TARGET_SAMPLE_RATE as f32)

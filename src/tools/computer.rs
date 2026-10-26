@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+use std::sync::{Arc, OnceLock};
 use std::{
     env,
     path::{Path, PathBuf},
@@ -37,14 +39,14 @@ const DEFAULT_SCREENSHOT_MAX_FILES: usize = 30;
 /// `enigo` backend for X11 and compositors with virtual-input protocols.
 pub struct ComputerTool {
     #[cfg(target_os = "linux")]
-    portal: tokio::sync::Mutex<PortalState>,
+    portal: Arc<tokio::sync::Mutex<PortalState>>,
 }
 
 impl ComputerTool {
     pub fn new() -> Self {
         Self {
             #[cfg(target_os = "linux")]
-            portal: tokio::sync::Mutex::new(PortalState::default()),
+            portal: shared_portal_state(),
         }
     }
 }
@@ -59,7 +61,14 @@ impl Default for ComputerTool {
 #[derive(Default)]
 struct PortalState {
     input: Option<crate::tools::portal::PortalInput>,
-    error: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+fn shared_portal_state() -> Arc<tokio::sync::Mutex<PortalState>> {
+    static PORTAL_STATE: OnceLock<Arc<tokio::sync::Mutex<PortalState>>> = OnceLock::new();
+    Arc::clone(
+        PORTAL_STATE.get_or_init(|| Arc::new(tokio::sync::Mutex::new(PortalState::default()))),
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -716,10 +725,6 @@ impl ComputerTool {
         &self,
         state: &'a mut PortalState,
     ) -> Result<&'a mut crate::tools::portal::PortalInput> {
-        if let Some(error) = state.error.clone() {
-            bail!("Desktop portal input is unavailable: {error}");
-        }
-
         if state.input.is_none() {
             let attempt = tokio::time::timeout(
                 Duration::from_secs(120),
@@ -731,15 +736,15 @@ impl ComputerTool {
                 Ok(Ok(input)) => state.input = Some(input),
 
                 Ok(Err(error)) => {
-                    let message = error.to_string();
-                    state.error = Some(message.clone());
-                    bail!("{message}");
+                    bail!(
+                        "{error:#}. If the portal permission dialog was denied or cancelled, retry an input action and approve it; if no dialog appeared, check the desktop portal service."
+                    );
                 }
 
                 Err(_) => {
-                    let message = "Timed out waiting for desktop portal approval".to_string();
-                    state.error = Some(message.clone());
-                    bail!("{message}");
+                    bail!(
+                        "Timed out waiting for desktop portal approval. Retry an input action and approve the dialog; if no dialog appeared, check the desktop portal service."
+                    );
                 }
             }
         }
@@ -808,9 +813,13 @@ impl ComputerTool {
                 portal_settle(120).await;
             }
 
-            input.button(code, true).await?;
-            portal_settle(30).await;
-            input.button(code, false).await?;
+            let press = input.button(code, true).await;
+            if press.is_ok() {
+                portal_settle(30).await;
+            }
+            let release = input.button(code, false).await;
+            press.context("mouse press failed; button release was still attempted")?;
+            release.context("mouse button could not be released")?;
         }
 
         Ok(ToolResult::success(format!(
@@ -841,7 +850,10 @@ impl ComputerTool {
 
         let code = portal_button_code(button);
 
-        input.button(code, true).await?;
+        if let Err(error) = input.button(code, true).await {
+            let _ = input.button(code, false).await;
+            return Err(error.context("drag press failed; button release was attempted"));
+        }
         portal_settle(30).await;
 
         // Drag through intermediate points so Wayland compositors register
@@ -850,21 +862,24 @@ impl ComputerTool {
         let step_x = (to.x - from.x) as f64 / steps as f64;
         let step_y = (to.y - from.y) as f64 / steps as f64;
 
-        for step in 1..steps {
-            input
-                .move_absolute(
-                    from.x as f64 + step_x * step as f64,
-                    from.y as f64 + step_y * step as f64,
-                )
-                .await?;
-            portal_settle(12).await;
-        }
+        let movement = async {
+            for step in 1..steps {
+                input
+                    .move_absolute(
+                        from.x as f64 + step_x * step as f64,
+                        from.y as f64 + step_y * step as f64,
+                    )
+                    .await?;
+                portal_settle(12).await;
+            }
 
-        let movement = input.move_absolute(to.x as f64, to.y as f64).await;
+            input.move_absolute(to.x as f64, to.y as f64).await
+        }
+        .await;
         let release = input.button(code, false).await;
 
-        movement?;
-        release?;
+        movement.context("drag movement failed; the button release was still attempted")?;
+        release.context("drag completed but the button could not be released")?;
 
         Ok(ToolResult::success(format!(
             "Dragged {} button from ({}, {}) to ({}, {}).",
@@ -883,14 +898,8 @@ impl ComputerTool {
         x: Option<i32>,
         y: Option<i32>,
     ) -> Result<ToolResult> {
-        if amount == 0 {
-            return Ok(ToolResult::failure("Scroll amount must not be zero."));
-        }
-
-        if amount.abs() > MAX_SCROLL {
-            return Ok(ToolResult::failure(format!(
-                "Scroll amount must be between -{MAX_SCROLL} and {MAX_SCROLL}."
-            )));
+        if let Err(message) = validate_scroll_amount(amount) {
+            return Ok(ToolResult::failure(message));
         }
 
         for coordinate in [x, y].into_iter().flatten() {
@@ -1277,6 +1286,20 @@ fn validate_count(count: u32) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_scroll_amount(amount: i32) -> Result<(), String> {
+    if amount == 0 {
+        return Err("Scroll amount must not be zero.".to_string());
+    }
+
+    if !(-MAX_SCROLL..=MAX_SCROLL).contains(&amount) {
+        return Err(format!(
+            "Scroll amount must be between -{MAX_SCROLL} and {MAX_SCROLL}."
+        ));
+    }
+
+    Ok(())
+}
+
 fn position_suffix(x: Option<i32>, y: Option<i32>) -> String {
     match (x, y) {
         (Some(x), Some(y)) => format!(" at ({x}, {y})"),
@@ -1440,6 +1463,7 @@ async fn find_text(
     region: Option<Region>,
     include_cursor: bool,
 ) -> Result<ToolResult> {
+    let coordinates_are_cropped = path.is_none();
     let image = resolve_ocr_path(path, region, include_cursor).await?;
     let words = tesseract_words(&image).await?;
     let query = text.trim().to_lowercase();
@@ -1463,9 +1487,14 @@ async fn find_text(
     )];
 
     for word in matches.iter().take(40) {
+        let (x, y) = ocr_screen_coordinates(
+            word.center_x,
+            word.center_y,
+            region.filter(|_| coordinates_are_cropped),
+        );
         lines.push(format!(
-            "- '{}' center ({}, {}) confidence {:.1}",
-            word.text, word.center_x, word.center_y, word.confidence
+            "- '{}' center ({x}, {y}) confidence {:.1}",
+            word.text, word.confidence
         ));
     }
 
@@ -1474,6 +1503,13 @@ async fn find_text(
     }
 
     Ok(ToolResult::success(lines.join("\n")))
+}
+
+fn ocr_screen_coordinates(x: i32, y: i32, region: Option<Region>) -> (i32, i32) {
+    match region {
+        Some(region) => (x.saturating_add(region.x), y.saturating_add(region.y)),
+        None => (x, y),
+    }
 }
 
 async fn cursor(tool: &ComputerTool) -> Result<ToolResult> {
@@ -2008,14 +2044,8 @@ fn mouse_drag(from: Point, to: Point, button: ButtonName) -> Result<ToolResult> 
 }
 
 fn scroll(axis: ScrollAxis, amount: i32, x: Option<i32>, y: Option<i32>) -> Result<ToolResult> {
-    if amount == 0 {
-        return Ok(ToolResult::failure("Scroll amount must not be zero."));
-    }
-
-    if amount.abs() > MAX_SCROLL {
-        return Ok(ToolResult::failure(format!(
-            "Scroll amount must be between -{MAX_SCROLL} and {MAX_SCROLL}."
-        )));
+    if let Err(message) = validate_scroll_amount(amount) {
+        return Ok(ToolResult::failure(message));
     }
 
     for coordinate in [x, y].into_iter().flatten() {
@@ -2332,7 +2362,28 @@ impl Tool for ComputerTool {
             "Computer tool input must be a JSON object with an `action` field. See the tool schema for supported actions.",
         )?;
 
-        self.run_action(action).await
+        #[cfg(target_os = "linux")]
+        let portal_input_action = matches!(
+            &action,
+            ComputerAction::MouseMove { .. }
+                | ComputerAction::MouseClick { .. }
+                | ComputerAction::MouseDrag { .. }
+                | ComputerAction::Scroll { .. }
+                | ComputerAction::TypeText { .. }
+                | ComputerAction::KeyPress { .. }
+                | ComputerAction::KeyCombo { .. }
+        );
+        let result = self.run_action(action).await;
+        #[cfg(target_os = "linux")]
+        if should_use_portal() && portal_input_action && result.is_err() {
+            self.portal.lock().await.input = None;
+            return result.map_err(|error| {
+                error.context(
+                    "RemoteDesktop input failed; the cached session was discarded and this action was not retried. Try the action once more to request a fresh session. If no permission prompt appears, check the desktop portal service.",
+                )
+            });
+        }
+        result
     }
 }
 
@@ -2353,6 +2404,10 @@ impl ComputerTool {
             let result = match Box::pin(self.run_action(step)).await {
                 Ok(result) => result,
                 Err(error) => {
+                    #[cfg(target_os = "linux")]
+                    if should_use_portal() {
+                        self.portal.lock().await.input = None;
+                    }
                     output.push(format!(
                         "step {}/{}: execution error\n{}",
                         index + 1,
@@ -2402,6 +2457,7 @@ impl ComputerTool {
         region: Option<Region>,
         include_cursor: bool,
     ) -> Result<ToolResult> {
+        let coordinates_are_cropped = path.is_none();
         let image = resolve_ocr_path(path, region, include_cursor).await?;
         let words = tesseract_words(&image).await?;
         let query = text.trim().to_lowercase();
@@ -2416,8 +2472,11 @@ impl ComputerTool {
             )));
         };
 
-        let x = word.center_x;
-        let y = word.center_y;
+        let (x, y) = ocr_screen_coordinates(
+            word.center_x,
+            word.center_y,
+            region.filter(|_| coordinates_are_cropped),
+        );
 
         if should_use_portal() {
             #[cfg(target_os = "linux")]
@@ -2596,6 +2655,14 @@ mod tests {
         assert_eq!(parse_key("numpad7").unwrap(), Key::Numpad7);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn computer_tool_instances_share_the_portal_session() {
+        let first = ComputerTool::new();
+        let second = ComputerTool::new();
+        assert!(Arc::ptr_eq(&first.portal, &second.portal));
+    }
+
     #[test]
     fn parses_single_character_keys() {
         assert_eq!(parse_key("a").unwrap(), Key::Unicode('a'));
@@ -2628,6 +2695,28 @@ mod tests {
         };
 
         assert_eq!(region.grim_arg(), "1,2 300x400");
+    }
+
+    #[test]
+    fn cropped_ocr_coordinates_are_translated_to_screen_coordinates() {
+        let region = Region {
+            x: 120,
+            y: 45,
+            width: 300,
+            height: 200,
+        };
+
+        assert_eq!(ocr_screen_coordinates(17, 23, Some(region)), (137, 68));
+        assert_eq!(ocr_screen_coordinates(17, 23, None), (17, 23));
+    }
+
+    #[test]
+    fn rejects_minimum_i32_scroll_without_overflowing() {
+        let result = scroll(ScrollAxis::Vertical, i32::MIN, None, None)
+            .expect("invalid scroll returns a tool result");
+
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("between -10000 and 10000"));
     }
 
     #[test]
