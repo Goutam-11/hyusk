@@ -80,23 +80,27 @@ of normal commits.
 
 ## Validation
 
-The current tree has been checked with:
+Run these before committing:
 
 ```bash
-cargo check --all-targets
-cargo test --workspace --no-run
+cargo fmt --all -- --check
+cargo check -p hyusk_agent --all-targets
+cargo clippy -p hyusk_agent --all-targets
+cargo test -p hyusk_agent --bin hyusk_agent
 ```
 
-The crate currently has fifty-plus unit tests plus four ignored portal smoke
-tests covering computer-tool key parsing, portal keysym/keycode mapping, schema
-advertisement, input validation, batch/clipboard/URL validation, status
-reporting, portal URI decoding, multimodal message serialization, image-marker
-parsing, OCR text targeting, AT-SPI accessibility, wake/clap detection
-(including the sliding-buffer clap cursor), the LiveKit/Alexa classifiers,
-RNNoise denoising, the instant-command router, streaming sentence splitting,
-persistent memory search/render, and the one-shot `WakeResume` handshake.
-`cargo clippy -p hyusk_agent --all-targets` and
-`cargo check -p hyusk_agent --all-targets` pass without warnings.
+`cargo test -p hyusk_agent --all-targets` reports 278 passing tests and 7
+ignored (the main binary alone: 257 passing, 6 ignored). The ignored ones need a
+real session or network: the four portal smoke tests below, a live CDP browser
+test, a Whisper cancel/cache test, and the GTK workflow editor draft test. Coverage includes the computer tool and portal mapping, input and
+URL validation, browser CDP protocol handling, accessibility targeting, wake and
+clap detection, RNNoise denoising, the instant-command router, streaming
+sentence splitting, session repair and compaction, persistent memory, scheduling,
+and the one-shot `WakeResume` handshake.
+
+`cargo clippy -p hyusk_agent --all-targets` currently reports three
+`result_large_err` warnings (large `anyhow::Error` in tool-result closures);
+there are no errors and no other warnings. Treat a new warning as a regression.
 
 The ignored tests open real RemoteDesktop/Screenshot approval dialogs and move
 the pointer by one pixel. Run them manually when validating portal input or
@@ -109,9 +113,8 @@ cargo test -p hyusk_agent portal_keyboard_smoke -- --ignored --nocapture
 cargo test -p hyusk_agent portal_screenshot_smoke -- --ignored --nocapture
 ```
 
-`cargo fmt --all -- --check` currently reports formatting differences in the
-new audio and UI modules. Run `cargo fmt --all` before submitting a formatting
-cleanup change, but do not mix broad formatting churn into unrelated edits.
+`cargo fmt --all -- --check` is clean; keep it that way rather than mixing
+formatting churn into unrelated edits.
 
 ## Running
 
@@ -150,15 +153,20 @@ Use `scripts/uninstall-autostart.sh` to disable and remove the unit.
   `models/hey_livekit.onnx` classifier is downloaded by
   `scripts/download-wake-word.sh` and selected automatically when the custom
   model is absent.
-- STT uses a fixed six-second recording window and needs a compatible Whisper
-  model at `STT_MODEL`.
+- STT uses variable-length recording: it stops after `STT_SILENCE_MS` of
+  silence, gives up after `STT_NO_SPEECH_MS` without speech, and needs a
+  compatible Whisper model at `STT_MODEL`. First-time model loading cannot be
+  interrupted.
 - GNOME Wayland uses the RemoteDesktop and Screenshot portals. The first input
   or screenshot action requires the user to approve a portal dialog.
 - Absolute pointer moves on the portal path are translated to relative motion
   because a RemoteDesktop-only session has no PipeWire stream; the tool tracks
   the pointer position from an XWayland hint when available.
-- `HyuskEvent::Response` is stored but not rendered by `OrbApp`.
-- Tool calls and audio have no cancellation path.
+- `OrbApp` (eframe) is still a status visual: the GNOME indicator card and the
+  Noctalia tooltip render reply text and approvals, the orb does not.
+- Echo cancellation depends on the PipeWire/PulseAudio module installed by
+  `scripts/install-autostart.sh --voice-audio`; without it the agent can hear
+  its own playback.
 
 These gaps are intentional documentation targets for the next voice/UI
 integration work; they should not be described as completed behavior.

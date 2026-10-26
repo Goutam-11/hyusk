@@ -52,10 +52,12 @@ canceller. `scripts/ensure-echo-cancel.sh` creates `hyusk_aec_source` and
 `hyusk_aec_sink` without changing system defaults. Set
 `HYUSK_SONIC_INPUT_DEVICE=hyusk_aec_source`,
 `HYUSK_OUTPUT_DEVICE=hyusk_aec_sink`, and `PULSE_SINK=hyusk_aec_sink` for
-Hyusk. The included `scripts/hyusk-aec-service.conf` is a user-service
-drop-in for this checkout; install it in
-`~/.config/systemd/user/hyusk.service.d/10-aec.conf`, reload the user daemon,
-and restart Hyusk. The echo-cancel module will be re-created on service start.
+Hyusk. Set `PIPEWIRE_NODE=hyusk_aec_source` as well so wake and local STT use
+the same filtered input instead of bypassing it. Install the portable service
+override with `./scripts/install-autostart.sh --voice-audio`. It renders
+[`systemd/hyusk-audio.conf.in`](../systemd/hyusk-audio.conf.in) into
+`~/.config/systemd/user/hyusk.service.d/10-aec.conf`, so the paths follow your
+checkout. The echo-cancel module is re-created on every service start.
 Use headphones instead if the echo-cancelled source is unavailable or clips
 your voice. Interruption quality still depends on the local microphone and
 PipeWire's cancellation, and should be checked with a short live conversation.

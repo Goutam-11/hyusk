@@ -98,8 +98,11 @@ Bedrock Mantle API key and does not require the laptop. Credentials are
 Keystore-encrypted on the phone. The home mic and default-assistant overlay
 then use continuous 16 kHz PCM input and 24 kHz Nova audio output, with
 software echo cancellation when supported, local playback interruption, a
-spoken “go away” stop command, and a 30-second idle close. Nova's `phone_task`
-tool invokes the existing checkpointed phone agent for device operations.
+spoken “go away” stop command, and a 30-second idle close. Nova's
+`delegate_phone_agent` tool hands the complete request to the checkpointed phone
+agent; it accepts arbitrary phone tasks and is not a task whitelist. The agent
+chooses among its separate app, accessibility, screenshot/OCR, gesture, media,
+system, and memory tools.
 The older Android STT/TTS path remains available when Nova is disabled.
 
 Build success does not establish live Bedrock access or acoustic performance:

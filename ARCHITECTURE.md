@@ -27,11 +27,12 @@ main.rs
 ## Current boundaries
 
 - `agent/runner.rs` owns restart-safe recent chat history, bounded history
-  compaction, and the structured tool-call loop.
+  compaction, provider selection, and the structured tool-call loop.
 - `agent/runtime.rs` consumes `HyuskEvent`s, cancels the previous turn, and
   spawns each turn as a separate task.
 - `model/openrouter.rs` handles the HTTP protocol and transient retries.
-- `tools/` contains the tool trait, registry, and four local tools.
+- `tools/` contains the tool trait, registry, and every local tool (desktop,
+  shell, media, memory, scheduling, background tasks, and optional backends).
 - `speech/`, `wake/`, and `ui/` are audio and desktop refinement components.
 - `link/` is an opt-in TLS-only mobile transport. It feeds authenticated phone
   turns into the same event loop, exposes the phone as the `mobile` tool, and

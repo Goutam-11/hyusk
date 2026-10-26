@@ -41,7 +41,8 @@ when the voice models are missing.
 
 ## Wake-word detector
 
-`WakeWordDetector` uses CPAL to capture the default microphone, converts input
+`WakeWordDetector` uses CPAL to capture the same selected microphone as STT
+(`HYUSK_INPUT_DEVICE`, or the default), converts input
 to mono, resamples it to 16 kHz, and runs `livekit-wakeword` inference in a
 blocking worker. The detector keeps roughly 2.5 seconds of audio, runs
 predictions every two hundred milliseconds and applies a confidence threshold
@@ -88,9 +89,13 @@ releases the microphone so `SpeechToText` can record the command. The runtime
 calls `WakeResume::resume` after transcription, whether transcription succeeded
 or failed, and the detector clears its audio buffer before resuming.
 
-A wake word or a new typed message also cancels the active agent turn: the
-model request, the running tool call, and Linux TTS playback are stopped, and
-the conversation rolls back to the previous complete state.
+A new typed message cancels the active agent turn. During a running text-model
+task, a wake detection starts a speech probe while the task continues; only a
+nonempty spoken instruction replaces it. An empty/failed probe does not cancel
+the task. Duplicate captures and stale follow-up events do not interrupt work.
+Nova's active voice session keeps its own streaming microphone/barge-in path.
+The Stop control remains immediate. Completed tool results stay available for
+verification when an actual new instruction interrupts an action.
 
 ## Speech-to-text
 
@@ -100,14 +105,65 @@ the conversation rolls back to the previous complete state.
 - captures F32, I16, or U16 microphone samples;
 - downmixes interleaved input to mono;
 - resamples to 16 kHz;
-- rejects very quiet buffers;
+- continuously suppresses noise with RNNoise when `STT_DENOISE=1`;
+- uses neural speech probability with onset/offset hysteresis for endpointing;
+- rejects recordings with no sustained speech and filters Whisper's blank/noise markers;
 - pads short recordings with silence;
-- transcribes with `whisper-rs` using the model at `STT_MODEL`.
+- transcribes with `whisper-rs` 0.16 using the model at `STT_MODEL`.
 
-The runtime records a fixed six-second window after wake and applies a
-45-second timeout around the whole transcription call. Empty transcripts, STT
+The runtime records up to eight seconds after wake, stopping after speech ends,
+and applies a 45-second timeout around the whole transcription call. Capture
+runs on a cancellable blocking worker, so Stop does not block the event loop.
+Whisper requests wait asynchronously for a single inference permit; cancelled
+waiters never start model loading or inference. The model is loaded lazily and
+reused, with a fresh decoding state for each request. Nova's direct audio path
+does not load Whisper.
+
+`HYUSK_STT_TIMEOUT_SECS` defaults to 30 seconds and covers both waiting for the
+worker and executing local transcription. A timeout, Stop, or a dropped request
+signals a scoped native abort callback. Cancelled work cannot return a partial
+transcript, and the worker retains its permit until native execution actually
+ends, preventing overlapping abandoned inferences.
+
+Native cancellation is cooperative between compute nodes, not a forced thread
+kill. First-time model loading and an individual native compute operation may
+still finish before the worker releases its resources. The outer 45-second
+voice-runtime cap remains independent of this inference budget.
+
+To verify the native abort path without recording or uploading audio, run:
+
+```sh
+cargo test -p hyusk_agent --bin hyusk_agent \
+  speech::speech::tests::whisper_native_cancel_reuses_cached_context \
+  -- --ignored --exact --nocapture
+```
+
+This opt-in test requires `models/ggml-base.en.bin`. It warms the cached model,
+runs synthetic PCM through native inference, drops the in-flight request,
+checks that the native callback observes cancellation, and verifies a later
+request can reuse the same model.
+
+Empty transcripts, STT
 errors, and timeouts are treated as a missed command: the detector resumes and
 the UI returns to `Hidden`.
+
+### Shared noise/echo-cancelled input
+
+`./scripts/install-autostart.sh --voice-audio` installs the optional user-service
+audio override. It routes wake and local STT through `hyusk_aec_source` using
+PipeWire's `PIPEWIRE_NODE`, and routes Nova input/output through the matching
+pair. The source uses WebRTC noise suppression and high-pass filtering, with
+automatic gain increases disabled. No global default device is changed.
+On service start the filter follows the selected physical source/sink; restart
+Hyusk after changing microphones. `HYUSK_AEC_MASTER_SOURCE` and
+`HYUSK_AEC_MASTER_SINK` can pin physical devices deliberately.
+
+Do not stack wake RNNoise unnecessarily: the personal classifier's training
+uses `WAKE_WORD_DENOISE=0`; the shared PipeWire source supplies the environmental
+filtering. Noise suppression is not speaker identification and cannot reliably
+remove someone else's speech or repair already clipped audio. Check capture
+gain and mic boost if the log reports clipping; `scripts/set-mic-gain.sh 60 0`
+is an adjustable starting point, not a universal calibration.
 
 The default model path is `models/ggml-base.en.bin`. If the model cannot be
 loaded, the runtime logs a warning and continues in text-only mode.

@@ -4,6 +4,63 @@
 
 ### Added
 
+- Noctalia v5 bar widget (`noctalia-plugin/`) for niri, Hyprland, and Sway:
+  state glyph, tooltip card, and a settings panel that switches models and
+  saves provider API keys. Install with `scripts/install-noctalia-plugin.sh`.
+- Model and credential management across OpenRouter, the OpenAI API, Amazon
+  Bedrock Mantle, Nova Sonic, and Codex. Catalogs refresh at runtime, a saved
+  key registers its provider immediately, and the selection persists in
+  `~/.config/hyusk/config.json`. Keys go to the login keyring
+  (`credentials.rs`) and never enter `commands.json`, the session snapshot, or
+  the runtime control file.
+- `hyusk-control.json` channel with monotonic revisions for the indicators:
+  `set_model`, `set_api_key`, `refresh_models`, workflow/stop actions, and
+  immediate scrubbing of any key payload the agent has consumed.
+- `browser` tool that drives a separate Brave/Chromium/Chrome profile over CDP
+  (`status`, `start`, `new_tab`, `tabs`, `read`, `navigate`, `click`, `fill`,
+  `press_key`), plus `scripts/start-browser-control.sh` and
+  `docs/browser-control.md`.
+- Android companion: Material 3 command deck, accessibility-driven phone
+  actions with verification, foreground task service, direct Nova Sonic live
+  voice, workflow execution, encrypted local settings/cache, and a new local
+  model client protocol with matching unit tests.
+- Nova Sonic speech-to-speech on the desktop and phone, including tool
+  dispatch, barge-in, and stream-expiry reporting; optional PipeWire
+  echo-cancel service installed by `scripts/install-autostart.sh --voice-audio`.
+- Bounded safety approvals (`tools/safety.rs`): consequential actions arm a
+  one-shot confirmation card or phone prompt that expires unanswered instead of
+  running.
+- Restart-safe sessions and bounded history compaction
+  (`agent/runner/session.rs`), streamed `ResponseDelta` speech while the reply
+  is still generating, and repair of interrupted tool batches.
+- `scheduler`, `task`, `timer`, and `web_search` tool documentation and their
+  GTK workflow-editor integration (control-deck library, quick-run menu,
+  scheduling, and run-without-saving fixes).
+
+### Changed
+
+- API keys are resolved keyring-first and then from the environment, so saving
+  a key applies without restarting the user service.
+- The GNOME indicator is split into `lib/` modules with a searchable model
+  picker, quick-run menu, API-key submenu, and reorganization into Workspace,
+  Model, Device, and Settings sections.
+- The agent runner is split into `prompts`, `reply`, `session`, `sonic`,
+  `stream`, and `transport_tests` modules; tool dispatch reports partial
+  failures instead of aborting a turn.
+- Shell foreground commands are bounded at 120 s with truncated output.
+
+### Fixed
+
+- Android guided actions verify the resulting screen instead of assuming a
+  dispatch succeeded, and Nova stream expiry now surfaces instead of wedging
+  the live session.
+- Wake probes no longer cancel an active task unless a spoken instruction is
+  actually transcribed, and stale listen results cannot update a newer turn.
+
+## 2026-09 — voice, workflows, and desktop control
+
+### Added
+
 - `HYUSK_WAKE_TEST=1` diagnostics mode: runs only the wake detector with live
   level/gate/score output and prints every detection event, so microphone and
   classifier problems are visible without starting the agent.
@@ -261,28 +318,25 @@
 - Duplicate non-cancellable Linux Piper/espeak TTS path; Linux now uses only
   the cancellable implementation.
 
-### Current limitations
+### Known limitations at this release
 
 - `models/hey_hyusk.onnx` is not bundled. The temporary
   `models/hey_livekit.onnx` classifier is downloaded by
   `scripts/download-wake-word.sh` and selected automatically when the custom
   model is absent.
-- STT uses a fixed six-second recording window rather than voice-activity
-  detection.
-- Hand-clap detection is stricter (sharp onset plus fast decay) and
-  restartable, and the noise-floor threshold bug that made claps impossible
-  was fixed.
-- Wake detection and TTS are sequential. There is no echo cancellation, so
-  while the agent is speaking the detector relies on a raised threshold and a
-  disabled clap scanner to avoid hearing its own voice; a close, deliberate
-  wake word still barges in and stops the agent.
-- The UI does not render response text; it only displays activity states.
+- Wake detection and TTS are sequential. Echo cancellation depends on the
+  optional PipeWire/PulseAudio module, so without it the detector relies on a
+  raised threshold and a disabled clap scanner while the agent speaks.
+- The `eframe` orb renders activity states only, not reply text.
 - GNOME Wayland may ignore the orb's top-position and focus requests.
 - The GNOME indicator extension is only scanned at session start, so the first
   install requires a logout/login.
-- `focus_window` has no generic GNOME Wayland backend and can fail there.
-- There is no persistence, streaming, permission prompt, process monitoring, or
-  tool-level cancellation inside arbitrary tools.
+- `focus_window` has no generic GNOME Wayland backend and can fail there; use
+  the `window` tool instead.
+- Approved actions are not sandboxed, and there is no process supervision
+  beyond the turn-level cancellation path.
+
+Current gaps are tracked in [docs/development.md](docs/development.md).
 
 ## v0.1 - initial agent
 

@@ -73,7 +73,7 @@ native `enigo` backend is used.
 | `clipboard_get` | none | Returns the current clipboard text. |
 | `clipboard_clear` | none | Clears the clipboard. |
 | `open_url` | `url` | Opens an `http`, `https`, or `file` URL with `xdg-open`, `open`, or `start`. |
-| `focus_window` | `title` | Best-effort window focus through `hyprctl`, `wmctrl`, or `xdotool`. GNOME Wayland has no generic API and returns a clear failure. |
+| `focus_window` | `title` | Best-effort window focus through `hyprctl`, `wmctrl`, or `xdotool`. Under niri or GNOME use the `window` tool instead; this action has no generic API there and returns a clear failure. |
 | `screenshot` | none | Optional `region` and `include_cursor`. With `MODEL_VISION=1`, the image is attached to the next model turn automatically; `inline_image` only matters for text-only models. |
 | `app_state` | none | Returns a bounded AT-SPI tree for the active window plus a desktop screenshot. Reports each result separately, including truncation/failure. The observations are sequential; the image is not cropped to the active window. |
 | `ocr` | none | Optional `path`; when omitted, captures a screenshot first. Requires `tesseract`. |
@@ -171,6 +171,30 @@ A WhatsApp Web message flow is typically:
 Wrap steps 3-5 in `batch` when the coordinates are known. For VS Code, open the
 folder with the `process` tool (`code /path/to/folder`), then use `focus_window`
 and `key_combo` for editor shortcuts.
+
+## Browser
+
+`BrowserTool` drives a dedicated Brave/Chromium/Chrome profile over CDP instead
+of screenshotting and clicking. It is registered only when the automation
+profile and its debug port are configured; see
+[Browser control](browser-control.md) for setup and limits.
+
+```json
+{ "action": "status" }
+{ "action": "start" }
+{ "action": "new_tab" }
+{ "action": "tabs" }
+{ "action": "read", "target_id": "tab-1" }
+{ "action": "navigate", "target_id": "tab-1", "url": "https://example.com" }
+{ "action": "click", "target_id": "tab-1", "selector": "#go" }
+{ "action": "fill", "target_id": "tab-1", "selector": "#query", "text": "hello" }
+{ "action": "press_key", "target_id": "tab-1", "key": "Enter" }
+```
+
+Actions are `status`, `start`, `new_tab`, `tabs`, `read`, `navigate`, `click`,
+`fill`, and `press_key`. `read` returns the page text with interactive control
+targets; navigation refuses `javascript:` URLs. Cross-origin iframes and
+canvas-only UIs are not reachable this way, so fall back to `computer`.
 
 ## Accessibility
 
@@ -359,6 +383,80 @@ Actions are:
 returned as a normal tool failure so the model can respond instead of crashing
 the process.
 
+## Web search
+
+`WebSearchTool` returns titles, URLs, and snippets without opening a browser.
+With `BRAVE_SEARCH_API_KEY` (environment or keyring) it uses Brave's API;
+otherwise it parses the keyless DuckDuckGo HTML endpoint.
+
+```json
+{ "query": "rust release notes", "count": 5, "freshness": "month" }
+```
+
+`count` is 1-10 (default 5). `freshness` (`day`, `week`, `month`, `year`) only
+applies to Brave. A query is limited to 600 characters and 75 words.
+
+## Timer
+
+`TimerTool` runs in-process countdowns that post a desktop notification and a
+card when they finish. Timers are keyed by label and live only as long as the
+service process; use `scheduler` for anything that must survive a restart.
+
+```json
+{ "action": "set", "seconds": 600, "label": "stretch" }
+{ "action": "cancel", "label": "stretch" }
+{ "action": "list" }
+{ "action": "show_time" }
+```
+
+Setting the same label again replaces the earlier timer.
+
+## Scheduler
+
+`SchedulerTool` persists one-shot jobs in
+`$XDG_DATA_HOME/hyusk/schedules.json`, reloads them at startup, and queues a
+job that becomes due during a foreground turn instead of interrupting it.
+
+```json
+{ "action": "schedule", "type": "reminder", "text": "stretch", "after_seconds": 600 }
+{ "action": "schedule", "type": "workflow", "workflow": "focus mode", "at_unix": 1900000000 }
+{ "action": "schedule", "type": "agent_task", "prompt": "summarize today's notes", "after_seconds": 3600 }
+{ "action": "list" }
+{ "action": "cancel", "id": 2 }
+```
+
+`type` is `reminder`, `workflow`, or `agent_task`; give either `after_seconds`
+or `at_unix`.
+
+## Task workers
+
+`TaskTool` delegates work to bounded background workers so the main assistant
+stays responsive.
+
+```json
+{ "action": "delegate", "prompt": "compare these two approaches", "profile": "research" }
+{ "action": "delegate", "prompt": "fix the failing test", "profile": "workspace", "timeout_seconds": 900 }
+{ "action": "list" }
+{ "action": "cancel", "id": 1 }
+```
+
+`profile` is `research` (default: read-only, no local tools, memory, desktop
+access, or credentials) or `workspace` (one explicitly approved project root
+through the installed Codex CLI in `workspace-write` mode).
+`timeout_seconds` is 30-3600; the defaults are three minutes for research and
+fifteen minutes for workspace. Starting a worker requires explicit user
+confirmation, at most two run at once, and completion wakes the main agent with
+a `SubtaskFinished` event rather than replacing the current turn.
+
+## Mobile
+
+`MobileTool` is registered only while `HYUSK_LINK_ENABLED=1` and the TLS link
+server is running. It lists paired devices or invokes one typed phone action
+for example `apps.launch`, `url.open`, `ui.click`, `timer.create`, or
+`device.status`. The phone enforces its own confirmation for consequential
+actions. See [Android companion](android-agent.md) and the
+[link protocol](mobile-link-protocol.md).
+
 ## Adding a tool
 
 1. Add a module under `src/tools/`.
@@ -414,14 +512,21 @@ sent to the model.
 
 ## Security model
 
-The current tool platform has no approval or confinement layer. In particular:
+The tool platform has guardrails but no sandbox:
 
-- `shell` can read, modify, or delete files available to the user.
-- `process` can launch any executable visible on `PATH` or by absolute path.
-- `media` can control desktop players exposed through MPRIS.
-- `computer` can move the real pointer, click, scroll, type, and read clipboard
-  or screen contents through OCR. It can trigger irreversible GUI actions.
-- Tool output is sent back to the remote model provider.
+- `tools/safety.rs` arms consequential actions (destructive shell commands,
+  payments, sending messages, deleting data) for a one-shot confirmation card
+  or phone prompt, and an unanswered request expires instead of running.
+- Foreground `shell` commands are bounded at 120 s with truncated output; a
+  turn is cancellable and tool loops stop after configured rounds/time.
+- None of that confines an approved action: `shell` can still read, modify, or
+  delete anything the user can, `process` can launch any executable, `media`
+  controls MPRIS players, and `computer` can move the real pointer, click,
+  type, and read the clipboard or screen. It can trigger irreversible GUI
+  actions.
+- Tool output and screenshots are sent back to the remote model provider.
+- API keys live in the login keyring and are never placed in `commands.json`,
+  the session snapshot, or the runtime control file.
 
 Treat the configured model and provider as trusted code. Run this crate in a
 restricted OS account or container when experimenting with untrusted prompts,

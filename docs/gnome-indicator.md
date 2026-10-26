@@ -30,12 +30,49 @@ those files, smoothly interpolates the color, and animates the wings. Animation
 speed changes by state: working flaps fastest, speaking bounces, thinking tilts,
 idle stays calm.
 
-The indicator menu includes a Model picker, Connect phone, Refresh models, and Stop Hyusk.
-The model picker sends a small control JSON file back to the running agent; it
-does not store API keys. A compact response card appears below the top bar near
-the pearl-white butterfly, with More, Copy, and Dismiss actions. The wings stay
-recognizable across themes; runtime state is communicated by its subtle colored
-aura and motion.
+The indicator menu is grouped by intent: a state header, **Listen** and **Stop**
+transport keys, then Workspace (searchable **Run workflow**, **Workflows**),
+Model (model picker, **Refresh models**), Device (**Connect phone**, **Open
+automation browser**), and Settings (**API keys**). The quick-run submenu
+searches workflow names and voice triggers, while **Workflows** opens the editor
+app. The model picker sends a small control JSON file back to the running agent;
+it does not store API keys, which go to the login keyring from the API keys
+submenu and take effect immediately — no service restart. A compact response card appears below the top bar near the pearl-white
+butterfly, with Approve/Deny, More, Copy, and Dismiss actions; it pauses its
+auto-dismiss while the pointer or keyboard focus is inside it. The wings stay
+recognizable across themes; runtime state is communicated by the colored aura,
+the motion, and the state color on the menu header and response card.
+
+**Open automation browser** starts Hyusk's dedicated Brave, Chromium, or Chrome
+profile for CDP automation. It is separate from the normal browser profile and
+has its own cookies and sign-ins. See [Browser control](browser-control.md) for
+setup, profile, and connection details.
+
+## Workflow execution and background work
+
+Run requests from the app, voice, and Shell menu go to the Hyusk service. The
+service keeps workflows in a single queue and runs one workflow at a time.
+Workflows containing desktop actions wait until the current model or voice
+interaction ends; a new foreground voice request cancels an active desktop
+workflow so the agent can respond. Background-only workflows can run while a
+model turn is active, even if an earlier desktop workflow is waiting. Timers and media controls use their own service paths, so
+they can continue without taking over the foreground conversation. The UI
+reports queued, running, completed, failed, and cancelled workflow states.
+
+## Updating the extension
+
+GNOME Shell loads extension JavaScript into the running Shell process. Replacing
+the installed files does not reload that JavaScript immediately. Disable and
+re-enable the extension or log out and back in to load the updated code. On
+Wayland, logging out and back in is the reliable Shell reload; the `Alt`+`F2`,
+`r` shortcut applies to Xorg sessions. A new panel menu item may therefore not
+appear until the next Shell reload or login.
+
+The checked-in control-deck review image
+([`workflows-desktop.png`](../.impeccable/review/workflows-desktop.png)) is an
+actual GTK render populated with illustrative sample workflows from a temporary
+config. It does not show the user's configured routines and is not a live GNOME
+Shell render.
 
 For phone pairing, open **Connect phone → Enable laptop link** once. This
 creates a local TLS identity, configures the Hyusk user service, and restarts it.
@@ -45,6 +82,31 @@ after five minutes and work once; generating another invalidates the previous
 code. The secret is kept in an owner-only runtime file, not printed in the
 service journal. Both devices must be able to reach the laptop's advertised LAN
 address and port 4488; a firewall may need a trusted-network rule.
+
+## Source layout
+
+`extension.js` is only the entry point. The UI lives in small modules:
+
+| Path | Purpose |
+| --- | --- |
+| `extension.js` | Enables the indicator and exports the D-Bus window service |
+| `lib/indicator.js` | Panel button, status polling, state fan-out |
+| `lib/drawing.js` | Animated butterfly and state aura |
+| `lib/responseCard.js` | Floating reply / approval card |
+| `lib/menu/deck.js` | Menu structure and sections |
+| `lib/menu/quickRun.js` | Searchable workflow submenu |
+| `lib/menu/models.js` | Model picker with provider groups |
+| `lib/menu/phone.js` | Phone pairing submenu |
+| `lib/menu/credentials.js` | API key submenu |
+| `lib/windows.js` | Window list/activate/close over D-Bus |
+| `lib/runtime.js` | Runtime and `commands.json` file access |
+| `lib/state.js` | State names, labels, and the palette |
+| `lib/motion.js` | Reduced-motion policy |
+| `lib/launcher.js` | Launching the workflow app and automation browser |
+
+State colors live in `lib/state.js` and are written out per state class in
+`stylesheet.css`. St's CSS parser has no custom properties, so the two must be
+kept in sync when the palette changes.
 
 ## Install
 
