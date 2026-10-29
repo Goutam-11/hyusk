@@ -6,16 +6,16 @@ workspace). Read
 [`DSH_SESSION_NOTES.md`](../memory/DSH_SESSION_NOTES.md) first for build,
 environment, and tooling context.
 
-Status: **open** — D2 and D7 need behaviour decisions. All docs-only issues
-(D1, D4, D5, D6, D8) are resolved and D3 is fixed in code; build/tests are
-green.
+Status: **open** — only D7 (mobile `pairing` secret) needs a decision. All
+docs-only issues (D1, D4, D5, D6, D8) are resolved, and D2/D3 are fixed in
+code; build/tests are green.
 
 ## Verified baseline
 
 | Check | Result |
 | --- | --- |
 | `cargo check --all-targets --offline` | 0 errors, 0 warnings |
-| `cargo test --all-targets --offline -- --test-threads=4` | 282 passed, 0 failed, 7 ignored |
+| `cargo test --all-targets --offline -- --test-threads=4` | 283 passed, 0 failed, 7 ignored |
 | `cargo clippy --all-targets --offline` | 0 errors; 3 pre-existing `result_large_err` warnings in `src/link/server.rs` |
 | `cargo fmt --all -- --check` | clean |
 
@@ -26,13 +26,13 @@ without touching real user data.
 
 ## Decisions needed first
 
-Two issues remain and involve behaviour, not just prose. Decide before editing
+One issue remains and involves behaviour, not just prose. Decide before editing
 docs: either change the code to match the docs or correct the docs to match the
 code.
 
 | ID | Decision | Recommended |
 | --- | --- | --- |
-| D2 | Add runtime approval for `task` (especially `workspace`) **or** soften the docs | Add approval; it is the documented safety contract |
+| D2 | Add runtime approval for `task` (especially `workspace`) **or** soften the docs | **Resolved 2026-10-29:** approval arm added for both profiles |
 | D3 | Make wake defaults `false` in code **or** change docs to `true` | **Resolved 2026-10-29:** code now defaults to `false` |
 | D7 | Remove the `mobile pairing` tool action **or** document and gate it | Remove it from the model-facing schema; keep the pairing payload for the indicators |
 
@@ -94,7 +94,14 @@ restart/no-restart behavior is stated per client.
 
 ---
 
-## D2 — `task` confirmation claim has no implementation (P1)
+## D2 — `task` confirmation claim has no implementation (P1) — resolved 2026-10-29
+
+**Status:** resolved in code (recommended path). `tools::safety::requires_approval`
+now arms a one-shot confirmation for `action: "delegate"` on both profiles, the
+runner and Sonic paths store the canonicalised workspace via
+`tools::safety::approval_arguments`, and a regression test covers workspace,
+research, list, cancel, and the pinned root. Verified with fmt, check, clippy
+(the same 3 pre-existing warnings), and the full suite (283 passed, 7 ignored).
 
 **Files:** [`README.md`](../README.md#L244-L250), [`docs/tools.md`](../docs/tools.md#L444-L448)
 
@@ -112,18 +119,18 @@ confirmation", and the workspace is "one explicitly approved project root".
   `workspace-write` mode ([`codex.rs:73-L90`](../src/model/codex.rs#L73-L90)).
   A model can therefore edit files anywhere it can name.
 
-**Fix (recommended):** add a `task_requires_approval` arm that arms a one-shot
-confirmation for `action: "delegate"` (at minimum `profile: "workspace"`), and
-record the canonical workspace path in the approval arguments. The runner's
-generic pending-approval path already stores the call and executes it on a
-"yes". Add a regression test that asserts the arm fires for `workspace` and
-(for the docs' "either profile" wording) for `research`.
+**Fix applied:** `task_requires_approval` arms a one-shot confirmation for
+`action: "delegate"` on both profiles, and `approval_arguments` rewrites the
+stored call with the canonical workspace path. The runner's generic
+pending-approval path executes the stored call on "yes", and the Sonic path does
+the same. A regression test covers `workspace`, `research`, `list`, `cancel`,
+and the pinned root.
 
-**Alternative:** correct the docs to say no runtime approval is required and
-the model chooses the workspace root. Not recommended: it removes a safety
+**Alternative (not taken):** correct the docs to say no runtime approval is
+required and the model chooses the workspace root. That would remove a safety
 property the rest of the docs advertise.
 
-**Done when:** the tool call is confirmed before a worker starts, and the docs
+**Done:** the tool call is confirmed before a worker starts, and the docs
 statement is true.
 
 ---
@@ -136,7 +143,7 @@ those defaults, the `WakeWordDetector` constructor default is `false`, and the
 README configuration table lists `WAKE_WORD_STEP_MS`. `.env.example` is
 unchanged. Verified with `cargo fmt`, `cargo check --all-targets --offline`,
 `cargo clippy` (only the 3 pre-existing `result_large_err` warnings), and
-`cargo test --all-targets --offline` (282 passed, 7 ignored).
+`cargo test --all-targets --offline` (283 passed, 7 ignored).
 
 **Files:** [`README.md`](../README.md#L137-L150),
 [`docs/voice-and-ui.md`](../docs/voice-and-ui.md#L69),
@@ -299,9 +306,8 @@ must stay, gate it with an approval and avoid returning the secret verbatim.
 
 ## Suggested next-session order
 
-1. Decide D2 and D7 (behaviour), then implement the code changes (task
-   approval arm, remove the pairing action) and add the matching CHANGELOG
-   entries.
+1. Decide D7 (behaviour), remove the `pairing` action from the model-facing
+   `mobile` schema, and add the matching CHANGELOG entry.
 2. Re-run:
    - `cargo fmt --all -- --check`
    - `cargo check --all-targets --offline`
@@ -312,6 +318,10 @@ must stay, gate it with an approval and avoid returning the secret verbatim.
 
 ## Resolved
 
+- **D2 (`task` confirmation)** was fixed in code on 2026-10-29: delegation now
+  arms a one-shot confirmation for both profiles, the approved call pins the
+  canonical workspace root, and a regression test covers the arm and
+  non-delegate actions. Suite: 283 passed, 7 ignored.
 - **D3 (wake defaults)** was fixed in code on 2026-10-29: clap wake and
   wake-word denoise default to `false` in normal startup and `WAKE_TEST`, the
   detector constructor default is `false`, and the README table lists

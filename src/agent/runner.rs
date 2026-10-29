@@ -942,7 +942,9 @@ impl Agent {
                             let index = self.messages.len();
                             self.pending_approval = Some(PendingApproval {
                                 name: name.clone(),
-                                arguments: args_str.clone(),
+                                arguments: crate::tools::safety::approval_arguments(
+                                    &name, &args_str,
+                                ),
                                 call_id: call.id.clone(),
                                 result_index: index,
                                 expires_at: Instant::now() + Duration::from_secs(300),

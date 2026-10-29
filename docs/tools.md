@@ -434,8 +434,8 @@ or `at_unix`.
 stays responsive.
 
 ```json
-{ "action": "delegate", "prompt": "compare these two approaches", "profile": "research" }
-{ "action": "delegate", "prompt": "fix the failing test", "profile": "workspace", "timeout_seconds": 900 }
+{ "action": "delegate", "task": "compare these two approaches", "profile": "research" }
+{ "action": "delegate", "task": "fix the failing test", "profile": "workspace", "workspace": "/home/me/project", "timeout_seconds": 900 }
 { "action": "list" }
 { "action": "cancel", "id": 1 }
 ```

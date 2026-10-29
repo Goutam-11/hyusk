@@ -392,7 +392,7 @@ impl Agent {
                     } else if crate::tools::safety::requires_approval(&call.name, &args) {
                         self.pending_approval = Some(PendingApproval {
                             name: call.name.clone(),
-                            arguments: args.clone(),
+                            arguments: crate::tools::safety::approval_arguments(&call.name, &args),
                             call_id: call.id.clone(),
                             result_index: self.messages.len(),
                             expires_at: Instant::now() + Duration::from_secs(300),

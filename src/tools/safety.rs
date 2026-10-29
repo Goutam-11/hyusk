@@ -17,9 +17,40 @@ pub fn requires_approval(name: &str, arguments: &str) -> bool {
         "window" => args.get("action").and_then(Value::as_str) == Some("close"),
         "mobile" => mobile_requires_approval(&args),
         "memory" => args.get("action").and_then(Value::as_str) == Some("forget"),
+        "task" => task_requires_approval(&args),
         // For any other tool, preserve the existing tool-specific policy.
         _ => false,
     }
+}
+
+/// Rewrite the arguments stored for a pending confirmation so that the call
+/// the user approves is exactly the call that will run. Task delegation pins
+/// the canonical workspace root here; every other tool keeps its arguments.
+pub fn approval_arguments(name: &str, arguments: &str) -> String {
+    if name != "task" {
+        return arguments.to_string();
+    }
+    let Ok(mut args) = serde_json::from_str::<Value>(arguments) else {
+        return arguments.to_string();
+    };
+    if args.get("action").and_then(Value::as_str) != Some("delegate") {
+        return arguments.to_string();
+    }
+    let Some(workspace) = args.get("workspace").and_then(Value::as_str) else {
+        return arguments.to_string();
+    };
+    let Ok(canonical) = std::fs::canonicalize(workspace) else {
+        return arguments.to_string();
+    };
+    args["workspace"] = Value::String(canonical.to_string_lossy().into_owned());
+    serde_json::to_string(&args).unwrap_or_else(|_| arguments.to_string())
+}
+
+fn task_requires_approval(args: &Value) -> bool {
+    // Starting a worker is the documented safety boundary for both profiles.
+    // Research is read-only but still runs a second model; workspace can edit
+    // any project root the model names, so it must never start unconfirmed.
+    action(args) == "delegate"
 }
 
 fn action(args: &Value) -> &str {
@@ -578,7 +609,35 @@ fn is_consequential_text(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::requires_approval as check;
+    use super::{approval_arguments, requires_approval as check};
+    use serde_json::Value;
+
+    #[test]
+    fn task_delegation_requires_confirmation_and_pins_the_workspace_root() {
+        assert!(check(
+            "task",
+            r#"{"action":"delegate","task":"fix the build","profile":"workspace","workspace":"src"}"#
+        ));
+        assert!(check("task", r#"{"action":"delegate","task":"summarise"}"#));
+        assert!(check(
+            "task",
+            r#"{"action":"delegate","task":"summarise","profile":"research"}"#
+        ));
+        assert!(!check("task", r#"{"action":"list"}"#));
+        assert!(!check("task", r#"{"action":"cancel","id":3}"#));
+
+        let stored = approval_arguments(
+            "task",
+            r#"{"action":"delegate","task":"fix","profile":"workspace","workspace":"src/."}"#,
+        );
+        let stored: Value = serde_json::from_str(&stored).unwrap();
+        let canonical = std::fs::canonicalize("src").unwrap();
+        assert_eq!(stored["workspace"], canonical.to_string_lossy().as_ref());
+        assert_eq!(
+            approval_arguments("shell", r#"{"command":"ls"}"#),
+            r#"{"command":"ls"}"#
+        );
+    }
 
     #[test]
     fn shell_defaults_closed_and_detects_command_injection() {
