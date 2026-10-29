@@ -155,7 +155,7 @@ live microphone, STT, and a provider.
 
 ## A3 — Approval shows the exact call
 
-- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit `e3d85de` · Phase 1 · Priority: high
 - Depends on: A8
 - Evidence: `src/agent/runner.rs:941-955`, `src/agent/runtime.rs:1575-1600`,
   `src/agent/runner/sonic.rs:392-409`
