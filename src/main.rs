@@ -362,7 +362,7 @@ async fn wake_test_mode() -> Result<()> {
                         "0" | "false" | "off" | "no"
                     )
                 })
-                .unwrap_or(true),
+                .unwrap_or(false),
         )
         .with_clap(
             std::env::var("WAKE_CLAP_ENABLED")
@@ -1176,7 +1176,7 @@ async fn main() -> Result<()> {
                     "0" | "false" | "off" | "no"
                 )
             })
-            .unwrap_or(true);
+            .unwrap_or(false);
 
         /*
          * Only keep classifiers that actually exist. When clap wake is on and
@@ -1238,7 +1238,7 @@ async fn main() -> Result<()> {
                     "0" | "false" | "off" | "no"
                 )
             })
-            .unwrap_or(true);
+            .unwrap_or(false);
 
         let wake_inference_step_ms = std::env::var("WAKE_WORD_STEP_MS")
             .ok()

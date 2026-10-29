@@ -148,6 +148,7 @@ or times out, the wake event is ignored and the terminal input path still works.
 | `WAKE_WORD_HIT_WINDOW_MS` | No | `1000` | Time window in which confirmation hits must arrive. |
 | `WAKE_WORD_MIN_RMS` | No | `0.003` | Adaptive noise-gate floor. Lower accepts quieter speech. |
 | `WAKE_WORD_COOLDOWN_MS` | No | `1500` | Minimum milliseconds between detections. |
+| `WAKE_WORD_STEP_MS` | No | `200` | Interval between wake-word inference passes. |
 | `WAKE_WORD_DENOISE` | No | `0` | Optional RNNoise preprocessing. Leave off for models made by the bundled raw-audio trainer. |
 | `STT_MODEL` | No | `models/ggml-base.en.bin` | Whisper GGML model for post-wake transcription. |
 | `STT_LANGUAGE` | No | `en` | Whisper language code, or `auto` with a multilingual model. |

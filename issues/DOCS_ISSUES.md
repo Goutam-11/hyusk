@@ -6,8 +6,9 @@ workspace). Read
 [`DSH_SESSION_NOTES.md`](../memory/DSH_SESSION_NOTES.md) first for build,
 environment, and tooling context.
 
-Status: **open** — D2, D3, and D7 need behaviour decisions. All docs-only
-issues (D1, D4, D5, D6, D8) are resolved; build/tests are green.
+Status: **open** — D2 and D7 need behaviour decisions. All docs-only issues
+(D1, D4, D5, D6, D8) are resolved and D3 is fixed in code; build/tests are
+green.
 
 ## Verified baseline
 
@@ -25,13 +26,14 @@ without touching real user data.
 
 ## Decisions needed first
 
-Three issues involve behavior, not just prose. Decide before editing docs:
-either change the code to match the docs or correct the docs to match the code.
+Two issues remain and involve behaviour, not just prose. Decide before editing
+docs: either change the code to match the docs or correct the docs to match the
+code.
 
 | ID | Decision | Recommended |
 | --- | --- | --- |
 | D2 | Add runtime approval for `task` (especially `workspace`) **or** soften the docs | Add approval; it is the documented safety contract |
-| D3 | Make wake defaults `false` in code **or** change docs to `true` | Make code `false`; docs/CHANGELOG deliberately describe clap/denoise as opt-in |
+| D3 | Make wake defaults `false` in code **or** change docs to `true` | **Resolved 2026-10-29:** code now defaults to `false` |
 | D7 | Remove the `mobile pairing` tool action **or** document and gate it | Remove it from the model-facing schema; keep the pairing payload for the indicators |
 
 D1 has a code option too (stop restarting the service from the GNOME menu), but
@@ -126,7 +128,15 @@ statement is true.
 
 ---
 
-## D3 — Wake defaults differ from the documented defaults (P1/P2)
+## D3 — Wake defaults differ from the documented defaults (P1/P2) — resolved 2026-10-29
+
+**Status:** resolved in code (recommended path). `WAKE_CLAP_ENABLED` and
+`WAKE_WORD_DENOISE` now default to `false` in normal startup, `WAKE_TEST` matches
+those defaults, the `WakeWordDetector` constructor default is `false`, and the
+README configuration table lists `WAKE_WORD_STEP_MS`. `.env.example` is
+unchanged. Verified with `cargo fmt`, `cargo check --all-targets --offline`,
+`cargo clippy` (only the 3 pre-existing `result_large_err` warnings), and
+`cargo test --all-targets --offline` (282 passed, 7 ignored).
 
 **Files:** [`README.md`](../README.md#L137-L150),
 [`docs/voice-and-ui.md`](../docs/voice-and-ui.md#L69),
@@ -149,12 +159,13 @@ statement is true.
 - `WAKE_WORD_STEP_MS` is documented in `voice-and-ui.md` but missing from the
   README configuration table.
 
-**Fix (recommended):** change both `unwrap_or(true)` defaults to `false` in
-normal startup, align the `WAKE_TEST` path, and document `WAKE_WORD_STEP_MS` in
-the README table. Keep `.env.example` unchanged.
+**Fix applied:** both `unwrap_or(true)` defaults are now `false` in normal
+startup, the `WAKE_TEST` path matches, the detector constructor default is
+`false`, and the README table documents `WAKE_WORD_STEP_MS`. `.env.example` is
+unchanged.
 
-**Done when:** running without `.env` behaves as documented, and both docs
-tables list every supported wake setting.
+**Done:** running without `.env` behaves as documented, and both docs tables
+list every supported wake setting.
 
 ---
 
@@ -288,9 +299,9 @@ must stay, gate it with an approval and avoid returning the secret verbatim.
 
 ## Suggested next-session order
 
-1. Decide D2, D3, D7 (behaviour), then implement the code changes (approval
-   arm, wake defaults, remove the pairing action) and add the matching
-   CHANGELOG entries.
+1. Decide D2 and D7 (behaviour), then implement the code changes (task
+   approval arm, remove the pairing action) and add the matching CHANGELOG
+   entries.
 2. Re-run:
    - `cargo fmt --all -- --check`
    - `cargo check --all-targets --offline`
@@ -301,6 +312,10 @@ must stay, gate it with an approval and avoid returning the secret verbatim.
 
 ## Resolved
 
+- **D3 (wake defaults)** was fixed in code on 2026-10-29: clap wake and
+  wake-word denoise default to `false` in normal startup and `WAKE_TEST`, the
+  detector constructor default is `false`, and the README table lists
+  `WAKE_WORD_STEP_MS`. `.env.example` is unchanged.
 - **D8 (minor consistency items)** was corrected on 2026-10-29: CHANGELOG
   entries for the streamed-reply dedupe and standalone workspace, `Cargo.lock`
   in the README layout, and the `docs/development.md` historical path. Only the

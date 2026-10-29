@@ -203,7 +203,7 @@ impl WakeWordDetector {
             hit_window: DEFAULT_HIT_WINDOW,
             cooldown: COOLDOWN,
             min_rms: MIN_RMS,
-            denoise: true,
+            denoise: false,
             inference_step_ms: DEFAULT_INFERENCE_STEP_MS,
             clap_enabled: DEFAULT_CLAP_ENABLED,
             clap_sensitivity: DEFAULT_CLAP_SENSITIVITY,
