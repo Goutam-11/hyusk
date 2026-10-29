@@ -72,7 +72,7 @@ classifier; the arm now lives in the `match program` inside
 
 ## S2 — Read confinement and secret denylist
 
-- Status: done · 2026-10-29 · commit `PENDING` · Phase 2 · Priority: high
+- Status: done · 2026-10-29 · commit `665957f` · Phase 2 · Priority: high
 - Depends on: S1
 - Evidence: `src/tools/safety.rs:78-79`, `AGENTS.md` known issues
 
