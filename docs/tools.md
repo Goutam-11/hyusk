@@ -454,7 +454,8 @@ a `SubtaskFinished` event rather than replacing the current turn.
 server is running. It lists paired devices or invokes one typed phone action
 for example `apps.launch`, `url.open`, `ui.click`, `timer.create`, or
 `device.status`. The phone enforces its own confirmation for consequential
-actions. See [Android companion](android-agent.md) and the
+actions. Pairing codes are shown by the GNOME and Noctalia indicators; the tool
+never returns them. See [Android companion](android-agent.md) and the
 [link protocol](mobile-link-protocol.md).
 
 ## Adding a tool

@@ -78,6 +78,9 @@
 
 ### Fixed
 
+- The `mobile` tool no longer offers a `pairing` action, so the live pairing
+  secret cannot appear in a model tool result or session history. Pairing codes
+  remain available from the GNOME and Noctalia indicators.
 - Streamed replies no longer speak the same text twice when a provider repeats
   the preceding prose in an unfenced response envelope; the envelope is stripped
   and only the unsaid remainder is spoken (`agent/runner/reply.rs`).

@@ -46,7 +46,7 @@ impl Tool for MobileTool {
         json!({
             "type": "object",
             "properties": {
-                "action": { "type": "string", "enum": ["list", "invoke", "pairing"] },
+                "action": { "type": "string", "enum": ["list", "invoke"] },
                 "device_id": { "type": "string" },
                 "phone_action": { "type": "string", "description": "For example apps.launch, url.open, ui.click, timer.create, or device.status" },
                 "arguments": { "type": "object" },
@@ -61,9 +61,6 @@ impl Tool for MobileTool {
         match input.action.as_str() {
             "list" => Ok(ToolResult::success(serde_json::to_string_pretty(
                 &self.server.devices().await,
-            )?)),
-            "pairing" => Ok(ToolResult::success(serde_json::to_string_pretty(
-                &self.server.pairing_payload(),
             )?)),
             "invoke" => {
                 let Some(device_id) = input.device_id.filter(|value| !value.trim().is_empty())
