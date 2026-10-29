@@ -401,7 +401,7 @@ Out: session-wide grants, a permissions config file, phone-link protocol change.
 
 ## A7 — One approval card kind; stale approve handling
 
-- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit `7efd464` · Phase 1 · Priority: high
 - Depends on: —
 - Evidence: `src/agent/runner/sonic.rs:402-406`,
   `gnome-extension/hyusk@hyusk.local/lib/responseCard.js:199-203`,
