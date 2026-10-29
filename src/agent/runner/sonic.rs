@@ -401,6 +401,12 @@ impl Agent {
                         // Availability is preflighted so no card is published
                         // for a delegation that cannot start.
                         ToolResult::failure(failure)
+                    } else if let Some(failure) =
+                        crate::tools::capabilities::refusal(&call.name, &args)
+                    {
+                        // A capability the desktop refused is reported instead
+                        // of arming a card the user cannot satisfy (D3).
+                        ToolResult::failure(failure)
                     } else if let Some(refusal) =
                         crate::tools::safety::secret_refusal(&call.name, &args)
                     {

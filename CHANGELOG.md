@@ -55,6 +55,16 @@
 
 ### Changed
 
+- Desktop capability state is recorded and used before asking. The computer and
+  accessibility tools now record what the OS last reported for input,
+  screenshot, and accessibility (`granted`, `denied`, `unsupported`, or
+  `unknown`), with the backend that reported it: the RemoteDesktop portal, the
+  native input backend, a screenshot backend, or the AT-SPI bridge. When input,
+  screenshot, or accessibility is denied or unsupported, the matching call
+  returns a capability error instead of publishing an approval card the user
+  cannot satisfy; an unknown state still allows the attempt. The model sees one
+  `capabilities: …` line in its per-turn desktop context, and `gnome_doctor`
+  reports the same line as a `Desktop capabilities` check.
 - Browser mutations now ask for confirmation. `browser click`, `fill`, and
   `press_key` arm the usual card, while `status`, `start`, `new_tab`, `tabs`,
   `read`, and `navigate` stay free; an action the policy does not know asks

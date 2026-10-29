@@ -39,19 +39,48 @@ impl Bridge {
         let script = bridge_path();
 
         if !script.exists() {
+            crate::tools::capabilities::record_accessibility(
+                crate::tools::capabilities::Capability::Unsupported,
+                "AT-SPI bridge",
+            );
             bail!("AT-SPI bridge script is missing: {}", script.display());
         }
 
-        let child = tokio::process::Command::new("python3")
+        let child = match tokio::process::Command::new("python3")
             .arg(&script)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .with_context(|| format!("Failed to spawn python3 with {}", script.display()))?;
+            .with_context(|| format!("Failed to spawn python3 with {}", script.display()))
+        {
+            Ok(child) => child,
+            Err(error) => {
+                crate::tools::capabilities::record_accessibility(
+                    crate::tools::capabilities::Capability::Unsupported,
+                    "AT-SPI bridge",
+                );
+                return Err(error);
+            }
+        };
 
-        Self::from_child(child)
+        match Self::from_child(child) {
+            Ok(bridge) => {
+                crate::tools::capabilities::record_accessibility(
+                    crate::tools::capabilities::Capability::Granted,
+                    "AT-SPI bridge",
+                );
+                Ok(bridge)
+            }
+            Err(error) => {
+                crate::tools::capabilities::record_accessibility(
+                    crate::tools::capabilities::Capability::Unsupported,
+                    "AT-SPI bridge",
+                );
+                Err(error)
+            }
+        }
     }
 
     fn from_child(mut child: Child) -> Result<Self> {

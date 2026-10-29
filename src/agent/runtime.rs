@@ -1353,6 +1353,11 @@ async fn execute_workflow_actions(
         if let Some(refusal) = crate::tools::safety::secret_refusal(name, &input) {
             return Err(format!("step {} {refusal}", completed + 1));
         }
+        // A capability the desktop has refused fails the step without asking
+        // for an approval the workflow cannot show (D3).
+        if let Some(failure) = crate::tools::capabilities::refusal(name, &input) {
+            return Err(format!("step {} {failure}", completed + 1));
+        }
         if crate::tools::safety::requires_approval(name, &input) {
             return Err(format!(
                 "step {} ({name}) requires user approval; workflows cannot confirm it, so run it from the assistant instead",

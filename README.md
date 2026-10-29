@@ -576,7 +576,11 @@ beyond `niri` itself is required.
 window control, accessibility, screenshot prerequisites, and the portal.
 It distinguishes a responding but outdated extension from one exposing
 stable window IDs. Availability checks do not grant portal input permission
-or prove a screenshot/action will succeed.
+or prove a screenshot/action will succeed. A `Desktop capabilities` check
+repeats the one-line state the model sees: what the OS last reported for input,
+screen capture, and accessibility, and which backend reported it. A denied or
+unsupported capability makes the matching action fail with a capability error
+rather than asking for approval it cannot satisfy.
 
 ### `memory`
 

@@ -480,7 +480,13 @@ async fn capture_screenshot(
         };
 
         match result {
-            Ok(()) if path.exists() => return Ok((path, backend)),
+            Ok(()) if path.exists() => {
+                crate::tools::capabilities::record_screenshot(
+                    crate::tools::capabilities::Capability::Granted,
+                    *backend,
+                );
+                return Ok((path, backend));
+            }
 
             Ok(()) => errors.push(format!(
                 "{backend}: command reported success but no file was created"
@@ -488,6 +494,18 @@ async fn capture_screenshot(
 
             Err(error) => errors.push(format!("{backend}: {error}")),
         }
+    }
+
+    // A portal refusal is a denial, not a missing backend: nothing else can
+    // succeed until the user grants screen capture again.
+    if errors
+        .iter()
+        .any(|error| error.contains("denied or cancelled"))
+    {
+        crate::tools::capabilities::record_screenshot(
+            crate::tools::capabilities::Capability::Denied,
+            "desktop portal",
+        );
     }
 
     if errors.is_empty() {
@@ -688,10 +706,25 @@ async fn capture_with_screencapture(path: &Path, region: Option<Region>) -> Resu
 }
 
 fn run_with_enigo<T>(action: impl FnOnce(&mut Enigo) -> Result<T>) -> Result<T> {
-    let mut enigo = Enigo::new(&Settings::default())
-        .map_err(|error| anyhow!("Failed to connect to the desktop input backend: {error}"))?;
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|error| {
+        crate::tools::capabilities::record_input(
+            crate::tools::capabilities::Capability::Unsupported,
+            "native input backend",
+        );
+        anyhow!("Failed to connect to the desktop input backend: {error}")
+    })?;
 
-    ensure_input_backend_supported(&enigo)?;
+    if let Err(error) = ensure_input_backend_supported(&enigo) {
+        crate::tools::capabilities::record_input(
+            crate::tools::capabilities::Capability::Unsupported,
+            "native input backend",
+        );
+        return Err(error);
+    }
+    crate::tools::capabilities::record_input(
+        crate::tools::capabilities::Capability::Granted,
+        "native input backend",
+    );
 
     action(&mut enigo)
 }
@@ -733,15 +766,36 @@ impl ComputerTool {
             .await;
 
             match attempt {
-                Ok(Ok(input)) => state.input = Some(input),
+                Ok(Ok(input)) => {
+                    state.input = Some(input);
+                    crate::tools::capabilities::record_input(
+                        crate::tools::capabilities::Capability::Granted,
+                        "RemoteDesktop portal",
+                    );
+                }
 
                 Ok(Err(error)) => {
+                    // A portal that is missing is unsupported here; one that
+                    // answered without granting input was denied.
+                    let message = format!("{error:#}");
+                    crate::tools::capabilities::record_input(
+                        if message.contains("not available") {
+                            crate::tools::capabilities::Capability::Unsupported
+                        } else {
+                            crate::tools::capabilities::Capability::Denied
+                        },
+                        "RemoteDesktop portal",
+                    );
                     bail!(
-                        "{error:#}. If the portal permission dialog was denied or cancelled, retry an input action and approve it; if no dialog appeared, check the desktop portal service."
+                        "{message}. If the portal permission dialog was denied or cancelled, retry an input action and approve it; if no dialog appeared, check the desktop portal service."
                     );
                 }
 
                 Err(_) => {
+                    crate::tools::capabilities::record_input(
+                        crate::tools::capabilities::Capability::Denied,
+                        "RemoteDesktop portal",
+                    );
                     bail!(
                         "Timed out waiting for desktop portal approval. Retry an input action and approve the dialog; if no dialog appeared, check the desktop portal service."
                     );

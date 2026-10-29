@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **350 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **356 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -115,6 +115,13 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   run free; `click`, `fill`, and `press_key` ask, and the classifier is a
   whitelist, so an unknown action fails closed. Grants are keyed by the mutation,
   so one approval covers the rest of the turn's clicks, not a `fill`.
+- OS capabilities (D3): `tools::capabilities` records input, screenshot, and
+  accessibility state (`granted`/`denied`/`unsupported`/`unknown`) with the
+  backend that reported it. The runner, Sonic loop, and workflow executor call
+  `capabilities::refusal` before arming a card, so a denied or unsupported
+  capability fails with a capability error; `unknown` allows the attempt. The
+  state appears as one line in the per-turn desktop context and in
+  `gnome_doctor`. The record is process-local and never persisted.
 - Wake defaults: `WAKE_CLAP_ENABLED` and `WAKE_WORD_DENOISE` are off unless set;
   `.env.example` documents both.
 - Never print `.env` contents or API keys. Keys are keyring-first, then

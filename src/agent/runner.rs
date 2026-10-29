@@ -1073,6 +1073,9 @@ impl Agent {
                         // confirmation card: the user would approve a dead end.
                         let unavailable =
                             crate::tools::task::delegation_preflight(&name, &args_str);
+                        // A capability the desktop has already refused must not
+                        // produce a card the user cannot satisfy (D3).
+                        let capability = crate::tools::capabilities::refusal(&name, &args_str);
                         let result = if approval_waiting {
                             ToolResult::failure(
                                 "Skipped because an earlier action in this batch is awaiting confirmation.",
@@ -1085,6 +1088,8 @@ impl Agent {
                             // that cannot run would be a dead end.
                             ToolResult::failure(format!("Tool '{name}' does not exist."))
                         } else if let Some(failure) = unavailable {
+                            ToolResult::failure(failure)
+                        } else if let Some(failure) = capability {
                             ToolResult::failure(failure)
                         } else if let Some(refusal) =
                             crate::tools::safety::secret_refusal(&name, &args_str)
@@ -1972,6 +1977,93 @@ mod tests {
         assert!(
             !result.text().contains(".env"),
             "the refusal must not echo the path: {}",
+            result.text()
+        );
+        Ok(())
+    }
+
+    struct ComputerStub(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Tool for ComputerStub {
+        fn name(&self) -> &str {
+            "computer"
+        }
+
+        fn description(&self) -> &str {
+            "Test desktop input."
+        }
+
+        async fn execute(&self, _input: &str) -> Result<ToolResult> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolResult::success("moved"))
+        }
+    }
+
+    /// Restore the shared capability record when a test ends, even on failure,
+    /// so one test's denial cannot leak into another.
+    struct CapabilityReset;
+
+    impl Drop for CapabilityReset {
+        fn drop(&mut self) {
+            crate::tools::capabilities::reset_for_test();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_denied_input_capability_fails_without_arming_a_card() -> Result<()> {
+        crate::tools::capabilities::record_input(
+            crate::tools::capabilities::Capability::Denied,
+            "RemoteDesktop portal",
+        );
+        let _reset = CapabilityReset;
+
+        let (base, _requests) = serve_tool_call_then_reply(
+            json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
+                {"id":"call-input","type":"function","function":{"name":"computer","arguments":"{\"action\":\"mouse_click\",\"x\":10,\"y\":20}"}}
+            ]},"finish_reason":"tool_calls"}]}),
+            final_reply(),
+        )
+        .await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(ComputerStub(Arc::clone(&executions)));
+        let mut agent = Agent::new(
+            OpenRouterClient::new("local-test".into(), base),
+            "test-model".into(),
+            tools,
+        );
+        agent.messages = vec![Message::system("Test")];
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            agent.handle("click there".into(), None, &CancellationToken::new(), None),
+        )
+        .await??;
+
+        assert!(reply.is_some());
+        assert!(
+            !agent.awaiting_approval(),
+            "a denied capability must not arm an approval card"
+        );
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            0,
+            "the refused call must not run"
+        );
+        let result = agent
+            .messages
+            .iter()
+            .find(|message| message.role == "tool")
+            .expect("a tool result");
+        assert!(
+            result.text().contains("input capability denied"),
+            "{}",
+            result.text()
+        );
+        assert!(
+            !result.text().contains("Pending confirmation"),
+            "{}",
             result.text()
         );
         Ok(())

@@ -1603,9 +1603,8 @@ fn configured_terminals() -> Vec<String> {
         .iter()
         .map(|name| (*name).to_string())
         .collect();
-    match std::env::var("HYUSK_TERMINAL_APPS") {
-        Ok(value) => terminals.extend(parse_terminal_extension(&value)),
-        Err(_) => {}
+    if let Ok(value) = std::env::var("HYUSK_TERMINAL_APPS") {
+        terminals.extend(parse_terminal_extension(&value));
     }
     terminals
 }
@@ -1622,7 +1621,7 @@ fn parse_terminal_extension(value: &str) -> Vec<String> {
 /// shell command.
 pub fn is_terminal_app(app: &str) -> bool {
     let app = app.trim().to_ascii_lowercase();
-    !app.is_empty() && configured_terminals().iter().any(|name| *name == app)
+    !app.is_empty() && configured_terminals().contains(&app)
 }
 
 fn accessibility_requires_approval(args: &Value) -> bool {

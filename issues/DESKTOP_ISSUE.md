@@ -157,7 +157,7 @@ redesigning the policy. Evidence drift: `safety.rs:8-24` now points at the
 
 ## D3 — Capability registry for portal and AT-SPI
 
-- Status: open · Phase 2 · Priority: medium
+- Status: done · 2026-10-29 · commit `D3PENDING` · Phase 2 · Priority: medium
 - Depends on: —
 - Evidence: `src/tools/portal.rs:28-120`, `src/tools/gnome_doctor.rs:270-290`,
   `src/tools/computer.rs:1325-1390`
@@ -179,19 +179,72 @@ Out: retrying or repairing the OS permission automatically.
 
 **Acceptance criteria**
 
-- [ ] On GNOME, a denied portal input is recorded and the next input action
-      fails with "input capability denied" without asking for approval.
-- [ ] On niri, the registry reports which backend is in use or unsupported.
-- [ ] The model sees one line of capability state per turn.
-- [ ] `gnome_doctor` prints the same state.
+- [x] On GNOME, a denied portal input is recorded and the next input action
+      fails with "input capability denied" without asking for approval. (The
+      denial is simulated with a fake backend in the tests; the live portal
+      dialog was not denied by hand.)
+- [x] On niri, the registry reports which backend is in use or unsupported: the
+      Wayland input path records the `RemoteDesktop portal` backend, and the
+      native backend records itself when it is used. Not exercised on a live
+      niri session.
+- [x] The model sees one line of capability state per turn.
+- [x] `gnome_doctor` prints the same state.
 
 **Tests**
 
-- [ ] State transitions with a fake backend.
-- [ ] Error path does not create a pending approval.
+- [x] State transitions with a fake backend
+      (`state_transitions_are_recorded_with_their_backend`,
+      `screenshot_and_accessibility_refusals_cover_their_calls`,
+      `a_batch_cannot_hide_a_call_whose_capability_is_denied`).
+- [x] Error path does not create a pending approval
+      (`a_denied_input_capability_fails_without_arming_a_card`).
+- [x] The prompt line and the doctor line
+      (`the_per_turn_context_ends_with_one_capability_line`,
+      `capability_state_uses_the_same_one_line_as_the_prompt`).
 
-**Files.** `src/tools/portal.rs`, `src/tools/computer.rs`,
-`src/tools/gnome_doctor.rs`, `src/agent/runner/prompts.rs`.
+**Files.** `src/tools/capabilities.rs` (new), `src/tools/computer.rs`,
+`src/tools/accessibility.rs`, `src/tools/portal.rs`,
+`src/tools/gnome_doctor.rs`, `src/agent/runner.rs`,
+`src/agent/runner/sonic.rs`, `src/agent/runner/prompts.rs`,
+`src/agent/runtime.rs`, `docs/tools.md`, `README.md`, `AGENTS.md`,
+`CHANGELOG.md`.
+
+**Notes (2026-10-29, implemented).** `tools::capabilities` holds a
+process-local registry with three states (`input`, `screenshot`,
+`accessibility`), each carrying the backend that reported it. The state is
+recorded where the OS answers: the portal connect path records granted, denied,
+or unsupported for the RemoteDesktop portal (a missing portal service is
+unsupported; a refusal or timeout is denied), the native input path records
+granted or unsupported, each successful screenshot backend records itself and a
+portal refusal records denied, and the AT-SPI bridge records granted or
+unsupported when it starts.
+
+`capabilities::refusal(name, arguments)` maps a call to the capability it needs
+(`computer` input actions, capture actions, `click_text` needing both, batches
+recursively, `accessibility` needing AT-SPI) and returns a message starting
+`input capability denied …`, `screenshot capability denied …`, or
+`accessibility capability unsupported …` when that state is denied or
+unsupported. The text runner, the Nova Sonic loop, and the workflow executor
+check it before arming anything, so a refused capability produces a tool result
+and never a card. An `unknown` state returns `None`, which allows the attempt.
+
+The per-turn context appends `capabilities: input …; screenshot …;
+accessibility …` after the desktop snapshot (`append_desktop_context_with` is
+the tested seam), and `gnome_doctor` adds a `Desktop capabilities` check that
+prints the same line and warns once a state is denied or unsupported.
+
+Known limits: the state is only what earlier attempts reported, so a capability
+that was never tried stays `unknown` and still prompts; a granted state is
+recorded on the next success, not cleared on failure unless the failure is
+recognised. On Wayland (GNOME and niri) input still goes through the portal
+first; the doctor's existing `enigo fallback` line remains the place to see
+native availability, and choosing another backend when the portal is absent was
+left as the pre-existing behaviour (it is a backend-selection change, not a
+capability one).
+
+Drift: the Evidence ranges pointed at the portal session setup, the doctor's
+portal check, and the computer status function; the recording hooks are in the
+same functions but at different lines.
 
 ## D4 — Refine consequential click labels
 

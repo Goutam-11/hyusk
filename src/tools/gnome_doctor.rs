@@ -58,6 +58,9 @@ impl Check {
                 "check that xdg-desktop-portal and its desktop backend are running"
             }
             ".env permissions" => "run chmod 600 .env so only your account can read the key",
+            "Desktop capabilities" => {
+                "grant the refused permission in the system dialog or settings, then retry the action"
+            }
             "Hyusk GNOME extension" => {
                 "install and enable the Hyusk GNOME Shell extension, then log out and back in"
             }
@@ -260,6 +263,21 @@ async fn command_check(name: &'static str, command: &str, args: &[&str], optiona
     }
 }
 
+/// The same one-line capability state the model sees, from the process that
+/// has actually attempted the actions (D3).
+fn capability_check() -> Check {
+    let registry = crate::tools::capabilities::snapshot();
+    Check {
+        name: "Desktop capabilities",
+        level: if registry.has_failure() {
+            Level::Warn
+        } else {
+            Level::Info
+        },
+        detail: registry.line(),
+    }
+}
+
 async fn diagnostics() -> Vec<Check> {
     let mut checks = vec![gnome_session_check()];
     checks.push(display_session_check(
@@ -280,6 +298,7 @@ async fn diagnostics() -> Vec<Check> {
     checks.push(command_check("Tesseract OCR", "tesseract", &["--version"], true).await);
     checks.push(screenshot_check());
     checks.push(env_file_check(std::path::Path::new(".env")));
+    checks.push(capability_check());
 
     let toolkit_a11y = tokio::time::timeout(
         Duration::from_secs(3),
@@ -427,7 +446,8 @@ fn report(checks: &[Check]) -> Value {
             "AT-SPI import does not prove an application exposes a live accessibility tree.",
             "RemoteDesktop portal presence does not prove input permission has been granted.",
             "Screenshot executable presence is not a screenshot capture test.",
-            "No portal permission dialog is opened by this diagnostic."
+            "No portal permission dialog is opened by this diagnostic.",
+            "Desktop capabilities are only what earlier attempts reported; a granted state is recorded when a backend succeeds."
         ]
     })
 }
@@ -474,6 +494,26 @@ impl Tool for GnomeDoctorTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capability_state_uses_the_same_one_line_as_the_prompt() {
+        let check = capability_check();
+        assert_eq!(check.name, "Desktop capabilities");
+        assert!(
+            check.detail.starts_with("capabilities: input "),
+            "{}",
+            check.detail
+        );
+        assert!(check.detail.contains("; screenshot "), "{}", check.detail);
+        assert!(
+            check.detail.contains("; accessibility "),
+            "{}",
+            check.detail
+        );
+        // A clean record is informational, not a warning.
+        crate::tools::capabilities::reset_for_test();
+        assert_eq!(capability_check().level, Level::Info);
+    }
 
     #[test]
     fn env_file_mode_is_flagged_when_other_accounts_can_read_it() {

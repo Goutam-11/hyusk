@@ -44,6 +44,17 @@ tracks it, so `mouse_move` can still accept absolute coordinates.
 On X11 and Wayland compositors with virtual keyboard/pointer protocols, the
 native `enigo` backend is used.
 
+The tool records what the OS last reported about input and screen capture, with
+the backend that reported it, in a process-local capability record. When the
+RemoteDesktop portal refuses input, a screenshot backend is refused, or the
+native backend cannot deliver synthetic input, the `computer` and
+`accessibility` tools return a capability error instead of running, and the
+runner turns that into a tool result rather than an approval card. An `unknown`
+state still allows the attempt, so the first try can prompt as before. The
+record is shown as one `capabilities: …` line in the per-turn desktop context
+and as the `Desktop capabilities` check in `gnome_doctor`; it is never
+persisted.
+
 Typing and key input are classified by the focused window. When the focused
 application is a terminal, `type_text`, `key_press`, and `key_combo` could run a
 shell command, so the call asks for confirmation and the card names the
@@ -290,7 +301,9 @@ tool returns a failure and the agent falls back to `accessibility`/`computer`.
 ## GNOME readiness
 
 `gnome_doctor` takes `{}` and returns structured, read-only capability checks,
-issues, next steps, and limitations. It does not request portal permission or
+issues, next steps, and limitations. The `Desktop capabilities` check prints the
+same one-line state the model sees, and warns once an earlier attempt recorded
+a denied or unsupported input, screenshot, or accessibility capability. It does not request portal permission or
 prove that a specific click or screenshot will succeed. Use it when GNOME
 control fails repeatedly; a missing backend only affects its own path, not
 necessarily all desktop control. It also reports the mode of the local `.env`
@@ -592,6 +605,9 @@ The tool platform has guardrails but no sandbox:
   the focus cannot be read), and the card names the terminal.
 - `browser` mutations (`click`, `fill`, `press_key`) ask; reads and navigation
   stay free, and an unknown action fails closed.
+- A denied or unsupported OS capability (portal input, screen capture, AT-SPI)
+  returns a capability error before arming a card; the state is one line in the
+  per-turn context and in `gnome_doctor`.
 - Foreground `shell` commands are bounded at 120 s with truncated output; a
   turn is cancellable and tool loops stop after configured rounds/time.
 - None of that confines an approved action: `shell` can still read, modify, or
