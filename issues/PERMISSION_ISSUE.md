@@ -221,7 +221,7 @@ change, so only the text moved here.
 
 ## A4 — Confirmation grammar for voice
 
-- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: medium
+- Status: done · 2026-10-29 · commit `a170a53` · Phase 1 · Priority: medium
 - Depends on: —
 - Evidence: `src/agent/runner/reply.rs:122-142`
 
