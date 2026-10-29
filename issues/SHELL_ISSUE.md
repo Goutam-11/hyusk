@@ -8,7 +8,7 @@ and `mv` prompt while `cat` and `rg` do not.
 
 ## S1 — Project-scoped shell writes
 
-- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit `1c8ba6f` · Phase 1 · Priority: high
 - Depends on: A8
 - Evidence: `src/tools/safety.rs:60-154`
 
