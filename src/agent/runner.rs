@@ -126,6 +126,9 @@ impl<'a> ReplySink<'a> {
 struct PendingApproval {
     name: String,
     arguments: String,
+    /// The exact call as the user sees it. Derived from `arguments`, which are
+    /// the stored arguments, so the approved call is the previewed call.
+    preview: String,
     call_id: String,
     result_index: usize,
     expires_at: Instant,
@@ -265,6 +268,13 @@ impl Agent {
         self.pending_approval.is_some()
     }
 
+    /// The exact call in the armed confirmation, as the card shows it.
+    pub fn pending_approval_preview(&self) -> Option<&str> {
+        self.pending_approval
+            .as_ref()
+            .map(|pending| pending.preview.as_str())
+    }
+
     /// Disarm a stored confirmation without executing it.
     ///
     /// Used by an emergency stop: an aborted interaction must not leave a
@@ -316,6 +326,7 @@ impl Agent {
         self.pending_approval = Some(PendingApproval {
             name: "shell".into(),
             arguments: "{\"command\":\"rm -rf build\"}".into(),
+            preview: crate::tools::safety::preview("shell", "{\"command\":\"rm -rf build\"}"),
             call_id: "test-approval".into(),
             result_index: self.messages.len(),
             expires_at,
@@ -951,19 +962,24 @@ impl Agent {
                             ToolResult::failure(failure)
                         } else if requires_approval {
                             let index = self.messages.len();
+                            // The preview is derived from the stored arguments,
+                            // so the card names exactly what approval will run.
+                            let arguments =
+                                crate::tools::safety::approval_arguments(&name, &args_str);
+                            let preview = crate::tools::safety::preview(&name, &arguments);
                             self.pending_approval = Some(PendingApproval {
                                 name: name.clone(),
-                                arguments: crate::tools::safety::approval_arguments(
-                                    &name, &args_str,
-                                ),
+                                arguments,
+                                preview: preview.clone(),
                                 call_id: call.id.clone(),
                                 result_index: index,
                                 expires_at: Instant::now() + Duration::from_secs(300),
                             });
                             approval_waiting = true;
-                            ToolResult::failure(
-                                "This action needs explicit user confirmation. Explain the exact action and ask the user to reply yes, confirm, or go ahead. Do not retry it until then.",
-                            )
+                            ToolResult::failure(format!(
+                                "{}. Say what this will do in one short sentence, naming the tool and the first few argument words, then ask for one yes or no. Do not retry it until the user answers.",
+                                crate::tools::safety::pending_text(&preview)
+                            ))
                         } else {
                             match self.loop_limits.remaining(turn_started) {
                                 Some(remaining) => {
@@ -1507,6 +1523,7 @@ mod tests {
         agent.pending_approval = Some(PendingApproval {
             name: "shell".into(),
             arguments: "{\"command\":\"dangerous\"}".into(),
+            preview: crate::tools::safety::preview("shell", "{\"command\":\"dangerous\"}"),
             call_id: "pending-call".into(),
             result_index: 0,
             expires_at: std::time::Instant::now() + Duration::from_secs(60),
@@ -1626,6 +1643,82 @@ mod tests {
             .messages
             .iter()
             .any(|message| message.role == "tool" && message.text().contains("does not exist")));
+        Ok(())
+    }
+
+    struct ShellStub(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Tool for ShellStub {
+        fn name(&self) -> &str {
+            "shell"
+        }
+
+        fn description(&self) -> &str {
+            "Test shell action."
+        }
+
+        async fn execute(&self, _input: &str) -> Result<ToolResult> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolResult::success("ran"))
+        }
+    }
+
+    #[tokio::test]
+    async fn guarded_call_is_held_once_and_the_pending_call_names_it() -> Result<()> {
+        let base = serve_tool_call_then_reply(
+            json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
+                {"id":"call-shell","type":"function","function":{"name":"shell","arguments":"{\"command\":\"rm -rf build\"}"}}
+            ]},"finish_reason":"tool_calls"}]}),
+            final_reply(),
+        )
+        .await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(ShellStub(Arc::clone(&executions)));
+        let mut agent = Agent::new(
+            OpenRouterClient::new("local-test".into(), base),
+            "test-model".into(),
+            tools,
+        );
+        agent.messages = vec![Message::system("Test")];
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            agent.handle(
+                "delete the build folder".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            ),
+        )
+        .await??;
+
+        assert!(reply.is_some());
+        assert!(agent.awaiting_approval(), "the call must be held");
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            0,
+            "a held call must not run"
+        );
+        // The stored preview is the exact call, and the model is told to repeat
+        // it rather than paraphrase it.
+        assert_eq!(
+            agent.pending_approval_preview(),
+            Some("shell command=rm -rf build")
+        );
+        let result = agent
+            .messages
+            .iter()
+            .find(|message| message.role == "tool")
+            .expect("a tool result");
+        assert!(
+            result
+                .text()
+                .contains("Pending confirmation for: shell command=rm -rf build"),
+            "{}",
+            result.text()
+        );
         Ok(())
     }
 
@@ -1758,6 +1851,7 @@ mod tests {
         agent.pending_approval = Some(PendingApproval {
             name: "shell".into(),
             arguments: "{\"command\":\"dangerous\"}".into(),
+            preview: crate::tools::safety::preview("shell", "{\"command\":\"dangerous\"}"),
             call_id: "pending-call".into(),
             result_index: 2,
             expires_at: std::time::Instant::now() + Duration::from_secs(60),
@@ -1789,6 +1883,7 @@ mod tests {
         agent.pending_approval = Some(PendingApproval {
             name: "shell".into(),
             arguments: "{\"command\":\"rm -rf build\"}".into(),
+            preview: crate::tools::safety::preview("shell", "{\"command\":\"rm -rf build\"}"),
             call_id: "call-1".into(),
             result_index: 2,
             expires_at: Instant::now() + Duration::from_secs(60),

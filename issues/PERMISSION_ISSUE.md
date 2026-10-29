@@ -155,7 +155,7 @@ live microphone, STT, and a provider.
 
 ## A3 — Approval shows the exact call
 
-- Status: open · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
 - Depends on: A8
 - Evidence: `src/agent/runner.rs:941-955`, `src/agent/runtime.rs:1575-1600`,
   `src/agent/runner/sonic.rs:392-409`
@@ -175,20 +175,49 @@ text. Out: redaction of secret-shaped values (X2) and the consent UI (A6).
 
 **Acceptance criteria**
 
-- [ ] Card and tool result show the same tool and arguments.
-- [ ] Long commands truncate predictably with an ellipsis.
-- [ ] The stored preview is what the user approves; argument substitution after
-      approval is impossible.
-- [ ] Speech names the tool and the first few argument words.
+- [x] Card and tool result show the same tool and arguments. Both are built
+      from one function, `safety::pending_text(preview)`; the text card uses it
+      in `runtime::card_text`, the Sonic card uses it directly, and the tool
+      result prefixes the same sentence.
+- [x] Long commands truncate predictably with an ellipsis:
+      `safety::PREVIEW_LIMIT` is 120 characters including the ellipsis, counted
+      in characters rather than bytes.
+- [x] The stored preview is what the user approves; argument substitution after
+      approval is impossible. The preview is rendered from
+      `approval_arguments`, which are the arguments stored for execution, so the
+      previewed call and the approved call are the same JSON.
+- [x] Speech names the tool and the first few argument words: the tool result
+      and the generated prompt block both require the model to repeat
+      "Pending confirmation for: …". A live voice check is still outstanding,
+      as in A1.
 
 **Tests**
 
-- [ ] Preview formatting for `shell`, `process`, `task`, `mobile`, `window`.
-- [ ] Truncation and empty-argument cases.
-- [ ] Runtime card text uses the preview.
+- [x] Preview formatting for `shell`, `process`, `task`, `mobile`, `window`
+      (`safety::tests::approval_preview_names_the_tool_and_its_key_arguments`).
+- [x] Truncation and empty-argument cases
+      (`approval_preview_is_one_line_and_bounded`), plus
+      `pending_text_is_the_one_sentence_both_surfaces_use`.
+- [x] Runtime card text uses the preview
+      (`runtime::tests::approval_card_shows_the_exact_call_not_the_models_paraphrase`).
+- [x] End to end:
+      `runner::tests::guarded_call_is_held_once_and_the_pending_call_names_it`
+      drives a guarded `shell` call and checks the stored preview, the tool
+      result, and that nothing ran.
 
 **Files.** `src/tools/safety.rs`, `src/agent/runner.rs`,
-`src/agent/runner/sonic.rs`, `src/agent/runtime.rs`.
+`src/agent/runner/sonic.rs`, `src/agent/runtime.rs`,
+`src/agent/runner/prompts.rs`, `docs/tools.md`, `docs/voice-and-ui.md`.
+
+**Notes (2026-10-29, implemented).** The A8 policy rows gained `preview_keys`,
+so each tool names its identifying arguments in a stable order (the policy
+order first, then any remaining arguments alphabetically). The preview is one
+line: whitespace collapses, arrays render as `[a, b]`, empty and null values are
+skipped, and arguments that are not a JSON object render as the tool name alone
+- such a call cannot run, and the gate still holds it.
+
+The Sonic card keeps its existing `confirmation` kind; A7 owns the card-kind
+change, so only the text moved here.
 
 ## A4 — Confirmation grammar for voice
 

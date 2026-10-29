@@ -399,9 +399,14 @@ impl Agent {
                         // for a delegation that cannot start.
                         ToolResult::failure(failure)
                     } else if crate::tools::safety::requires_approval(&call.name, &args) {
+                        // Preview the stored arguments, so the card and the
+                        // tool result name exactly what approval will run.
+                        let arguments = crate::tools::safety::approval_arguments(&call.name, &args);
+                        let preview = crate::tools::safety::preview(&call.name, &arguments);
                         self.pending_approval = Some(PendingApproval {
                             name: call.name.clone(),
-                            arguments: crate::tools::safety::approval_arguments(&call.name, &args),
+                            arguments,
+                            preview: preview.clone(),
                             call_id: call.id.clone(),
                             result_index: self.messages.len(),
                             expires_at: Instant::now() + Duration::from_secs(300),
@@ -410,12 +415,13 @@ impl Agent {
                         crate::status::awaiting_reply(true);
                         crate::status::card(
                             "confirmation",
-                            format!("Confirm action: {}", call.name),
+                            crate::tools::safety::pending_text(&preview),
                             true,
                         );
-                        ToolResult::failure(
-                            "This action requires user confirmation. Ask the user to clearly confirm or decline; do not execute it yet.",
-                        )
+                        ToolResult::failure(format!(
+                            "{}. Say what this will do in one short sentence, naming the tool and the first few argument words, then ask for one clear yes or no. Do not execute it yet.",
+                            crate::tools::safety::pending_text(&preview)
+                        ))
                     } else {
                         let remaining =
                             self.loop_limits.remaining(turn_started).unwrap_or_default();

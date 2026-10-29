@@ -224,7 +224,10 @@ top bar. See [gnome-indicator.md](gnome-indicator.md).
   transcript replaces the turn and stops Linux TTS. Nova Sonic keeps its own
   streaming barge-in path.
 - The `eframe` orb does not display transcripts or response text; the GNOME
-  response card and the Noctalia tooltip show the latest response.
+  response card and the Noctalia tooltip show the latest response. While a
+  confirmation is armed they show the exact pending call instead - the tool and
+  its key arguments - and the same sentence reaches the model, which repeats it
+  in one short spoken line.
 - The **Stop** control ends the active turn, and **Stop listening** ends an
   in-flight recording. Local Whisper cancellation is cooperative between
   compute nodes, so an individual native compute operation may still finish

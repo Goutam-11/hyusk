@@ -55,6 +55,13 @@
 
 ### Changed
 
+- A confirmation now names the exact call. The gate renders a preview from the
+  stored arguments - tool plus key arguments, one line, truncated at about 120
+  characters with an ellipsis - stores it with the pending call, and both the
+  tool result (`Pending confirmation for: …`) and the status card use that same
+  sentence, so the user approves the command rather than the model's
+  paraphrase. The prompt tells the model to repeat the previewed call in one
+  short line.
 - Research delegation runs immediately again: `task` with `profile: "research"`
   is one read-only model call, so it no longer costs a confirmation. Workspace
   delegation still asks once, with the canonical project root pinned in the

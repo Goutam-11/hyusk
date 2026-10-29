@@ -524,7 +524,10 @@ The tool platform has guardrails but no sandbox:
   tool. Each row is an allow decision or a classifier over the call's
   arguments, so consequential actions (destructive shell commands, payments,
   sending messages, deleting data) arm a one-shot confirmation card or phone
-  prompt, and an unanswered request expires instead of running. A tool name the
+  prompt, and an unanswered request expires instead of running. The card and the
+  tool result both name the exact call - the tool plus its key arguments, on one
+  line and truncated past about 120 characters with an ellipsis - so the user
+  approves the command, not the model's description of it. A tool name the
   table does not know asks rather than runs, a new tool cannot compile without
   a decision, and `main.rs` walks the registry it builds so a tool registered
   without a row fails a test. The system prompt's approval guidance is rendered

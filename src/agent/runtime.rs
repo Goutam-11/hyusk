@@ -1571,9 +1571,13 @@ async fn run_turn(
 
     crate::timing::mark("agent turn (model + tools)", turn_start);
 
-    let (requires_approval, model_needs_reply) = {
+    let (requires_approval, approval_preview, model_needs_reply) = {
         let agent = agent.lock().await;
-        (agent.awaiting_approval(), agent.reply_needs_follow_up())
+        (
+            agent.awaiting_approval(),
+            agent.pending_approval_preview().map(str::to_string),
+            agent.reply_needs_follow_up(),
+        )
     };
     crate::status::card(
         if requires_approval {
@@ -1581,7 +1585,7 @@ async fn run_turn(
         } else {
             "response"
         },
-        &response,
+        card_text(requires_approval, approval_preview.as_deref(), &response),
         requires_approval,
     );
     let _ = ui_tx.try_send(HyuskEvent::Response(response.clone()));
@@ -1608,6 +1612,18 @@ async fn run_turn(
 
     if !cancel.is_cancelled() {
         send_state(&ui_tx, HyuskState::Hidden).await;
+    }
+}
+
+/// The status card text for a finished turn.
+///
+/// An armed confirmation names the exact call (tool and arguments) instead of
+/// the model's paraphrase, so the card, the tool result, and the approved call
+/// all describe the same thing.
+fn card_text(requires_approval: bool, preview: Option<&str>, response: &str) -> String {
+    match (requires_approval, preview) {
+        (true, Some(preview)) => crate::tools::safety::pending_text(preview),
+        _ => response.to_string(),
     }
 }
 
@@ -1642,7 +1658,7 @@ async fn send_state(ui_tx: &Sender<HyuskEvent>, state: HyuskState) {
 #[cfg(test)]
 mod tests {
     use super::{
-        approval_blocks_scheduled_input, approval_expiry, cancel_desktop_workflow,
+        approval_blocks_scheduled_input, approval_expiry, cancel_desktop_workflow, card_text,
         clear_pending_interactions, execute_workflow_actions, finish_voice_conversation,
         interrupt_active, interrupt_interaction, is_current_sonic_listen, listen_capture_active,
         next_runtime_event, normalize_listen_completed, normalize_voice_transcript,
@@ -1667,6 +1683,22 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     struct CountingTool(Arc<AtomicUsize>, bool);
+
+    #[test]
+    fn approval_card_shows_the_exact_call_not_the_models_paraphrase() {
+        assert_eq!(
+            card_text(
+                true,
+                Some("shell command=rm -rf build"),
+                "I will clean up the build output.",
+            ),
+            "Pending confirmation for: shell command=rm -rf build"
+        );
+        // A completed turn still shows what the assistant said.
+        assert_eq!(card_text(false, None, "Timer set."), "Timer set.");
+        // An armed call without a preview falls back to the reply.
+        assert_eq!(card_text(true, None, "Which one?"), "Which one?");
+    }
 
     #[test]
     fn busy_wake_requires_new_speech_and_follow_up_cannot_interrupt() {

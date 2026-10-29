@@ -62,11 +62,12 @@ fn approval_guidance_block() -> String {
         block.push('\n');
     }
     block.push_str(
-        "- When a tool result says an action needs confirmation, say what you tried \
-         to do in one short sentence, ask once for a yes or no, and wait for the \
-         reply. Do not retry the call, and do not substitute another tool that \
-         would do the same thing, until the user answers. A confirmation approves \
-         one identical action only.\n\
+        "- When a tool result says an action needs confirmation, repeat the exact \
+         call it names after \"Pending confirmation for:\" - the tool and its first \
+         few argument words - in one short sentence, ask once for a yes or no, and \
+         wait for the reply. Do not retry the call, and do not substitute another \
+         tool that would do the same thing, until the user answers. A confirmation \
+         approves one identical action only.\n\
          - Never say an action needs confirmation unless its result says so. Never \
          claim an action is waiting for approval after it has already run.",
     );
@@ -356,6 +357,7 @@ mod tests {
         let prompt = flattened(&system_prompt());
         assert!(prompt.contains("Never ask the user for permission before calling a tool"));
         assert!(prompt.contains("When a tool result says an action needs confirmation"));
+        assert!(prompt.contains("Pending confirmation for:"));
         assert!(prompt.contains("A confirmation approves one identical action only"));
     }
 

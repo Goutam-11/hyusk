@@ -50,6 +50,10 @@ pub struct ToolPolicy {
     /// When this tool asks, written for the model. Generated guidance is
     /// derived from this text, so it must never contradict `decision`.
     pub guidance: &'static str,
+    /// Argument keys that identify the call, most important first. The approval
+    /// preview names these before any other argument, so the card shows what
+    /// the call will do rather than the model's paraphrase.
+    pub preview_keys: &'static [&'static str],
 }
 
 impl ToolName {
@@ -111,6 +115,7 @@ impl ToolName {
                            action says send, delete, remove, pay, purchase, buy, submit, \
                            confirm, transfer, publish, post, share, install, uninstall, \
                            reset, or place an order asks, and an unrecognised action asks",
+                preview_keys: &["action", "name", "text", "action_name"],
             },
             // Every browser action is currently allowed. D2 classifies the
             // mutations (click, fill, press_key); until then this row records
@@ -120,6 +125,7 @@ impl ToolName {
                 guidance: "every action runs without confirmation today, including \
                            click, fill, and press_key, so only act on the page when the \
                            user asked for that outcome",
+                preview_keys: &["action", "url", "selector", "key", "target_id"],
             },
             ToolName::Computer => ToolPolicy {
                 decision: Decision::Classified(computer_requires_approval),
@@ -130,19 +136,23 @@ impl ToolName {
                            (send, delete, pay, submit, and so on), and shortcuts that \
                            commit or quit (ctrl, alt, meta, or super with enter, delete, \
                            backspace, or F4; ctrl+q or ctrl+w) ask",
+                preview_keys: &["action", "text", "keys", "key"],
             },
             ToolName::GnomeDoctor => ToolPolicy {
                 decision: Decision::Allow,
                 guidance: "read-only diagnostics never ask",
+                preview_keys: &["action"],
             },
             ToolName::Media => ToolPolicy {
                 decision: Decision::Allow,
                 guidance: "playback control never asks",
+                preview_keys: &["action"],
             },
             ToolName::Memory => ToolPolicy {
                 decision: Decision::Classified(memory_requires_approval),
                 guidance: "remembering, searching, and graph queries run freely; \
                            forgetting asks",
+                preview_keys: &["action", "text"],
             },
             ToolName::Mobile => ToolPolicy {
                 decision: Decision::Classified(mobile_requires_approval),
@@ -152,17 +162,20 @@ impl ToolName {
                            run freely; invoking a consequential phone action (send, \
                            delete, install, call, clipboard read or clear, \
                            memory.forget, shell.execute) or an unknown action asks",
+                preview_keys: &["action", "phone_action", "device_id"],
             },
             ToolName::Process => ToolPolicy {
                 decision: Decision::Classified(process_requires_approval),
                 guidance: "a bare launch of a configured app alias (firefox, chrome, \
                            brave, code, and so on) runs freely; extra arguments, an \
                            unknown program, or a raw executable path ask",
+                preview_keys: &["program", "args", "action"],
             },
             ToolName::Scheduler => ToolPolicy {
                 decision: Decision::Allow,
                 guidance: "scheduling, listing, and cancelling a reminder, workflow, or \
                            agent task never asks",
+                preview_keys: &["action", "type", "text", "workflow", "after_seconds"],
             },
             ToolName::Shell => ToolPolicy {
                 decision: Decision::Classified(shell_requires_approval),
@@ -172,26 +185,31 @@ impl ToolName {
                            check, build, fmt, clippy); chaining, pipes, redirection, \
                            expansion, in-place writes, and unknown programs ask, and a \
                            detached mode asks unless it launches an app",
+                preview_keys: &["command", "mode"],
             },
             ToolName::Task => ToolPolicy {
                 decision: Decision::Classified(task_requires_approval),
                 guidance: "a research delegation runs immediately; a workspace \
                            delegation asks once, with its project root pinned; list and \
                            cancel run freely",
+                preview_keys: &["action", "profile", "task", "workspace", "label", "id"],
             },
             ToolName::Timer => ToolPolicy {
                 decision: Decision::Allow,
                 guidance: "setting, listing, showing the time, and cancelling a timer \
                            never asks",
+                preview_keys: &["action", "seconds", "label"],
             },
             ToolName::WebSearch => ToolPolicy {
                 decision: Decision::Allow,
                 guidance: "searching the web never asks",
+                preview_keys: &["query", "count", "freshness"],
             },
             ToolName::Window => ToolPolicy {
                 decision: Decision::Classified(window_requires_approval),
                 guidance: "listing, reading the active window, and activating a window \
                            run freely; closing a window asks",
+                preview_keys: &["action", "query", "id"],
             },
         }
     }
@@ -217,6 +235,90 @@ pub fn approval_guidance() -> String {
         guidance.push_str(&format!("- {}: {}\n", tool.name(), tool.policy().guidance));
     }
     guidance
+}
+
+/// The longest approval preview, including the tool name and the ellipsis.
+pub const PREVIEW_LIMIT: usize = 120;
+
+/// The exact call the user is asked to approve: the tool name plus its key
+/// arguments, normalised to one line and truncated with an ellipsis. The card
+/// and the tool result both carry this text, so neither can show the model's
+/// paraphrase instead of the call.
+///
+/// Arguments that are not a JSON object render as the tool name alone; such a
+/// call cannot run, and the gate still holds it.
+pub fn preview(name: &str, arguments: &str) -> String {
+    let mut text = name.to_string();
+    let args = serde_json::from_str::<Value>(arguments).unwrap_or(Value::Null);
+    for (key, value) in preview_fields(name, &args) {
+        text.push(' ');
+        text.push_str(&key);
+        text.push('=');
+        text.push_str(&value);
+    }
+    truncate_preview(&text)
+}
+
+/// The one sentence that names an armed call. The tool result and every status
+/// card use this function, so they always show the same text.
+pub fn pending_text(preview: &str) -> String {
+    format!("Pending confirmation for: {preview}")
+}
+
+fn preview_fields(name: &str, args: &Value) -> Vec<(String, String)> {
+    let Value::Object(map) = args else {
+        return Vec::new();
+    };
+    let mut fields = Vec::new();
+    let mut rendered = Vec::new();
+    let ordered = ToolName::from_name(name)
+        .map(|tool| tool.policy().preview_keys)
+        .unwrap_or(&[]);
+    for key in ordered.iter().copied() {
+        if let Some(value) = map.get(key).and_then(preview_value) {
+            fields.push((key.to_string(), value));
+            rendered.push(key);
+        }
+    }
+    // Remaining arguments are alphabetical, so the text is stable across runs.
+    let mut rest: Vec<&String> = map
+        .keys()
+        .filter(|key| !rendered.contains(&key.as_str()))
+        .collect();
+    rest.sort();
+    for key in rest {
+        if let Some(value) = map.get(key).and_then(preview_value) {
+            fields.push((key.clone(), value));
+        }
+    }
+    fields
+}
+
+fn preview_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        // One line only: newlines and tabs would break the card layout.
+        Value::String(text) => {
+            let normalised = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            (!normalised.is_empty()).then_some(normalised)
+        }
+        Value::Bool(flag) => Some(flag.to_string()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Array(items) => {
+            let rendered = items.iter().filter_map(preview_value).collect::<Vec<_>>();
+            (!rendered.is_empty()).then(|| format!("[{}]", rendered.join(", ")))
+        }
+        Value::Object(_) => serde_json::to_string(value).ok(),
+    }
+}
+
+fn truncate_preview(text: &str) -> String {
+    if text.chars().count() <= PREVIEW_LIMIT {
+        return text.to_string();
+    }
+    let mut truncated: String = text.chars().take(PREVIEW_LIMIT - 1).collect();
+    truncated.push('…');
+    truncated
 }
 
 /// The policy for a registered tool, or `None` when the name is unknown.
@@ -842,8 +944,90 @@ fn is_consequential_text(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{approval_arguments, policy_for, requires_approval as check, Decision, ToolName};
+    use super::{
+        approval_arguments, pending_text, policy_for, preview, requires_approval as check,
+        Decision, ToolName, PREVIEW_LIMIT,
+    };
     use serde_json::Value;
+
+    #[test]
+    fn approval_preview_names_the_tool_and_its_key_arguments() {
+        assert_eq!(
+            preview("shell", r#"{"command":"rm -rf build"}"#),
+            "shell command=rm -rf build"
+        );
+        // The policy row's key order wins over the JSON key order.
+        assert_eq!(
+            preview("shell", r#"{"mode":"detached","command":"firefox"}"#),
+            "shell command=firefox mode=detached"
+        );
+        assert_eq!(
+            preview(
+                "process",
+                r#"{"action":"launch","program":"code","args":["src/main.rs","Cargo.toml"]}"#
+            ),
+            "process program=code args=[src/main.rs, Cargo.toml] action=launch"
+        );
+        assert_eq!(
+            preview(
+                "task",
+                r#"{"action":"delegate","profile":"workspace","task":"fix the build","workspace":"/home/user/project"}"#
+            ),
+            "task action=delegate profile=workspace task=fix the build workspace=/home/user/project"
+        );
+        assert_eq!(
+            preview(
+                "mobile",
+                r#"{"action":"invoke","phone_action":"messages.send"}"#
+            ),
+            "mobile action=invoke phone_action=messages.send"
+        );
+        assert_eq!(
+            preview("window", r#"{"action":"close"}"#),
+            "window action=close"
+        );
+    }
+
+    #[test]
+    fn approval_preview_is_one_line_and_bounded() {
+        // Empty or non-object arguments name the tool alone.
+        assert_eq!(preview("browser", "{}"), "browser");
+        assert_eq!(preview("shell", ""), "shell");
+        assert_eq!(preview("shell", "[1,2]"), "shell");
+        // Whitespace, tabs, and newlines collapse onto one line.
+        assert_eq!(
+            preview(
+                "memory",
+                r#"{"action":"remember","text":"line one\n\tline   two"}"#
+            ),
+            "memory action=remember text=line one line two"
+        );
+        // A long command truncates to the limit with a visible ellipsis.
+        let long = preview(
+            "shell",
+            &serde_json::json!({"command": format!("echo {}", "x".repeat(400))}).to_string(),
+        );
+        assert_eq!(long.chars().count(), PREVIEW_LIMIT);
+        assert!(long.ends_with('…'), "{long}");
+        assert!(long.starts_with("shell command=echo xxx"), "{long}");
+        // A call that fits exactly is not truncated.
+        let head = "shell command=";
+        let exact_command = "y".repeat(PREVIEW_LIMIT - head.chars().count());
+        let exact = preview(
+            "shell",
+            &serde_json::json!({"command": exact_command}).to_string(),
+        );
+        assert_eq!(exact.chars().count(), PREVIEW_LIMIT);
+        assert!(!exact.ends_with('…'));
+    }
+
+    #[test]
+    fn pending_text_is_the_one_sentence_both_surfaces_use() {
+        assert_eq!(
+            pending_text("shell command=rm -rf build"),
+            "Pending confirmation for: shell command=rm -rf build"
+        );
+    }
 
     #[test]
     fn policy_table_names_every_tool_once_and_matches_its_decision() {
