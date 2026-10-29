@@ -2,7 +2,8 @@
 
 Tracked documentation that does **not** match the current code. Created
 2026-10-29 at commit `4e28322` (`hyusk_agent` is now a standalone Cargo
-workspace). Read [`SESSION_NOTES.md`](SESSION_NOTES.md) first for build,
+workspace). Read
+[`DSH_SESSION_NOTES.md`](../memory/DSH_SESSION_NOTES.md) first for build,
 environment, and tooling context.
 
 Status: **open**. Build/tests are green; these are accuracy issues, not build
@@ -19,8 +20,9 @@ failures. Nothing here has been fixed yet except the items marked
 | `cargo fmt --all -- --check` | clean |
 
 Live microphone/STT/TTS, portal input, GNOME/niri window control, live CDP,
-and real provider calls were **not** exercised. See `SESSION_NOTES.md` for the
-isolation commands used to run the tests without touching real user data.
+and real provider calls were **not** exercised. See
+`memory/DSH_SESSION_NOTES.md` for the isolation commands used to run the tests
+without touching real user data.
 
 ## Decisions needed first
 
@@ -252,7 +254,7 @@ must stay, gate it with an approval and avoid returning the secret verbatim.
 4. Re-run:
    - `cargo fmt --all -- --check`
    - `cargo check --all-targets --offline`
-   - `cargo test --all-targets --offline` (isolate XDG paths; see `SESSION_NOTES.md`)
+   - `cargo test --all-targets --offline` (isolate XDG paths; see `memory/DSH_SESSION_NOTES.md`)
    - `cargo clippy --all-targets --offline`
    - relative-link check for `README.md`, `ARCHITECTURE.md`, `docs/*.md`
 5. Commit the doc/code changes with a message referencing this file.

@@ -1,10 +1,11 @@
-# Session notes — durable project memory
+# DSH session notes — durable project memory
 
 The model itself does not remember between sessions. These files are the
-memory: read this file and [`DOCS_ISSUES.md`](DOCS_ISSUES.md) when resuming
-work in a fresh session.
+memory: read this file and
+[`DOCS_ISSUES.md`](../issues/DOCS_ISSUES.md) when resuming work in a fresh
+session.
 
-Last updated: 2026-10-29 (commit `4e28322`).
+Last updated: 2026-10-29.
 
 ## Repository state
 
@@ -114,9 +115,9 @@ Known open code issues (not fixed; details in the earlier audit / to be filed):
 
 - `browser` actions are not in the central approval classifier.
 - `task` delegation has no confirmation and accepts any workspace root
-  (`DOCS_ISSUES.md` D2).
+  (`issues/DOCS_ISSUES.md` D2).
 - `mobile pairing` returns the live pairing secret to the model
-  (`DOCS_ISSUES.md` D7).
+  (`issues/DOCS_ISSUES.md` D7).
 - Read-only shell allowlist (`cat`, `head`, `tail`, …) can read arbitrary files
   into the model context without approval.
 - `.env` is mode `0644` and contains a live provider key; tests were isolated,
@@ -128,7 +129,8 @@ Known open code issues (not fixed; details in the earlier audit / to be filed):
 - `OpenRouterClient` has a 150 s total timeout that also caps streams.
 - Timer/scheduler accept unbounded durations (possible `Instant` overflow).
 - Mobile-link replay protection is per connection (sequence resets).
-- Documentation inaccuracies: see [`DOCS_ISSUES.md`](DOCS_ISSUES.md) (D1–D8).
+- Documentation inaccuracies: see
+  [`DOCS_ISSUES.md`](../issues/DOCS_ISSUES.md) (D1–D8).
 
 ## Working conventions for this repo
 
