@@ -7,7 +7,7 @@ files and values that must not travel by accident.
 
 ## X1 — `.env` permissions
 
-- Status: done (tooling) · 2026-10-29 · commit TBD · Phase 1 · Priority: high
+- Status: done (tooling) · 2026-10-29 · commit `921ff8a` · Phase 1 · Priority: high
 - Owner: user applies the file-mode change in Phase 1; the installer, doctor,
   and docs work is the implementable part
 - Depends on: —
