@@ -57,6 +57,7 @@ impl Check {
             "RemoteDesktop portal" => {
                 "check that xdg-desktop-portal and its desktop backend are running"
             }
+            ".env permissions" => "run chmod 600 .env so only your account can read the key",
             "Hyusk GNOME extension" => {
                 "install and enable the Hyusk GNOME Shell extension, then log out and back in"
             }
@@ -95,6 +96,56 @@ fn display_session_check(configured: Option<&str>, has_wayland: bool, has_x11: b
         name: "display session type",
         level,
         detail,
+    }
+}
+
+/// `.env` is git-ignored and normally holds a live provider key, so its mode
+/// must not be readable by other local accounts.
+fn env_file_check(path: &std::path::Path) -> Check {
+    let name = ".env permissions";
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return Check {
+            name,
+            level: Level::Info,
+            detail: "no .env file; the keyring or the environment is used".into(),
+        };
+    };
+    if !metadata.is_file() {
+        return Check {
+            name,
+            level: Level::Warn,
+            detail: format!("{} is not a regular file", path.display()),
+        };
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = metadata.permissions().mode() & 0o777;
+        if mode & 0o077 == 0 {
+            Check {
+                name,
+                level: Level::Pass,
+                detail: format!("{:04o}", mode),
+            }
+        } else {
+            Check {
+                name,
+                level: Level::Warn,
+                detail: format!(
+                    "{:04o}; the provider key is readable by other accounts",
+                    mode
+                ),
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        Check {
+            name,
+            level: Level::Info,
+            detail: "file modes are not checked on this platform".into(),
+        }
     }
 }
 
@@ -228,6 +279,7 @@ async fn diagnostics() -> Vec<Check> {
     );
     checks.push(command_check("Tesseract OCR", "tesseract", &["--version"], true).await);
     checks.push(screenshot_check());
+    checks.push(env_file_check(std::path::Path::new(".env")));
 
     let toolkit_a11y = tokio::time::timeout(
         Duration::from_secs(3),
@@ -401,7 +453,7 @@ impl Tool for GnomeDoctorTool {
     }
 
     fn description(&self) -> &str {
-        "Run read-only checks for GNOME computer-use readiness: session type, Python/AT-SPI, toolkit accessibility, the Hyusk shell extension, RemoteDesktop portal, and optional Tesseract OCR. Does not request permissions or change settings."
+        "Run read-only checks for GNOME computer-use readiness: session type, Python/AT-SPI, toolkit accessibility, the Hyusk shell extension, RemoteDesktop portal, optional Tesseract OCR, and the local .env file mode. Does not request permissions or change settings."
     }
 
     fn input_schema(&self) -> Value {
@@ -422,6 +474,47 @@ impl Tool for GnomeDoctorTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_file_mode_is_flagged_when_other_accounts_can_read_it() {
+        let directory = std::env::temp_dir().join(format!(
+            "hyusk-env-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).expect("scratch directory");
+        let path = directory.join(".env");
+        std::fs::write(&path, "OPENROUTER_API_KEY=test\n").expect("write .env");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+                .expect("set mode");
+            let check = env_file_check(&path);
+            assert_eq!(check.level, Level::Warn, "{}", check.detail);
+            assert!(check.detail.contains("0644"), "{}", check.detail);
+            assert!(check
+                .next_step()
+                .is_some_and(|step| step.contains("chmod 600")));
+
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .expect("set mode");
+            let check = env_file_check(&path);
+            assert_eq!(check.level, Level::Pass, "{}", check.detail);
+            assert!(check.next_step().is_none());
+        }
+
+        // A missing file is not a problem: the keyring is the primary path.
+        let missing = env_file_check(&directory.join("absent.env"));
+        assert_eq!(missing.level, Level::Info);
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 
     #[test]
     fn renders_each_status_and_check_name() {

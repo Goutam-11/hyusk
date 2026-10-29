@@ -275,7 +275,9 @@ tool returns a failure and the agent falls back to `accessibility`/`computer`.
 issues, next steps, and limitations. It does not request portal permission or
 prove that a specific click or screenshot will succeed. Use it when GNOME
 control fails repeatedly; a missing backend only affects its own path, not
-necessarily all desktop control.
+necessarily all desktop control. It also reports the mode of the local `.env`
+file, because a mode wider than `0600` lets other local accounts read the
+provider key.
 
 ## Instant commands
 

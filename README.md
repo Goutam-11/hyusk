@@ -71,6 +71,7 @@ From this directory:
 ```bash
 cd hyusk_agent
 cp .env.example .env
+chmod 600 .env   # the file holds a live provider key
 # Edit .env, or export the variables in your shell.
 cargo check
 cargo run
@@ -85,7 +86,10 @@ export OPENROUTER_BASE_URL='https://openrouter.ai/api/v1'
 ```
 
 `dotenvy` loads `.env` when present. Environment variables already set in the
-shell take precedence. Keep `.env` local; it is ignored by Git.
+shell take precedence. Keep `.env` local; it is ignored by Git. Give it mode
+`0600` so no other local account can read the key: `install-autostart.sh`
+tightens a wider mode when it runs, and `gnome_doctor` warns while the file is
+readable by others.
 
 Running the binary starts these components:
 

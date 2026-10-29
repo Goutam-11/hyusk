@@ -73,6 +73,7 @@ Create a local environment file:
 
 ```bash
 cp .env.example .env
+chmod 600 .env
 ```
 
 Set at least:
@@ -96,7 +97,9 @@ STT_MODEL=models/ggml-base.en.bin
 ```
 
 `.env` is ignored by Git. Do not commit credentials. Shell exports override
-values loaded from the file.
+values loaded from the file. Keep the mode at `0600`: it usually holds a live
+provider key, `scripts/install-autostart.sh` tightens a wider mode, and
+`gnome_doctor` reports `needs_attention` while other accounts can read it.
 
 Model files are runtime assets and `models/` is ignored by Git. Keep trained
 wake models, Whisper files, Piper voices, and downloaded negative datasets out
@@ -113,8 +116,8 @@ cargo clippy --all-targets
 cargo test --bin hyusk_agent
 ```
 
-`cargo test --all-targets` runs the full suite: 330 passing tests and 7
-ignored (the main binary alone: 309 passing, 6 ignored; shared model/stream
+`cargo test --all-targets` runs the full suite: 331 passing tests and 7
+ignored (the main binary alone: 310 passing, 6 ignored; shared model/stream
 tests are compiled into each binary). The ignored ones need a real session or
 network: the four portal smoke tests below, a live CDP browser test, a Whisper
 cancel/cache test, and the GTK workflow editor draft test. Coverage includes

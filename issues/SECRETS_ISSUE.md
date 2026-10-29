@@ -7,7 +7,7 @@ files and values that must not travel by accident.
 
 ## X1 — `.env` permissions
 
-- Status: open · Phase 1 · Priority: high
+- Status: done (tooling) · 2026-10-29 · commit TBD · Phase 1 · Priority: high
 - Owner: user applies the file-mode change in Phase 1; the installer, doctor,
   and docs work is the implementable part
 - Depends on: —
@@ -28,19 +28,41 @@ Out: moving keys to the keyring (already the primary path) and key rotation.
 
 **Acceptance criteria**
 
-- [ ] `.env` is `0600` on this machine (applied by the user in Phase 1).
-- [ ] The installer fixes a wider mode and reports it.
-- [ ] A doctor/check command flags `0644`.
-- [ ] `README.md` and `docs/development.md` say `0600`.
+- [ ] `.env` is `0600` on this machine (applied by the user in Phase 1). Still
+      `0644` as of this commit, by the decision that assigns the change to the
+      user. Run `chmod 600 .env` in the checkout; `gnome_doctor` now reports
+      `needs_attention` until then.
+- [x] The installer fixes a wider mode and reports it:
+      `scripts/install-autostart.sh` chmods an existing `.env` to `600` and
+      prints the previous mode. `scripts/setup-mobile-link.sh` already writes
+      `.env` through a `0600` temporary file before moving it into place.
+- [x] A doctor/check command flags `0644`: `gnome_doctor` gained an
+      `.env permissions` check that passes at `0600`, warns at any group/other
+      bit with the current mode, and stays quiet when the file is absent.
+- [x] `README.md` and `docs/development.md` say `0600`, with the reason and the
+      automatic enforcement.
 
 **Tests**
 
-- [ ] Installer script check in the existing shell test harness (if any), or a
-      documented manual check.
-- [ ] Doctor warning unit test with a temporary file.
+- [x] Doctor warning unit test with a temporary file
+      (`gnome_doctor::tests::env_file_mode_is_flagged_when_other_accounts_can_read_it`
+      covers `0644` → warn with a `chmod 600` next step, `0600` → pass, and a
+      missing file → info).
+- [ ] Installer script check: the repository has no shell test harness (the
+      `tests/` directory holds Python bridge/key checks), so this stays a
+      documented manual check: run `install-autostart.sh` against a `0644`
+      `.env` and confirm it prints the restriction and leaves mode `600`.
 
 **Files.** `.env` (local, not committed), `scripts/install-autostart.sh`,
-`scripts/`, `src/tools/gnome_doctor.rs`, `README.md`, `docs/development.md`.
+`src/tools/gnome_doctor.rs`, `README.md`, `docs/development.md`,
+`docs/tools.md`.
+
+**Notes (2026-10-29, implemented).** The doctor check is read-only and lives
+with the other readiness checks because that is the command the user already
+runs when something looks wrong; its name is `.env permissions` and its next
+step is the exact command. The installer enforces the mode before it builds, so
+a fresh install cannot leave the key readable. The mode change on this machine
+is deliberately left to the user, as the decision records.
 
 ## X2 — Redact secret-shaped output
 

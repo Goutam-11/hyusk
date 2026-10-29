@@ -55,6 +55,12 @@
 
 ### Changed
 
+- The `.env` file mode is enforced and reported. `install-autostart.sh` tightens
+  an existing `.env` to `0600` and prints the previous mode (the mobile-link
+  script already wrote through a `0600` temporary file), `gnome_doctor` reports
+  `.env permissions` with `needs_attention` and a `chmod 600 .env` next step
+  while other accounts can read it, and the setup docs tell the user to
+  `chmod 600 .env`.
 - A confirmation can now be granted for the rest of the turn. "Allow for this
   turn" — spoken as "allow for this turn" or "yes, for the rest of the task" —
   and the new **Allow for this turn** button in the GNOME card and the Noctalia

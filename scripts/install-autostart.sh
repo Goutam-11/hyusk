@@ -15,6 +15,17 @@ if [[ ! -f "$UNIT_SOURCE" ]]; then
   exit 1
 fi
 
+# .env holds a live provider key, so only its owner may read it. The runtime
+# reads it at startup; tighten a wider mode here and say so.
+ENV_FILE="$PROJECT_DIR/.env"
+if [[ -f "$ENV_FILE" ]]; then
+  ENV_MODE="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || true)"
+  if [[ -n "$ENV_MODE" && "$ENV_MODE" != "600" ]]; then
+    chmod 600 "$ENV_FILE"
+    echo "Restricted $ENV_FILE to mode 600 (was $ENV_MODE)."
+  fi
+fi
+
 echo "Building Hyusk release binary..."
 cargo build --release --manifest-path "$PROJECT_DIR/Cargo.toml"
 
