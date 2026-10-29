@@ -430,6 +430,277 @@ fn action(args: &Value) -> &str {
     args.get("action").and_then(Value::as_str).unwrap_or("")
 }
 
+/// The project root a shell command may write into: `HYUSK_WORKSPACE` when set,
+/// otherwise the working directory, canonicalised once per decision.
+pub fn project_root_from(
+    configured: Option<&std::ffi::OsStr>,
+    working_directory: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let candidate = match configured {
+        Some(path) if !path.is_empty() => std::path::PathBuf::from(path),
+        _ => working_directory.to_path_buf(),
+    };
+    candidate.canonicalize().ok()
+}
+
+fn project_root(working_directory: &std::path::Path) -> Option<std::path::PathBuf> {
+    project_root_from(
+        std::env::var_os("HYUSK_WORKSPACE").as_deref(),
+        working_directory,
+    )
+}
+
+/// Resolve an argument the way `sh -c` would see it, without touching the file.
+///
+/// `~` and `~/…` expand to the home directory; `~user` is not expanded and
+/// therefore never trusted. Variables and command substitution already fail
+/// [`simple_command_words`], so a path here is literal.
+fn absolute_argument(
+    argument: &str,
+    working_directory: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    if argument == "~" || argument.starts_with("~/") {
+        let home = std::env::var_os("HOME")?;
+        let mut expanded = std::path::PathBuf::from(home);
+        if let Some(rest) = argument.strip_prefix("~/") {
+            expanded.push(rest);
+        }
+        return Some(expanded);
+    }
+    if argument.starts_with('~') {
+        return None;
+    }
+    let path = std::path::Path::new(argument);
+    Some(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        working_directory.join(path)
+    })
+}
+
+/// Canonicalise the part of the path that exists, then normalise the rest, so
+/// neither `..` nor a symlink can hide a target outside the root.
+fn resolve_for_root_check(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+
+    let mut existing = path.to_path_buf();
+    let mut trailing: Vec<std::ffi::OsString> = Vec::new();
+    let mut resolved = loop {
+        match existing.canonicalize() {
+            Ok(canonical) => break canonical,
+            Err(_) => {
+                let Some(name) = existing.file_name().map(|name| name.to_os_string()) else {
+                    return path.to_path_buf();
+                };
+                trailing.push(name);
+                if !existing.pop() {
+                    return path.to_path_buf();
+                }
+            }
+        }
+    };
+    for part in trailing.into_iter().rev() {
+        resolved.push(part);
+    }
+    let mut normalised = std::path::PathBuf::new();
+    for component in resolved.components() {
+        match component {
+            Component::ParentDir => {
+                normalised.pop();
+            }
+            Component::CurDir => {}
+            other => normalised.push(other),
+        }
+    }
+    normalised
+}
+
+/// True when every path the command names stays inside `root`.
+fn path_inside_root(
+    argument: &str,
+    root: &std::path::Path,
+    working_directory: &std::path::Path,
+) -> bool {
+    let Some(absolute) = absolute_argument(argument, working_directory) else {
+        return false;
+    };
+    resolve_for_root_check(&absolute).starts_with(root)
+}
+
+/// Programs that write files: free only when every path stays in the project.
+const PROJECT_FILE_OPERATIONS: &[&str] = &["mkdir", "touch", "cp", "mv", "ln", "install"];
+
+/// Destructive or ownership-changing programs always ask, whatever the paths.
+const DESTRUCTIVE_PROGRAMS: &[&str] = &[
+    "rm", "rmdir", "shred", "truncate", "chmod", "chown", "chgrp", "dd", "mkfs", "wipefs",
+];
+
+/// Every path argument a file operation names, or `None` when an option is not
+/// understood (an unknown option asks rather than guessing).
+fn file_operation_paths(program: &str, arguments: &[String]) -> Option<Vec<String>> {
+    let mut paths = Vec::new();
+    let mut index = 0;
+    let mut options_ended = false;
+    while index < arguments.len() {
+        let argument = &arguments[index];
+        index += 1;
+        if !options_ended && argument == "--" {
+            options_ended = true;
+            continue;
+        }
+        if !options_ended && argument.starts_with("--") {
+            let (name, inline) = match argument.split_once('=') {
+                Some((name, value)) => (name, Some(value.to_string())),
+                None => (argument.as_str(), None),
+            };
+            let takes_value = matches!(
+                name,
+                "--target-directory" | "--mode" | "--reference" | "--date"
+            );
+            let value = if takes_value {
+                match inline {
+                    Some(value) => value,
+                    None => {
+                        let value = arguments.get(index)?.clone();
+                        index += 1;
+                        value
+                    }
+                }
+            } else {
+                if inline.is_some() {
+                    return None;
+                }
+                String::new()
+            };
+            match name {
+                // A value that names a path must also stay inside the root.
+                "--target-directory" | "--reference" => paths.push(value),
+                // Values that are not paths.
+                "--mode" | "--date" => {}
+                // Flags that change no path.
+                "--parents"
+                | "--verbose"
+                | "--force"
+                | "--interactive"
+                | "--no-clobber"
+                | "--recursive"
+                | "--archive"
+                | "--symbolic-link"
+                | "--symbolic"
+                | "--preserve"
+                | "--no-target-directory"
+                | "--no-dereference"
+                | "--relative"
+                | "--logical"
+                | "--physical"
+                | "--directory"
+                | "--no-create"
+                | "--preserve-timestamps" => {}
+                _ => return None,
+            }
+            continue;
+        }
+        if !options_ended && argument.starts_with('-') && argument.len() > 1 {
+            let mut cluster = argument[1..].chars().peekable();
+            while let Some(flag) = cluster.next() {
+                let value_flag = matches!(flag, 't' | 'm' | 'r' | 'd' | 'S' | 'o' | 'g')
+                    && matches!(
+                        (program, flag),
+                        ("mkdir", 'm')
+                            | ("install", 'm')
+                            | ("install", 'o')
+                            | ("install", 'g')
+                            | ("cp", 't')
+                            | ("mv", 't')
+                            | ("ln", 't')
+                            | ("install", 't')
+                            | ("touch", 'r')
+                            | ("touch", 'd')
+                            | ("touch", 't')
+                    );
+                if value_flag {
+                    let rest: String = cluster.collect();
+                    let value = if rest.is_empty() {
+                        let value = arguments.get(index)?.clone();
+                        index += 1;
+                        value
+                    } else {
+                        rest
+                    };
+                    // `touch -r` names a reference file and `-t` on the file
+                    // operations names a target directory; the rest are values.
+                    let names_a_path =
+                        (program == "touch" && flag == 'r') || (program != "touch" && flag == 't');
+                    if names_a_path {
+                        paths.push(value);
+                    }
+                    break;
+                }
+                let allowed = matches!(
+                    (program, flag),
+                    ("mkdir", 'p')
+                        | ("mkdir", 'v')
+                        | ("touch", 'a')
+                        | ("touch", 'c')
+                        | ("touch", 'm')
+                        | ("touch", 'h')
+                        | ("cp", 'r')
+                        | ("cp", 'R')
+                        | ("cp", 'a')
+                        | ("cp", 'f')
+                        | ("cp", 'i')
+                        | ("cp", 'n')
+                        | ("cp", 'v')
+                        | ("cp", 's')
+                        | ("cp", 'L')
+                        | ("cp", 'P')
+                        | ("mv", 'f')
+                        | ("mv", 'i')
+                        | ("mv", 'n')
+                        | ("mv", 'v')
+                        | ("ln", 's')
+                        | ("ln", 'f')
+                        | ("ln", 'i')
+                        | ("ln", 'n')
+                        | ("ln", 'v')
+                        | ("ln", 'r')
+                        | ("ln", 'L')
+                        | ("ln", 'P')
+                        | ("ln", 'T')
+                        | ("install", 'd')
+                        | ("install", 'v')
+                        | ("install", 'p')
+                );
+                if !allowed {
+                    return None;
+                }
+            }
+            continue;
+        }
+        paths.push(argument.clone());
+    }
+    Some(paths)
+}
+
+/// A project file operation is free only when every path it names resolves
+/// inside the root; anything conservative asks.
+fn project_file_operation_is_free(
+    program: &str,
+    arguments: &[String],
+    root: &std::path::Path,
+    working_directory: &std::path::Path,
+) -> bool {
+    let Some(paths) = file_operation_paths(program, arguments) else {
+        return false;
+    };
+    if paths.is_empty() {
+        return false;
+    }
+    paths
+        .iter()
+        .all(|path| path_inside_root(path, root, working_directory))
+}
+
 fn shell_requires_approval(args: &Value) -> bool {
     let Some(command) = args.get("command").and_then(Value::as_str) else {
         return true;
@@ -499,6 +770,23 @@ fn shell_requires_approval(args: &Value) -> bool {
         "cargo" => rest.first().is_some_and(|sub| {
             matches!(sub.as_str(), "test" | "check" | "build" | "fmt" | "clippy")
         }),
+        // File operations are free only when every path they name stays inside
+        // the project root (S1).
+        program if PROJECT_FILE_OPERATIONS.contains(&program) => {
+            match (
+                project_root(std::path::Path::new(".")),
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|cwd| cwd.canonicalize().ok()),
+            ) {
+                (Some(root), Some(cwd)) => {
+                    project_file_operation_is_free(program, &rest, &root, &cwd)
+                }
+                _ => false,
+            }
+        }
+        // Destructive and ownership-changing programs always ask.
+        program if DESTRUCTIVE_PROGRAMS.contains(&program) => false,
         // Permit ordinary bare GUI launches through shell, while arguments
         // and detached modes remain subject to the conservative checks below.
         "firefox" | "chromium" | "chromium-browser" | "google-chrome" | "spotify" | "nautilus"
@@ -987,6 +1275,120 @@ mod tests {
         requires_approval as check, Decision, ToolName, PREVIEW_LIMIT,
     };
     use serde_json::Value;
+
+    /// A temp project root with a file and a directory inside it.
+    fn project_fixture(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "hyusk-s1-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("sub")).expect("fixture directory");
+        std::fs::write(root.join("a.txt"), "hello").expect("fixture file");
+        root.canonicalize().expect("canonical fixture root")
+    }
+
+    fn free(program: &str, arguments: &[&str], root: &std::path::Path) -> bool {
+        let arguments = arguments
+            .iter()
+            .map(|argument| (*argument).to_string())
+            .collect::<Vec<_>>();
+        super::project_file_operation_is_free(program, &arguments, root, root)
+    }
+
+    #[test]
+    fn project_file_operations_are_free_only_inside_the_root() {
+        let root = project_fixture("inside");
+        for (program, arguments) in [
+            ("mkdir", vec!["-p", "build", "build/sub"]),
+            ("mkdir", vec!["build"]),
+            ("touch", vec!["x.txt"]),
+            ("cp", vec!["a.txt", "b.txt"]),
+            ("mv", vec!["a.txt", "sub/moved.txt"]),
+            ("ln", vec!["-s", "a.txt", "link.txt"]),
+            ("cp", vec!["-r", "sub", "sub-copy"]),
+            // Option handling: `--`, `-t`, and inline long options.
+            ("mkdir", vec!["--", "build"]),
+            ("cp", vec!["-t", "sub", "a.txt"]),
+            ("cp", vec!["--target-directory=sub", "a.txt"]),
+            ("mv", vec!["-t", "sub", "a.txt"]),
+            // `.` and `..` inside the root are fine once resolved.
+            ("cp", vec!["a.txt", "sub/../b.txt"]),
+            ("cp", vec![".", "sub/."]),
+        ] {
+            assert!(
+                free(program, &arguments, &root),
+                "{program} {arguments:?} should run free inside the root"
+            );
+        }
+
+        let outside = std::env::temp_dir().join("hyusk-s1-outside-target.txt");
+        for (program, arguments) in [
+            ("cp", vec!["a.txt", "../escaped.txt"]),
+            ("mkdir", vec!["-p", "../escaped"]),
+            ("mv", vec!["a.txt", outside.to_str().unwrap()]),
+            ("cp", vec!["-t", "/outside", "a.txt"]),
+            ("cp", vec!["--target-directory=/outside", "a.txt"]),
+            ("touch", vec!["~/notes.txt"]),
+            ("cp", vec!["~/notes.txt", "."]),
+            ("ln", vec!["-s", "/etc/passwd", "link"]),
+            // Unknown options are not guessed at.
+            ("cp", vec!["-z", "a.txt", "b.txt"]),
+            ("cp", vec!["--reflink=auto", "a.txt", "b.txt"]),
+            // No path at all is not a project write.
+            ("mkdir", vec![]),
+        ] {
+            assert!(
+                !free(program, &arguments, &root),
+                "{program} {arguments:?} should ask"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn destructive_programs_always_ask() {
+        for command in [
+            "rm -rf build",
+            "rmdir build",
+            "shred a.txt",
+            "truncate -s 0 a.txt",
+            "chmod 600 a.txt",
+            "chown root a.txt",
+        ] {
+            let input = serde_json::json!({ "command": command }).to_string();
+            assert!(check("shell", &input), "{command} must always ask");
+        }
+    }
+
+    #[test]
+    fn the_project_root_is_hyusk_workspace_else_the_working_directory() {
+        let root = project_fixture("root-selection");
+        let configured = Some(root.as_os_str());
+        assert_eq!(
+            super::project_root_from(configured, &root),
+            Some(root.clone())
+        );
+        assert_eq!(
+            super::project_root_from(None, &root),
+            Some(root.clone()),
+            "an unset HYUSK_WORKSPACE falls back to the working directory"
+        );
+        assert_eq!(
+            super::project_root_from(Some(std::ffi::OsStr::new("")), &root),
+            Some(root.clone()),
+            "an empty value is treated as unset"
+        );
+        assert_eq!(
+            super::project_root_from(Some(std::ffi::OsStr::new("/nonexistent/hyusk")), &root),
+            None,
+            "a root that does not exist cannot be trusted"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn approval_preview_names_the_tool_and_its_key_arguments() {

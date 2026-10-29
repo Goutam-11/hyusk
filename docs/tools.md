@@ -341,6 +341,15 @@ Modes:
 This tool is appropriate for shell features such as pipelines and redirection.
 It executes arbitrary commands as the current user.
 
+The approval classifier parses one simple command. A short list of read-only
+programs (`pwd`, `ls`, `cat`, `rg`, `sed -n`, `git status`, `cargo test`, and
+others) runs freely. `mkdir`, `touch`, `cp`, `mv`, `ln`, and `install` also run
+freely, but only when every path they name stays inside the project root -
+`HYUSK_WORKSPACE` when set, otherwise the process working directory. `~` is
+expanded for that check, `..` is resolved, and an unknown option asks rather
+than being guessed at. Destructive and ownership-changing programs (`rm`,
+`rmdir`, `shred`, `truncate`, `chmod`, `chown`) always ask, whatever the paths.
+
 ## Process
 
 `ProcessTool` launches an executable directly, without shell parsing.

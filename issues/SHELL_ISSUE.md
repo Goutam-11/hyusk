@@ -8,7 +8,7 @@ and `mv` prompt while `cat` and `rg` do not.
 
 ## S1 — Project-scoped shell writes
 
-- Status: open · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
 - Depends on: A8
 - Evidence: `src/tools/safety.rs:60-154`
 
@@ -31,22 +31,44 @@ read-only rule.
 
 **Acceptance criteria**
 
-- [ ] `mkdir -p build`, `cp a b`, `mv a b`, `touch x`, `ln -s a b` inside the
+- [x] `mkdir -p build`, `cp a b`, `mv a b`, `touch x`, `ln -s a b` inside the
       root do not ask.
-- [ ] The same commands with a target outside the root ask.
-- [ ] `rm`, `rmdir`, `shred`, `truncate`, `chmod`, `chown` always ask.
-- [ ] `cp -t /outside a` and `cp --target-directory=/outside a` ask.
-- [ ] `cp ~/notes.txt .` is evaluated against the expanded home path and asks.
-- [ ] With `HYUSK_WORKSPACE` unset, the working directory is the root.
+- [x] The same commands with a target outside the root ask.
+- [x] `rm`, `rmdir`, `shred`, `truncate`, `chmod`, `chown` always ask.
+- [x] `cp -t /outside a` and `cp --target-directory=/outside a` ask.
+- [x] `cp ~/notes.txt .` is evaluated against the expanded home path and asks.
+- [x] With `HYUSK_WORKSPACE` unset, the working directory is the root.
 
 **Tests**
 
-- [ ] Temp-directory fixture with an explicit root.
-- [ ] Table of allow and ask cases, including `--`, `-t`, `~`, and `..`
+- [x] Temp-directory fixture with an explicit root
+      (`safety::tests::project_file_operations_are_free_only_inside_the_root`
+      builds a real root and passes both root and working directory
+      explicitly, so no test mutates the environment).
+- [x] Table of allow and ask cases, including `--`, `-t`, `~`, and `..`
       traversal.
-- [ ] Root selection precedence test.
+- [x] Root selection precedence test
+      (`the_project_root_is_hyusk_workspace_else_the_working_directory`).
+- [x] `destructive_programs_always_ask`.
 
-**Files.** `src/tools/safety.rs`, tests beside it.
+**Files.** `src/tools/safety.rs`, `docs/tools.md`.
+
+**Notes (2026-10-29, implemented).** `PROJECT_FILE_OPERATIONS` lists the six
+programs; `DESTRUCTIVE_PROGRAMS` names the always-ask set explicitly so the
+catch-all is not the only thing refusing them. `file_operation_paths` parses
+each program's known flags, treats `-t`/`--target-directory` and `touch -r` as
+paths, consumes value options such as `-m`/`--mode` without treating them as
+paths, and returns `None` for any option it does not know, which asks.
+
+`path_inside_root` expands `~` and `~/…` (a bare `~user` is not expanded and
+asks), makes the path absolute against the working directory, canonicalises the
+deepest existing ancestor so symlinks and `..` are resolved, then normalises the
+remaining components lexically and compares with the canonical root. A root
+that cannot be canonicalised is not trusted, so the call asks.
+
+Drift: the Evidence range (`safety.rs:60-154`) still described the pre-A8
+classifier; the arm now lives in the `match program` inside
+`shell_requires_approval`.
 
 ## S2 — Read confinement and secret denylist
 

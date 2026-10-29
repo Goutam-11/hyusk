@@ -55,6 +55,12 @@
 
 ### Changed
 
+- Routine project file work no longer prompts: `mkdir`, `touch`, `cp`, `mv`,
+  `ln`, and `install` run without approval when every path they name stays
+  inside the project root (`HYUSK_WORKSPACE`, else the working directory). `~`
+  is expanded and `..` resolved before the check, `-t`/`--target-directory` are
+  treated as paths, unknown options ask, and `rm`, `rmdir`, `shred`,
+  `truncate`, `chmod`, and `chown` always ask.
 - The `.env` file mode is enforced and reported. `install-autostart.sh` tightens
   an existing `.env` to `0600` and prints the previous mode (the mobile-link
   script already wrote through a `0600` temporary file), `gnome_doctor` reports
