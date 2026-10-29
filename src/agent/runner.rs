@@ -2494,6 +2494,105 @@ mod tests {
         Ok(())
     }
 
+    struct BrowserStub(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Tool for BrowserStub {
+        fn name(&self) -> &str {
+            "browser"
+        }
+
+        fn description(&self) -> &str {
+            "Test browser mutation."
+        }
+
+        async fn execute(&self, _input: &str) -> Result<ToolResult> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolResult::success("clicked"))
+        }
+    }
+
+    fn browser_click(id: &str, selector: &str) -> Value {
+        json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
+            {"id":id,"type":"function","function":{"name":"browser","arguments":json!({"action":"click","target_id":"tab-1","selector":selector}).to_string()}}
+        ]},"finish_reason":"tool_calls"}]})
+    }
+
+    #[tokio::test]
+    async fn a_turn_grant_covers_repeated_browser_mutations() -> Result<()> {
+        let (base, _requests) = serve_scripted(vec![
+            browser_click("call-a", "#go"),
+            final_reply(),
+            browser_click("call-b", "#next"),
+            final_reply(),
+            browser_click("call-c", "#third"),
+            final_reply(),
+        ])
+        .await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(BrowserStub(Arc::clone(&executions)));
+        let mut agent = Agent::new(
+            OpenRouterClient::new("local-test".into(), base),
+            "test-model".into(),
+            tools,
+        );
+        agent.messages = vec![Message::system("Test")];
+
+        // Turn 1: a click is held and the preview names the action and the
+        // target, so the user approves the mutation rather than a paraphrase.
+        agent
+            .handle(
+                "click the Go button".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            )
+            .await?;
+        assert!(agent.awaiting_approval());
+        assert_eq!(
+            agent.pending_approval_preview(),
+            Some("browser action=click target_id=tab-1 selector=#go")
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+
+        // Turn 2: the grant covers the stored click and the next one, which is
+        // a different selector but the same mutation.
+        agent
+            .handle(
+                "allow for this turn".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            )
+            .await?;
+        assert!(
+            !agent.awaiting_approval(),
+            "the click grant covers the next click"
+        );
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            2,
+            "the approved click and the matching follow-up both ran"
+        );
+
+        // Turn 3: a new turn asks again.
+        agent
+            .handle(
+                "click the third link".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            )
+            .await?;
+        assert!(
+            agent.awaiting_approval(),
+            "a new turn asks again for the same mutation"
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn a_turn_grant_does_not_cover_a_different_program() -> Result<()> {
         let (base, _requests) = serve_scripted(vec![

@@ -314,8 +314,10 @@ attached; sign in separately in the automation profile if needed.
 
 The tool lists tabs, reads page text and control selectors, navigates, clicks,
 fills fields, and presses supported keys without desktop screenshots or focus
-switching. See [Browser control](docs/browser-control.md) for configuration and
-limits, including iframe/canvas fallback.
+switching. Reading and navigating are free; clicking, filling, and pressing a
+key ask first, and "Allow for this turn" covers the rest of the flow's clicks.
+See [Browser control](docs/browser-control.md) for configuration and limits,
+including iframe/canvas fallback.
 
 ### `computer`
 

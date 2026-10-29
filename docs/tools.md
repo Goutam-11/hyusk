@@ -206,6 +206,14 @@ Actions are `status`, `start`, `new_tab`, `tabs`, `read`, `navigate`, `click`,
 targets; navigation refuses `javascript:` URLs. Cross-origin iframes and
 canvas-only UIs are not reachable this way, so fall back to `computer`.
 
+`status`, `start`, `new_tab`, `tabs`, `read`, and `navigate` run freely;
+`click`, `fill`, and `press_key` ask for confirmation, because the automation
+profile can still submit forms, post comments, or buy something. The card names
+the action, the target id, and the selector or text. "Allow for this turn"
+covers later calls with the same mutation, so a multi-step flow needs one
+approval, while a different mutation asks again. An action the policy does not
+know asks rather than runs.
+
 ## Accessibility
 
 `AccessibilityTool` drives GUI applications through Linux AT-SPI2. Rust spawns
@@ -582,6 +590,8 @@ The tool platform has guardrails but no sandbox:
   path on the denylist is refused outright, before any card is armed.
 - `computer` typing and key input ask when the focused window is a terminal (or
   the focus cannot be read), and the card names the terminal.
+- `browser` mutations (`click`, `fill`, `press_key`) ask; reads and navigation
+  stay free, and an unknown action fails closed.
 - Foreground `shell` commands are bounded at 120 s with truncated output; a
   turn is cancellable and tool loops stop after configured rounds/time.
 - None of that confines an approved action: `shell` can still read, modify, or

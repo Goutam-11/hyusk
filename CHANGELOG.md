@@ -55,6 +55,12 @@
 
 ### Changed
 
+- Browser mutations now ask for confirmation. `browser click`, `fill`, and
+  `press_key` arm the usual card, while `status`, `start`, `new_tab`, `tabs`,
+  `read`, and `navigate` stay free; an action the policy does not know asks
+  rather than runs. The preview names the action, target id, and selector or
+  text, and "Allow for this turn" covers later clicks in the same turn, because
+  a browser grant is keyed by the mutation.
 - Typing and key input now ask for confirmation while a terminal is focused.
   `computer type_text`, `key_press`, and `key_combo` can run a shell command
   through a terminal window, so the gate reads the focused window from the

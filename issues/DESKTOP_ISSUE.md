@@ -99,7 +99,7 @@ key-input path that can press Enter.
 
 ## D2 — Classify browser mutations
 
-- Status: open · Phase 2 · Priority: medium
+- Status: done · 2026-10-29 · commit `D2PENDING` · Phase 2 · Priority: medium
 - Depends on: A8
 - Evidence: `src/tools/safety.rs:8-24`, `src/tools/browser.rs:471-480`
 
@@ -117,17 +117,43 @@ decide whether a form is sensitive.
 
 **Acceptance criteria**
 
-- [ ] `navigate` and `read` stay free.
-- [ ] `click`, `fill`, `press_key` ask and are covered by an
+- [x] `navigate` and `read` stay free.
+- [x] `click`, `fill`, `press_key` ask and are covered by an
       "allow for this turn" grant.
-- [ ] The approval preview names the action, target id, and selector or text.
+- [x] The approval preview names the action, target id, and selector or text.
 
 **Tests**
 
-- [ ] Policy table cases for all six gated actions.
+- [x] Policy table cases for every action: six free
+      (`status`, `start`, `new_tab`, `tabs`, `read`, `navigate`), three gated
+      (`click`, `fill`, `press_key`), plus an unknown action and malformed
+      arguments (`browser_navigation_stays_free_and_mutations_ask`).
+- [x] Preview cases for `fill` and `press_key`
+      (`approval_preview_names_the_tool_and_its_key_arguments`).
+- [x] Grant coverage end to end
+      (`a_turn_grant_covers_repeated_browser_mutations`) and the grant shape
+      (`a_turn_grant_is_keyed_by_tool_and_shape`).
 
-**Files.** `src/tools/safety.rs`, `src/tools/browser.rs`, `docs/tools.md`,
-`README.md`.
+**Files.** `src/tools/safety.rs`, `src/agent/runner.rs`, `docs/tools.md`,
+`README.md`, `AGENTS.md`, `CHANGELOG.md`.
+
+**Notes (2026-10-29, implemented).** The `browser` row is
+`Decision::Classified(browser_requires_approval)`. The classifier is a
+whitelist of the six read/navigation actions, so `click`, `fill`, and
+`press_key` ask and any future action asks until it is named as free. The
+preview keys are now `action`, `target_id`, `selector`, `text`, `key`, `url`, so
+a card names the mutation, the tab, and the selector or text.
+
+A6 needed no change: `grant_key` already keys non-shell tools by their action,
+so one "allow for this turn" covers subsequent clicks (a different selector is
+the same shape) while a `fill` or `press_key` in the same turn asks again. The
+new runner test drives that end to end with a browser stub.
+
+Drift: the Tests line asked for "policy table cases for all six gated actions",
+which contradicts the Decision's three gated actions. The table was treated as
+the decision and the tests cover all nine actions; recorded here rather than
+redesigning the policy. Evidence drift: `safety.rs:8-24` now points at the
+`ToolName`/`Decision` definitions, and the `browser` row lives in `policy()`.
 
 ## D3 — Capability registry for portal and AT-SPI
 

@@ -152,15 +152,13 @@ impl ToolName {
                            reset, or place an order asks, and an unrecognised action asks",
                 preview_keys: &["action", "name", "text", "action_name"],
             },
-            // Every browser action is currently allowed. D2 classifies the
-            // mutations (click, fill, press_key); until then this row records
-            // today's decision rather than pretending they are gated.
             ToolName::Browser => ToolPolicy {
-                decision: Decision::Allow,
-                guidance: "every action runs without confirmation today, including \
-                           click, fill, and press_key, so only act on the page when the \
-                           user asked for that outcome",
-                preview_keys: &["action", "url", "selector", "key", "target_id"],
+                decision: Decision::Classified(browser_requires_approval),
+                guidance: "status, start, new_tab, tabs, read, and navigate run freely; \
+                           click, fill, and press_key ask, and an unknown action asks too \
+                           - the automation profile has its own sign-ins, but the page can \
+                           still submit forms, post comments, or buy something",
+                preview_keys: &["action", "target_id", "selector", "text", "key", "url"],
             },
             ToolName::Computer => ToolPolicy {
                 decision: Decision::Contextual(computer_requires_approval_with_context),
@@ -524,6 +522,16 @@ fn memory_requires_approval(args: &Value) -> bool {
 
 fn window_requires_approval(args: &Value) -> bool {
     action(args) == "close"
+}
+
+/// Read-only and navigation actions stay free; every action that mutates the
+/// page or types into it asks. The match is a whitelist, so an action the table
+/// does not know asks rather than runs (D2).
+fn browser_requires_approval(args: &Value) -> bool {
+    !matches!(
+        action(args),
+        "status" | "start" | "new_tab" | "tabs" | "read" | "navigate"
+    )
 }
 
 fn action(args: &Value) -> &str {
@@ -2297,6 +2305,21 @@ mod tests {
             preview("window", r#"{"action":"close"}"#),
             "window action=close"
         );
+        // A browser mutation names the action, target, and selector or text.
+        assert_eq!(
+            preview(
+                "browser",
+                r##"{"action":"fill","target_id":"tab-1","selector":"#q","text":"hello"}"##
+            ),
+            "browser action=fill target_id=tab-1 selector=#q text=hello"
+        );
+        assert_eq!(
+            preview(
+                "browser",
+                r#"{"action":"press_key","target_id":"tab-1","key":"Enter"}"#
+            ),
+            "browser action=press_key target_id=tab-1 key=Enter"
+        );
     }
 
     #[test]
@@ -2366,6 +2389,19 @@ mod tests {
         assert_eq!(
             key("task", r#"{"action":"delegate","profile":"workspace"}"#),
             Some(("task".into(), "workspace".into()))
+        );
+        // A browser grant is keyed by the mutation, so one approval covers the
+        // rest of the turn's clicks but never a different mutation.
+        assert_eq!(
+            key(
+                "browser",
+                r##"{"action":"click","target_id":"tab-1","selector":"#go"}"##
+            ),
+            Some(("browser".into(), "click".into()))
+        );
+        assert_ne!(
+            key("browser", r#"{"action":"click","target_id":"tab-1"}"#),
+            key("browser", r#"{"action":"fill","target_id":"tab-1"}"#)
         );
         // A shape that cannot be determined is never granted.
         assert_eq!(key("shell", r#"{"command":"rm -rf x && echo done"}"#), None);
@@ -2638,6 +2674,38 @@ mod tests {
             "computer",
             r#"{"action":"click_text","text":"Open settings"}"#
         ));
+    }
+
+    #[test]
+    fn browser_navigation_stays_free_and_mutations_ask() {
+        for input in [
+            r#"{"action":"status"}"#,
+            r#"{"action":"start"}"#,
+            r#"{"action":"new_tab"}"#,
+            r#"{"action":"tabs"}"#,
+            r#"{"action":"read","target_id":"tab-1"}"#,
+            r#"{"action":"navigate","target_id":"tab-1","url":"https://example.com"}"#,
+        ] {
+            assert!(
+                !check("browser", input),
+                "a read or navigation action must stay free: {input}"
+            );
+        }
+        for input in [
+            r##"{"action":"click","target_id":"tab-1","selector":"#go"}"##,
+            r##"{"action":"fill","target_id":"tab-1","selector":"#q","text":"hello"}"##,
+            r#"{"action":"press_key","target_id":"tab-1","key":"Enter"}"#,
+            // An action the table does not know fails closed.
+            r#"{"action":"download","target_id":"tab-1"}"#,
+            r#"{"action":"click"}"#,
+            "{}",
+            "not json",
+        ] {
+            assert!(
+                check("browser", input),
+                "a browser mutation must ask: {input}"
+            );
+        }
     }
 
     #[test]
