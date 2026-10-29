@@ -283,7 +283,7 @@ were at `reply.rs:122-142` when this was written; the tables now start at
 
 ## A5 — Unrelated speech cancels the pending action and proceeds
 
-- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit `13d955d` · Phase 1 · Priority: high
 - Depends on: A4
 - Evidence: `src/agent/runner.rs:718-773`
 
