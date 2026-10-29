@@ -188,7 +188,17 @@ endpointing section.
 
 ---
 
-## D5 — Architecture statements about wake and optional tools (P2)
+## D5 — Architecture statements about wake and optional tools (P2) — resolved 2026-10-29
+
+**Status:** resolved. The wake sentence now distinguishes a typed message
+(immediate cancellation) from a wake word during a running turn (speech probe
+first; only a non-empty transcript replaces the turn). Tool registration is
+described as `browser` when CDP configuration loads and Linux
+`accessibility`/`window`/`gnome_doctor` unconditionally. The full candidate
+order is listed in both files. The same stale claims were corrected in
+[`README.md`](../README.md#L40) (status row, startup list, interruption prose,
+and wake-model fallback) and the echo-cancellation bullet in
+[`docs/voice-and-ui.md`](../docs/voice-and-ui.md#L213-L231).
 
 **Files:** [`ARCHITECTURE.md`](../ARCHITECTURE.md#L44-L48),
 [`docs/architecture.md`](../docs/architecture.md#L54-L68)
@@ -202,9 +212,10 @@ endpointing section.
 Do **not** change [`docs/architecture.md:202`](../docs/architecture.md#L202)
 ("A new `UserInput` … cancels the active turn"); that one is correct.
 
-**Fix:** reword the wake sentence to "a wake word starts a speech probe; a
-non-empty transcribed instruction replaces the turn", update the registration
-sentence, and list the real auto-discovery candidates.
+**Fix applied:** the wake sentence now says a wake word starts a speech probe and
+only a non-empty transcribed instruction replaces the turn; the registration
+sentence is corrected; and the real auto-discovery candidates are listed. The
+same corrections were applied to `README.md`.
 
 ---
 
@@ -255,9 +266,9 @@ must stay, gate it with an approval and avoid returning the secret verbatim.
   `8ee8c37` (standalone workspace), plus the D3/D7 changes once made.
 - **README project layout** ([`README.md:687-L733`](../README.md#L687-L733)):
   add `Cargo.lock` now that it is committed and owned by this crate.
-- **README status table** ([`README.md:46`](../README.md#L46)): "uses
-  `hey_hyusk.onnx` or `hey_livekit.onnx`" omits the auto-discovered
-  `alexa`/`hey_jarvis`/`hey_mycroft`/`hey_rhasspy` classifiers.
+- **README status table** ([`README.md:46`](../README.md#L46)): the
+  `hey_hyusk`/`hey_livekit`-only wording omits the auto-discovered
+  `alexa`/`hey_jarvis`/`hey_mycroft`/`hey_rhasspy` classifiers — fixed with D5.
 - **CHANGELOG "Added"** (Unreleased, key-management bullet) repeated the
   "keys never enter … the runtime control file" claim — fixed with D1.
 - **`docs/development.md:5-L8`:** the historical reference to
@@ -281,6 +292,10 @@ must stay, gate it with an approval and avoid returning the secret verbatim.
 
 ## Resolved
 
+- **D5 (architecture statements)** was corrected on 2026-10-29: the wake
+  probe/no-cancel distinction, unconditional Linux tool registration, and the
+  full wake-classifier candidate order now match `runtime.rs` and `main.rs`; the
+  same claims were fixed in `README.md` and `docs/voice-and-ui.md`.
 - **D4 (voice-and-ui.md)** was corrected on 2026-10-29: the stale recording
   duration, removed `speak_async` reference, fixed-window limitation,
   cancellation claim, and text-display claim now match the implementation.

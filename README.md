@@ -37,13 +37,13 @@ fresh clone of this repository builds, tests, and installs on its own with
 | Animated desktop status overlay | Implemented, visual only |
 | Desktop/GUI control | Implemented; GNOME/Wayland uses the desktop portal with a one-time approval |
 | Accessibility control | Implemented; AT-SPI2 via a `pyatspi` bridge for fast app control |
-| Interruptible async turns | Implemented; a new message or wake word cancels the current model/tool/TTS work |
+| Interruptible async turns | Implemented; a new typed message cancels immediately, and a wake-word probe replaces the turn when non-empty speech is transcribed |
 | Circular desktop orb | Implemented; optional when the GNOME top-bar indicator is installed |
 | GNOME top-bar indicator | Implemented as a Shell extension in `gnome-extension/` |
 | Noctalia bar widget (niri, Hyprland, Sway) | Implemented as a Noctalia v5 plugin in `noctalia-plugin/` |
 | Persistent memory | Implemented; SQLite + FTS5 hybrid retrieval, knowledge-graph triples, readable Markdown export |
 | System context in prompt | Implemented; OS, distro, session type, host, date/time |
-| Wake-word detection | Optional; uses `hey_hyusk.onnx` or the temporary `hey_livekit.onnx` |
+| Wake-word detection | Optional; auto-selects the first available of `hey_hyusk`, `hey_livekit`, `alexa`, `nihao_livekit`, `hey_jarvis`, `hey_mycroft`, `hey_rhasspy` |
 | Speech-to-text | Connected to the wake flow when a Whisper model loads |
 | Text-to-speech | Invoked and awaited after responses; depends on local tools |
 | Guarded long-running model/tool loops | Implemented; configurable round/time limits, cancellation, and no-progress detection |
@@ -57,9 +57,9 @@ downloaded temporary `hey_livekit.onnx` classifier. The detector is optional:
 startup logs a warning and continues in text/GUI mode when no classifier is
 available. Downloads are handled by `scripts/download-wake-word.sh`.
 
-`WAKE_WORD_MODEL` selects the classifier. When it is unset and
-`models/hey_hyusk.onnx` is absent, `models/hey_livekit.onnx` is used
-automatically.
+`WAKE_WORD_MODEL` selects the classifier. When it is unset, the first available
+candidate is used automatically in the order `hey_hyusk`, `hey_livekit`, `alexa`,
+`nihao_livekit`, `hey_jarvis`, `hey_mycroft`, `hey_rhasspy`.
 Set `WAKE_DEBUG=1` to print live audio level, gate, and per-classifier
 confidence scores while tuning the detector. STT is initialized from `STT_MODEL` and falls back to text-only
 mode when it cannot load.
@@ -91,8 +91,10 @@ Running the binary starts these components:
 
 1. Load configuration and create the OpenRouter client.
 2. Register the desktop, shell, media, memory, scheduling, and task tools.
-   `browser`, `accessibility`, `window`, and `gnome_doctor` are registered when
-   their backends are available; `mobile` joins only with the Android link.
+   `browser` registers when its CDP configuration loads; on Linux,
+   `accessibility`, `window`, and `gnome_doctor` register unconditionally and
+   report unavailability at call time. `mobile` joins only with the Android
+   link.
 3. Check for a default microphone.
 4. Initialize speech-to-text from `STT_MODEL` when available.
 5. Start the agent event task, catalog refresh, and control-file poller.
@@ -627,10 +629,11 @@ if your microphone produces too many isolated false positives.
 ## Interruptions and UI
 
 `run_agent_task` keeps receiving events while a turn is running. A new typed
-message, or the wake word, cancels the in-flight model request, tool call, and
-Linux TTS playback, then starts the replacement turn. The conversation rolls
-back to the state before the cancelled turn, so partial tool-call messages are
-not replayed.
+message cancels the in-flight model request, tool call, and Linux TTS playback,
+then starts the replacement turn. A wake word during a running turn records a
+speech probe while the turn continues; only a non-empty transcription replaces
+the turn and stops playback. The conversation rolls back to the state before
+the cancelled turn, so partial tool-call messages are not replayed.
 
 There are two optional status UIs:
 

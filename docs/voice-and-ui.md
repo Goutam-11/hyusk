@@ -219,9 +219,10 @@ top bar. See [gnome-indicator.md](gnome-indicator.md).
   capped at eight seconds, so a long dictation is truncated.
 - There is no echo cancellation. While the agent is producing output the clap
   scanner is disabled and the wake-word threshold is raised so it does not
-  trigger on its own TTS, but the wake word stays live: saying "alexa" during a
-  turn barges in, stops the agent, and starts listening again. A new wake word
-  also stops Linux TTS.
+  trigger on its own TTS, but the wake word stays live. During a text-model turn
+  a wake word starts a speech probe while the turn continues; only a non-empty
+  transcript replaces the turn and stops Linux TTS. Nova Sonic keeps its own
+  streaming barge-in path.
 - The `eframe` orb does not display transcripts or response text; the GNOME
   response card and the Noctalia tooltip show the latest response.
 - The **Stop** control ends the active turn, and **Stop listening** ends an

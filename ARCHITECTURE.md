@@ -41,10 +41,13 @@ main.rs
 The voice path is connected when the wake model and Whisper model are available:
 `WakeWordDetector` pauses after `WakeWordDetected`, `run_agent_task` records and
 transcribes the command with `SpeechToText`, resumes the detector, and emits
-`UserInput`. A new typed message or wake word cancels the active turn and its
-Linux TTS playback. The temporary `models/hey_livekit.onnx` classifier is
-selected automatically when `models/hey_hyusk.onnx` is absent. The overlay draws
-a black circular orb but does not render response text. See
+`UserInput`. A new typed message cancels the active turn and its Linux TTS
+playback. A wake word during a running turn records a speech probe while the
+turn continues; only a non-empty transcription replaces the turn and stops
+playback. The first available classifier is selected automatically in the order
+`hey_hyusk`, `hey_livekit`, `alexa`, `nihao_livekit`, `hey_jarvis`,
+`hey_mycroft`, `hey_rhasspy`. The overlay draws a black circular orb but does
+not render response text. See
 [`docs/voice-and-ui.md`](docs/voice-and-ui.md) for the exact behavior.
 
 ## Runtime characteristics

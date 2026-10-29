@@ -50,8 +50,9 @@ for the microphone at the same time.
    keyring, then the environment (`model::configured_client`).
 2. Read the saved provider/model selection from `~/.config/hyusk/config.json`,
    falling back to `OPENROUTER_MODEL` and the first configured provider.
-3. Register the core tools, then the optional `browser`, `accessibility`,
-   `window`, and `gnome_doctor` tools when their backends are available.
+3. Register the core tools, the `browser` tool when its CDP configuration
+   loads, and on Linux the `accessibility`, `window`, and `gnome_doctor` tools
+   unconditionally (they report unavailability at call time).
 4. Start the optional TLS link server and register `mobile` when
    `HYUSK_LINK_ENABLED` is set.
 5. Construct `Agent` and `SharedActiveModel` with a per-turn system prompt and
@@ -65,7 +66,8 @@ for the microphone at the same time.
     the indicators.
 11. If `WAKE_WORD_ENABLED` is truthy, try to construct `WakeWordDetector` from
     `WAKE_WORD_MODELS`, `WAKE_WORD_MODEL`, or the first available candidate
-    (`hey_hyusk.onnx`, `hey_livekit.onnx`, `nihao_livekit.onnx`). The threshold,
+    (`hey_hyusk.onnx`, `hey_livekit.onnx`, `alexa.onnx`, `nihao_livekit.onnx`,
+    `hey_jarvis.onnx`, `hey_mycroft.onnx`, `hey_rhasspy.onnx`). The threshold,
     noise floor, and cooldown come from `WAKE_WORD_THRESHOLD`,
     `WAKE_WORD_MIN_RMS`, and `WAKE_WORD_COOLDOWN_MS`. A missing or incompatible
     model logs a warning and skips wake detection instead of stopping startup.
