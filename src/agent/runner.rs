@@ -1409,11 +1409,37 @@ async fn execute_tool(
         result = tool.execute(arguments) => Some(result),
     } {
         None => Ok(ToolResult::failure("Action cancelled.")),
-        Some(Ok(result)) => Ok(result),
-        Some(Err(error)) => Ok(ToolResult::failure(format!(
+        Some(Ok(result)) => Ok(redact_tool_result(result)),
+        Some(Err(error)) => Ok(redact_tool_result(ToolResult::failure(format!(
             "Tool execution error: {error:#}"
-        ))),
+        )))),
     }
+}
+
+/// Redact secret-shaped values before a tool result reaches the session, the
+/// journal, the provider request, or status text (X2). The note tells the model
+/// that the output was edited and how many values were replaced.
+fn redact_tool_result(mut result: ToolResult) -> ToolResult {
+    let (output, output_replaced) = crate::tools::redact::redact(&result.output);
+    let (error, error_replaced) = match result.error {
+        Some(error) => {
+            let (redacted, replaced) = crate::tools::redact::redact(&error);
+            (Some(redacted), replaced)
+        }
+        None => (None, 0),
+    };
+    let replaced = output_replaced + error_replaced;
+    result.output = output;
+    result.error = error;
+    if replaced > 0 {
+        let note = crate::tools::redact::note(replaced);
+        if !result.output.is_empty() {
+            result.output.push_str(&note);
+        } else if let Some(error) = result.error.as_mut() {
+            error.push_str(&note);
+        }
+    }
+    result
 }
 
 async fn execute_tool_with_deadline(
@@ -1493,9 +1519,10 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        build_system_prompt, confirms, is_denial, is_voice_session_stop, parse_structured_reply,
-        rejects_image_input, split_image_marker, strip_image_inputs, tool_call_signature, Agent,
-        AgentLoopLimits, PendingApproval, ToolProgress,
+        build_system_prompt, confirms, execute_tool_with_deadline, is_denial,
+        is_voice_session_stop, parse_structured_reply, rejects_image_input, split_image_marker,
+        strip_image_inputs, tool_call_signature, Agent, AgentLoopLimits, PendingApproval,
+        ToolProgress,
     };
     use crate::{
         model::openrouter::OpenRouterClient,
@@ -2065,6 +2092,66 @@ mod tests {
             !result.text().contains("Pending confirmation"),
             "{}",
             result.text()
+        );
+        Ok(())
+    }
+
+    struct LeakyTool;
+
+    #[async_trait]
+    impl Tool for LeakyTool {
+        fn name(&self) -> &str {
+            "leaky"
+        }
+
+        fn description(&self) -> &str {
+            "Returns a credential for the redaction test."
+        }
+
+        async fn execute(&self, _input: &str) -> Result<ToolResult> {
+            Ok(ToolResult::success(
+                "OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef\n\
+                 -----BEGIN OPENSSH PRIVATE KEY-----\n\
+                 b3BlbnNzaC1rZXktdjEAAAAA\n\
+                 -----END OPENSSH PRIVATE KEY-----\n\
+                 all done",
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_output_is_redacted_before_it_becomes_a_result() -> Result<()> {
+        let mut tools = ToolRegistry::new();
+        tools.register(LeakyTool);
+
+        let (result, timed_out) = execute_tool_with_deadline(
+            &tools,
+            "leaky",
+            "{}",
+            &CancellationToken::new(),
+            Duration::from_secs(5),
+        )
+        .await?;
+
+        assert!(!timed_out);
+        assert!(result.success);
+        assert!(
+            !result.output.contains("sk-or-v1-0123456789abcdef"),
+            "{}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("b3BlbnNzaC1rZXktdjEAAAAA"),
+            "{}",
+            result.output
+        );
+        assert!(result.output.contains("OPENROUTER_API_KEY=[redacted]"));
+        assert!(result.output.contains("[redacted private key]"));
+        assert!(result.output.contains("all done"));
+        assert!(
+            result.output.contains("redacted 2 secret-shaped value(s)"),
+            "{}",
+            result.output
         );
         Ok(())
     }

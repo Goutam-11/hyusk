@@ -630,6 +630,19 @@ The tool platform has guardrails but no sandbox:
   controls MPRIS players, and `computer` can move the real pointer, click,
   type, and read the clipboard or screen. It can trigger irreversible GUI
   actions.
+- Tool output is redacted before it becomes a tool result. A bounded pass
+  replaces private-key blocks (`-----BEGIN … PRIVATE KEY-----` to the matching
+  end marker, removed entirely), credential token prefixes (OpenRouter/OpenAI
+  `sk-…`, GitHub `ghp_…`/`github_pat_…`, Slack `xox?-…`, AWS `AKIA…`/`ASIA…`,
+  Google `AIza…`, Hugging Face `hf_…`, GitLab `glpat-…`, npm, PyPI, SendGrid,
+  DigitalOcean, Shopify, and JWTs), the value after a `Bearer` scheme, and any
+  value of 12 or more characters assigned to a secret-shaped name
+  (`OPENROUTER_API_KEY=…`, `"api_secret": "…"`, `?access_token=…`) with
+  `[redacted]`. The line shape is preserved and the result ends with one note
+  naming how many values were replaced, so the model knows the output was
+  edited. The raw value never reaches the session file or the provider request.
+  The pass is deliberately bounded: an unrecognised secret shape can still
+  pass, and over-redaction is preferred to leaking a value.
 - Tool output and screenshots are sent back to the remote model provider.
 - API keys live in the login keyring and are not persisted in `commands.json`
   or the session snapshot. The Noctalia panel hands a key to the agent through

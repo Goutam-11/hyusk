@@ -66,7 +66,7 @@ is deliberately left to the user, as the decision records.
 
 ## X2 — Redact secret-shaped output
 
-- Status: open · Phase 2 · Priority: medium
+- Status: done · 2026-10-29 · commit `X2PENDING` · Phase 2 · Priority: medium
 - Depends on: S2
 - Evidence: `src/tools/shell.rs` (output path), `src/agent/runner/session.rs`
 
@@ -86,18 +86,58 @@ detection, which is not achievable.
 
 **Acceptance criteria**
 
-- [ ] A printed `OPENROUTER_API_KEY=…` becomes `OPENROUTER_API_KEY=[redacted]`.
-- [ ] A PEM block is removed entirely.
-- [ ] The session file and journal do not contain the original value.
-- [ ] Redaction is documented in `docs/tools.md`.
+- [x] A printed `OPENROUTER_API_KEY=…` becomes `OPENROUTER_API_KEY=[redacted]`.
+- [x] A PEM block is removed entirely (one `[redacted private key]` line
+      replaces it, including when the block is unterminated).
+- [x] The session file and journal do not contain the original value. The
+      journal stores tool arguments, not output, so only redacted output can
+      reach it; the session is covered by a save-and-read round-trip test.
+- [x] Redaction is documented in `docs/tools.md` (security model).
 
 **Tests**
 
-- [ ] Pattern table with positive and negative cases.
-- [ ] Session round-trip test.
+- [x] Pattern table with positive and negative cases
+      (`tools::redact::tests`: assignments in env/JSON/URL forms, token
+      prefixes, bearer values, PEM blocks, ordinary text that must stay).
+- [x] Session round-trip test
+      (`a_redacted_tool_result_round_trips_without_the_secret`), plus the
+      execution choke point
+      (`tool_output_is_redacted_before_it_becomes_a_result`).
 
-**Files.** a small `src/tools/redact.rs` or helper in `safety.rs`,
-`src/agent/runner.rs`, `src/agent/runner/session.rs`.
+**Files.** `src/tools/redact.rs` (new), `src/tools/mod.rs`,
+`src/agent/runner.rs`, `src/agent/runner/session.rs`, `docs/tools.md`,
+`AGENTS.md`, `CHANGELOG.md`.
+
+**Notes (2026-10-29, implemented).** `tools::redact::redact` walks the output
+once: it removes `-----BEGIN … PRIVATE KEY-----` blocks up to their matching
+`-----END …-----` marker, replaces credential token prefixes (OpenRouter/OpenAI,
+GitHub, Slack, AWS, Google, Hugging Face, GitLab, npm, PyPI, SendGrid,
+DigitalOcean, Shopify, JWTs) when the remainder is long enough that an ordinary
+word cannot match, replaces the value after a `Bearer` scheme, and replaces
+values of 12 or more characters assigned to a secret-shaped name. The last rule
+reads `=`, `:`, and quoted JSON keys, so env dumps, `"api_secret": "…"`, and
+`?access_token=…` are all covered, while `TOKEN_COUNT=5`, `key=true`, and a
+`monkey` stay readable. The line shape is preserved and one note
+(`[Hyusk redacted N secret-shaped value(s) from this output]`) is appended so
+the model knows the output was edited.
+
+The pass runs once in `execute_tool`, which is the choke point for the text
+runner, the Nova Sonic loop, and the instant command lane. Everything
+downstream - the tool result message, the session save, the status card text,
+the spoken summary in the fast lane, and the provider request - therefore sees
+the redacted text. The journal stores tool arguments rather than output, so it
+cannot carry a redacted value by itself.
+
+Over-redaction is deliberate and documented: `[redacted]` inside a value,
+`PASSWORD_POLICY="must be 12 chars"`, and a long value under a `key` field are
+all possible false positives, and a false redaction costs one confused line
+whereas a missed secret is permanent. The pass cannot find an unrecognised
+shape, which the docs say plainly.
+
+Drift: the Evidence named `shell.rs` as the output path, but the single place
+every lane shares is `runner::execute_tool`; redacting there is what makes the
+session, the provider request, and the fast lane consistent. The session file
+is a sink, not the source, and is covered by its own round-trip test.
 
 ## X3 — Private runtime files
 

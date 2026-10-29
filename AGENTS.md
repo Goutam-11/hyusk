@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **357 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **364 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -128,6 +128,13 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   capability fails with a capability error; `unknown` allows the attempt. The
   state appears as one line in the per-turn desktop context and in
   `gnome_doctor`. The record is process-local and never persisted.
+- Tool output (X2): `tools::redact::redact` runs once in `execute_tool`, the
+  choke point for the text runner, Nova Sonic, and the instant lane, before the
+  result reaches the session, the provider request, or status text. It replaces
+  private-key blocks, token prefixes, bearer credentials, and long values
+  assigned to secret-shaped names with `[redacted]`/`[redacted private key]` and
+  appends one count note. It is bounded and over-redacts rather than leaking;
+  never remove the pass to "clean up" output.
 - Wake defaults: `WAKE_CLAP_ENABLED` and `WAKE_WORD_DENOISE` are off unless set;
   `.env.example` documents both.
 - Never print `.env` contents or API keys. Keys are keyring-first, then

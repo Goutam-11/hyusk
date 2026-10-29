@@ -459,6 +459,43 @@ mod tests {
     }
 
     #[test]
+    fn a_redacted_tool_result_round_trips_without_the_secret() {
+        let path = test_session_path("redacted");
+        let (output, replaced) =
+            crate::tools::redact::redact("OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef");
+        assert_eq!(replaced, 1);
+        let output = format!("{output}{}", crate::tools::redact::note(replaced));
+        // A tool result is kept only after the assistant call it answers.
+        let call: Message = serde_json::from_value(json!({
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {
+                    "name": "shell",
+                    "arguments": "{\"command\":\"printenv OPENROUTER_API_KEY\"}"
+                }
+            }]
+        }))
+        .expect("assistant tool call");
+        let messages = vec![
+            Message::user("check the key"),
+            call,
+            Message::tool_result("call-1", output),
+        ];
+
+        save_session_to_path(&path, &messages, &[], false, "openrouter", "model-x");
+
+        let text = String::from_utf8(fs::read(&path).expect("session file")).expect("utf-8");
+        assert!(
+            !text.contains("sk-or-v1-0123456789abcdef"),
+            "the session kept the secret: {text}"
+        );
+        assert!(text.contains("[redacted]"), "{text}");
+        fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
     fn session_save_roundtrips_and_sets_private_file_mode() {
         let path = test_session_path("roundtrip");
         let messages = vec![Message::user("hello"), Message::assistant("world")];

@@ -11,6 +11,7 @@ pub mod mobile;
 #[cfg(target_os = "linux")]
 pub mod portal;
 pub mod process;
+pub mod redact;
 pub mod registry;
 pub mod safety;
 pub mod scheduler;

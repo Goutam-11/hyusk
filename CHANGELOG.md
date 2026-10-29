@@ -55,6 +55,16 @@
 
 ### Changed
 
+- Tool output is redacted before it becomes a tool result. A bounded pass
+  replaces private-key blocks, common credential token prefixes (OpenRouter,
+  OpenAI, GitHub, Slack, AWS, Google, Hugging Face, GitLab, npm, PyPI, JWTs),
+  values after a `Bearer` scheme, and long values assigned to secret-shaped
+  names (`OPENROUTER_API_KEY=…`, `"api_secret": "…"`, `?access_token=…`) with
+  `[redacted]` or `[redacted private key]`. The result keeps its line shape and
+  ends with a note naming how many values were replaced, so the model knows the
+  output was edited. The raw value no longer reaches the session file, the
+  provider request, or status text. Redaction is deliberately bounded and
+  over-redacts rather than leaking; the rule is documented in `docs/tools.md`.
 - Click labels are classified more narrowly. Words that commit a payment,
   deletion, transfer, removal, reset, or uninstall still ask whatever else the
   label says, and "place order" asks; a submission word (`submit`, `send`,
