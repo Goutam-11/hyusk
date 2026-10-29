@@ -219,7 +219,17 @@ same corrections were applied to `README.md`.
 
 ---
 
-## D6 — Mobile-link sync claims are ahead of the implementation (P2)
+## D6 — Mobile-link sync claims are ahead of the implementation (P2) — resolved 2026-10-29
+
+**Status:** resolved. [`docs/mobile-link-protocol.md`](../docs/mobile-link-protocol.md)
+now marks `memory.sync` and `workflow.sync` as reserved in v1, describes the
+acknowledge-and-drop behaviour (`{"accepted": true}`), documents the real v1
+payload shapes, and keeps the revision/tombstone/conflict semantics as the
+target contract. It also notes that `turn.submit` accepts but does not enforce
+`source_device`, `target_device`, `timeout_ms`, `idempotency_key`, and
+`workflow`. `README.md` carried no sync claim and
+[`docs/android-agent.md`](../docs/android-agent.md#L30-L33) was already correct,
+so neither needed a change.
 
 **Files:** [`docs/mobile-link-protocol.md`](../docs/mobile-link-protocol.md#L32-L49),
 [`README.md`](../README.md#L53), [`docs/android-agent.md`](../docs/android-agent.md#L30-L33)
@@ -233,11 +243,10 @@ pending, then drops the payloads
 says automatic merge is disabled; the protocol document presents it as
 implemented.
 
-**Fix:** mark the two methods as **reserved / accepted but not merged** in
-protocol v1, describe the current no-op behavior, and keep the target semantics
-as a future contract. Optionally note that `turn.submit` context fields
-(`source_device`, `target_device`, `timeout_ms`, `idempotency_key`) are
-accepted but not yet enforced.
+**Fix applied:** the two methods are marked **reserved / accepted but not
+merged** in protocol v1, the current no-op behaviour is described, and the
+target semantics remain a future contract. `turn.submit` context fields are
+noted as accepted but not yet enforced.
 
 ---
 
@@ -292,6 +301,11 @@ must stay, gate it with an approval and avoid returning the secret verbatim.
 
 ## Resolved
 
+- **D6 (mobile-link sync)** was corrected on 2026-10-29: the protocol document
+  now marks `memory.sync`/`workflow.sync` reserved in v1, documents the
+  acknowledge-and-drop behaviour and v1 payloads, and keeps conflict/tombstone
+  semantics as a target contract; `turn.submit` context fields are noted as
+  unenforced.
 - **D5 (architecture statements)** was corrected on 2026-10-29: the wake
   probe/no-cancel distinction, unconditional Linux tool registration, and the
   full wake-classifier candidate order now match `runtime.rs` and `main.rs`; the

@@ -22,28 +22,47 @@ untrusted input, not a system instruction.
 
 | Method | Direction | Purpose |
 | --- | --- | --- |
-| `device.hello` | both | Version, device identity, and capability negotiation. |
+| `device.hello` | both | Version and device identity; the phone sends capability flags, which v1 ignores. |
 | `device.ping` | both | Liveness without changing state. |
 | `turn.submit` | phone → laptop | Submit text with source and target device. |
 | `turn.cancel` | both | Cancel the named turn or remote action. |
 | `device.invoke` | laptop → phone | Invoke one structured phone capability. |
 | `approval.resolve` | both | Approve or deny the exact pending operation. |
 | `event.subscribe` | phone → laptop | Subscribe to state, response, tool, and approval events. |
-| `memory.sync` | both | Exchange revisioned encrypted memory records. |
-| `workflow.sync` | both | Exchange revisioned workflow records. |
+| `memory.sync` | both | Reserved in v1: memory records are accepted and acknowledged but not merged. |
+| `workflow.sync` | both | Reserved in v1: workflow records are accepted and acknowledged but not merged. |
 
 Every state-changing request includes a correlation identifier, source device,
 target device, timeout, declared risk, and idempotency key where replay is safe.
 Unknown fields are ignored only when protocol compatibility says they are
 optional; unknown methods return the standard JSON-RPC method-not-found error.
+`turn.submit` currently acts on `text` and echoes `turn_id`; `source_device`,
+`target_device`, `timeout_ms`, `idempotency_key`, and `workflow` are accepted
+but not yet enforced.
+
+## Sync methods (reserved in v1)
+
+`memory.sync` and `workflow.sync` are accepted for forward compatibility. The
+phone advertises both capabilities in `device.hello`, but the laptop ignores the
+flags and v1 does not merge data. The laptop validates the payload, logs the
+item count, drops it, and answers `{"accepted": true}`. No records are returned,
+stored, or applied, so phone and laptop storage remain separate (see
+[android-agent.md](android-agent.md)).
+
+The payloads are `memory.sync` `{cursor?, items[]}` with
+`{id, content, updated_at?}` items and `workflow.sync` `{revision?, workflows[]}`
+with `{id, name, prompt, enabled}` items. These shapes are the v1 wire format,
+not a merge contract.
+
+The target semantics, to be enabled only once conflict, deletion, and
+encryption are defined: records carry a UUID, scope, origin device, base laptop
+revision, current laptop revision, encrypted payload, and tombstone. A stale
+base revision produces a visible conflict; neither side silently overwrites it.
 
 ## Reconnect and replay
 
-The client reconnects with capped exponential backoff. Only idempotent state
-sync and explicitly scheduled operations may remain queued. Calls, messages,
-clipboard reads, destructive actions, shell commands, and approvals are never
-replayed after a disconnect.
-
-Memory and workflow records include UUID, scope, origin device, base laptop
-revision, current laptop revision, encrypted payload, and tombstone. A stale
-base revision produces a visible conflict; neither side silently overwrites it.
+The client reconnects with capped exponential backoff. Once state sync is
+implemented, only idempotent sync requests and explicitly scheduled operations
+may remain queued; v1 does not replay the reserved sync methods on its own.
+Calls, messages, clipboard reads, destructive actions, shell commands, and
+approvals are never replayed after a disconnect.
