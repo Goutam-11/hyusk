@@ -638,6 +638,22 @@ impl Agent {
         Some(plan.spoken)
     }
 
+    /// The focused window, read only for calls whose decision depends on it
+    /// (D1). An unreadable focus is [`FocusContext::unknown`], which asks.
+    async fn focus_context(
+        &self,
+        name: &str,
+        arguments: &str,
+    ) -> crate::tools::safety::FocusContext {
+        if !crate::tools::safety::requires_focus_context(name, arguments) {
+            return crate::tools::safety::FocusContext::unknown();
+        }
+        crate::tools::window::focused_window()
+            .await
+            .map(|(app, title)| crate::tools::safety::FocusContext::new(app, title))
+            .unwrap_or_default()
+    }
+
     /// Perform one model request.
     ///
     /// When a speech sink is present the reply streams, and its speakable text
@@ -1043,8 +1059,13 @@ impl Agent {
                             let _ = tx.try_send(HyuskEvent::ToolStarted { name: name.clone() });
                         }
 
+                        // Typing and key input are classified by the focused
+                        // window, so read it only for those calls (D1).
+                        let focus = self.focus_context(&name, &args_str).await;
                         let requires_approval =
-                            crate::tools::safety::requires_approval(&name, &args_str);
+                            crate::tools::safety::requires_approval_with_context(
+                                &name, &args_str, &focus,
+                            );
                         // "Allow for this turn" covers later calls with the same
                         // tool shape, so they run without another card.
                         let granted = requires_approval && self.turn_granted(&name, &args_str);
@@ -1078,7 +1099,9 @@ impl Agent {
                             // so the card names exactly what approval will run.
                             let arguments =
                                 crate::tools::safety::approval_arguments(&name, &args_str);
-                            let preview = crate::tools::safety::preview(&name, &arguments);
+                            let preview = crate::tools::safety::preview_with_context(
+                                &name, &arguments, &focus,
+                            );
                             self.pending_approval = Some(PendingApproval {
                                 name: name.clone(),
                                 arguments,

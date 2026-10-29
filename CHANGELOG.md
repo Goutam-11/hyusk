@@ -55,6 +55,15 @@
 
 ### Changed
 
+- Typing and key input now ask for confirmation while a terminal is focused.
+  `computer type_text`, `key_press`, and `key_combo` can run a shell command
+  through a terminal window, so the gate reads the focused window from the
+  `window` tool and asks when it is a terminal, naming it in the approval
+  preview; outside a terminal they stay free, so TUI driving needs one approval
+  rather than one per keystroke. If the focus cannot be read the action asks,
+  which fails closed. The same decision applies in the text runner and the Nova
+  Sonic loop. The terminal list is built in and can be extended with
+  `HYUSK_TERMINAL_APPS` (comma-separated application names).
 - The instant command lane now obeys the approval policy. If any step of a
   parsed command would ask — `mute` and `brightness up`/`down` run `pactl` or
   `brightnessctl`, and `lock the screen` runs `loginctl` — nothing executes and

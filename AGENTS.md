@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **342 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **348 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -105,6 +105,12 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   `truncate`, `chmod`, `chown`, `chgrp`, `dd`, `mkfs`, `wipefs` always ask; a
   program named by a path (`./ls`, `/tmp/x/ls`) never inherits the bare name's
   decision and asks too (S3).
+- `computer` (D1): `type_text`, `key_press`, and `key_combo` ask while a terminal
+  is focused (the card names it) and ask when the focus cannot be read; the text
+  runner and the Nova Sonic loop both pass the `window` tool's focus to
+  `safety::requires_approval_with_context`. The terminal list is explicit plus
+  `HYUSK_TERMINAL_APPS`. Adding a context-sensitive decision means adding a
+  `Decision::Contextual` row, not a second gate.
 - Wake defaults: `WAKE_CLAP_ENABLED` and `WAKE_WORD_DENOISE` are off unless set;
   `.env.example` documents both.
 - Never print `.env` contents or API keys. Keys are keyring-first, then

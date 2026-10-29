@@ -131,6 +131,7 @@ or times out, the wake event is ignored and the terminal input path still works.
 | `HYUSK_WORKSPACE` | No | Current directory | Workspace root for Codex CLI coding mode and for a workspace `task` delegation that names no root. |
 | `MODEL_VISION` | No | `1` | Attach screenshots as image content for vision-capable models. Set `0` for text-only models, then use `ocr` instead. |
 | `ORB_STEAL_FOCUS` | No | `0` | Let the orb take keyboard focus while active. Default is off so portal keyboard input goes to the controlled app. |
+| `HYUSK_TERMINAL_APPS` | No | built-in list | Extra terminal application names, comma-separated, whose focused window makes `computer` typing and key input ask. |
 | `HYUSK_ORB` | No | auto | Set `0` to disable the orb, `1` to force it. By default the orb is skipped when the GNOME indicator extension is enabled. |
 | `HYUSK_SCREENSHOT_RETENTION_SECS` | No | `900` | Delete temporary screenshots older than this. |
 | `HYUSK_SCREENSHOT_MAX_FILES` | No | `30` | Maximum temporary screenshots retained. |
@@ -322,6 +323,11 @@ Controls the local GUI without going through the shell. It supports status and
 screenshot/OCR inspection, mouse movement/click/drag, scrolling, typing, key
 presses, key combos, and short waits. Coordinates are global pixels with the
 origin at the top-left.
+
+Typing and key presses ask for confirmation while a terminal is focused, because
+the keystrokes could run a shell command; the card names the terminal. Outside a
+terminal they stay free, and an unreadable focus asks too. Add a terminal that is
+not recognised with `HYUSK_TERMINAL_APPS` (comma-separated application names).
 
 ```json
 { "action": "screenshot" }

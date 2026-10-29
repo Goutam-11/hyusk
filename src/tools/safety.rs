@@ -40,6 +40,41 @@ pub enum Decision {
     /// Decided from the call's JSON arguments by this rule. A tool that must
     /// always ask uses a rule that returns true.
     Classified(fn(&Value) -> bool),
+    /// Decided from the call's arguments and the desktop focus context (D1).
+    /// Without context the rule is asked with [`FocusContext::unknown`], so
+    /// callers that cannot supply it fail closed.
+    Contextual(fn(&Value, &FocusContext) -> bool),
+}
+
+/// What the runner knows about the focused window when it asks the gate (D1).
+///
+/// Typing and key input reach whatever has focus, so the decision depends on
+/// it. Both fields are `None` when the focus could not be read, and such a call
+/// asks rather than runs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FocusContext {
+    /// The focused application's name or app id.
+    pub app: Option<String>,
+    /// The focused window's title, kept for the approval preview.
+    pub title: Option<String>,
+}
+
+impl FocusContext {
+    /// No readable focus: context-sensitive calls ask.
+    pub fn unknown() -> Self {
+        Self::default()
+    }
+
+    /// The focus the runner read from the `window` tool. An empty application
+    /// name is no focus at all, so the call asks.
+    pub fn new(app: impl Into<String>, title: impl Into<String>) -> Self {
+        let app = app.into();
+        let app = (!app.trim().is_empty()).then_some(app);
+        Self {
+            app,
+            title: Some(title.into()),
+        }
+    }
 }
 
 /// One row of the approval policy table.
@@ -128,10 +163,12 @@ impl ToolName {
                 preview_keys: &["action", "url", "selector", "key", "target_id"],
             },
             ToolName::Computer => ToolPolicy {
-                decision: Decision::Classified(computer_requires_approval),
+                decision: Decision::Contextual(computer_requires_approval_with_context),
                 guidance: "screenshots, OCR, find, cursor, app state, mouse moves, clicks, \
-                           scrolling, typing, single key presses, and setting clipboard \
-                           text run freely; reading or clearing the clipboard, \
+                           scrolling, and setting clipboard text run freely; typing and \
+                           single key presses also run freely, except when a terminal is \
+                           focused or the focus cannot be read, because the keystrokes \
+                           could run a shell command; reading or clearing the clipboard, \
                            click_text or an accessibility click on a consequential label \
                            (send, delete, pay, submit, and so on), and shortcuts that \
                            commit or quit (ctrl, alt, meta, or super with enter, delete, \
@@ -222,11 +259,14 @@ impl ToolName {
 }
 
 impl ToolPolicy {
-    /// True when this call must be held for the user.
-    pub fn asks(self, args: &Value) -> bool {
+    /// True when this call must be held for the user, given what the runner
+    /// knows about the focused window (D1). Without context a contextual row
+    /// asks, which is the fail-closed answer.
+    pub fn asks_with_context(self, args: &Value, context: &FocusContext) -> bool {
         match self.decision {
             Decision::Allow => false,
             Decision::Classified(rule) => rule(args),
+            Decision::Contextual(rule) => rule(args, context),
         }
     }
 }
@@ -295,6 +335,24 @@ pub const PREVIEW_LIMIT: usize = 120;
 /// Arguments that are not a JSON object render as the tool name alone; such a
 /// call cannot run, and the gate still holds it.
 pub fn preview(name: &str, arguments: &str) -> String {
+    truncate_preview(&render_preview(name, arguments))
+}
+
+/// The preview plus the focused terminal when that is why the gate asks, so a
+/// card about typing says where the keystrokes will land (D1).
+pub fn preview_with_context(name: &str, arguments: &str, context: &FocusContext) -> String {
+    let mut text = render_preview(name, arguments);
+    if requires_focus_context(name, arguments) {
+        if let Some(app) = context.app.as_deref().map(str::trim) {
+            if is_terminal_app(app) {
+                text.push_str(&format!(" (focused: {app})"));
+            }
+        }
+    }
+    truncate_preview(&text)
+}
+
+fn render_preview(name: &str, arguments: &str) -> String {
     let mut text = name.to_string();
     let args = serde_json::from_str::<Value>(arguments).unwrap_or(Value::Null);
     for (key, value) in preview_fields(name, &args) {
@@ -303,7 +361,7 @@ pub fn preview(name: &str, arguments: &str) -> String {
         text.push('=');
         text.push_str(&value);
     }
-    truncate_preview(&text)
+    text
 }
 
 /// The one sentence that names an armed call. The tool result and every status
@@ -374,15 +432,48 @@ pub fn policy_for(name: &str) -> Option<ToolPolicy> {
 }
 
 /// Return true when this tool call should be held for user approval.
+///
+/// Callers that can read the desktop should use
+/// [`requires_approval_with_context`]; this wrapper asks for every call whose
+/// decision depends on the focused window, which is the fail-closed answer.
 pub fn requires_approval(name: &str, arguments: &str) -> bool {
+    requires_approval_with_context(name, arguments, &FocusContext::unknown())
+}
+
+/// Return true when this tool call should be held for user approval, given the
+/// focused window the runner read (D1).
+pub fn requires_approval_with_context(name: &str, arguments: &str, context: &FocusContext) -> bool {
     let Ok(args) = serde_json::from_str::<Value>(arguments) else {
         return true;
     };
     // An unknown tool name fails closed: a tool registered without a policy
     // entry must ask, so a new tool can never quietly skip the gate.
     match policy_for(name) {
-        Some(policy) => policy.asks(&args),
+        Some(policy) => policy.asks_with_context(&args, context),
         None => true,
+    }
+}
+
+/// True when the decision for this call depends on which window has focus, so
+/// the runner reads it only for these calls (D1).
+pub fn requires_focus_context(name: &str, arguments: &str) -> bool {
+    if name != "computer" {
+        return false;
+    }
+    let Ok(args) = serde_json::from_str::<Value>(arguments) else {
+        return false;
+    };
+    computer_call_uses_focus(&args)
+}
+
+fn computer_call_uses_focus(args: &Value) -> bool {
+    match action(args) {
+        "type_text" | "key_press" | "key_combo" => true,
+        "batch" => args
+            .get("steps")
+            .and_then(Value::as_array)
+            .is_some_and(|steps| steps.iter().any(computer_call_uses_focus)),
+        _ => false,
     }
 }
 
@@ -1389,12 +1480,22 @@ fn process_requires_approval(args: &Value) -> bool {
                 .all(|value| value.starts_with("https://") || value.starts_with("http://")))
 }
 
-fn computer_requires_approval(args: &Value) -> bool {
+fn computer_requires_approval_with_context(args: &Value, context: &FocusContext) -> bool {
+    // Typing and key input reach whatever has focus. In a terminal the
+    // keystrokes can run a shell command, and an unreadable focus could be a
+    // terminal, so both ask (D1).
+    if computer_call_uses_focus(args) && !focus_is_safe(context) {
+        return true;
+    }
     match action(args) {
         "batch" => args
             .get("steps")
             .and_then(Value::as_array)
-            .map(|steps| steps.iter().any(computer_requires_approval))
+            .map(|steps| {
+                steps
+                    .iter()
+                    .any(|step| computer_requires_approval_with_context(step, context))
+            })
             .unwrap_or(true),
         // Setting clipboard text is a routine, reversible local operation.
         // Reading or clearing it can expose/remove unrelated user data.
@@ -1403,8 +1504,8 @@ fn computer_requires_approval(args: &Value) -> bool {
         "click_text" => {
             is_consequential_text(args.get("text").and_then(Value::as_str).unwrap_or(""))
         }
-        // Single keys are core navigation and editing. Labeled commits and
-        // consequential keyboard shortcuts are handled separately.
+        // Outside a terminal, single keys are core navigation and editing.
+        // Labeled commits and consequential keyboard shortcuts still ask.
         "key_press" => false,
         "key_combo" => {
             args.get("keys")
@@ -1437,6 +1538,83 @@ fn computer_requires_approval(args: &Value) -> bool {
         "app_state" => false,
         _ => true,
     }
+}
+
+/// True when focus was read and the focused application is not a terminal.
+fn focus_is_safe(context: &FocusContext) -> bool {
+    context
+        .app
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|app| !app.is_empty() && !is_terminal_app(app))
+}
+
+/// Terminal application names, lower-case app ids and window application names
+/// as GNOME and niri report them. Extend with `HYUSK_TERMINAL_APPS` rather than
+/// a code change; new terminals appear regularly (D1).
+const TERMINAL_APPS: &[&str] = &[
+    "alacritty",
+    "com.mitchellh.ghostty",
+    "console",
+    "contour",
+    "cool-retro-term",
+    "eterm",
+    "foot",
+    "ghostty",
+    "gnome-terminal",
+    "guake",
+    "io.elementary.terminal",
+    "kgx",
+    "kitty",
+    "konsole",
+    "lxterminal",
+    "org.gnome.console",
+    "org.gnome.terminal",
+    "org.kde.konsole",
+    "org.wezfurlong.wezterm",
+    "qterminal",
+    "rxvt",
+    "sakura",
+    "st",
+    "tabby",
+    "terminator",
+    "terminology",
+    "termite",
+    "tilix",
+    "urxvt",
+    "wezterm",
+    "xfce4-terminal",
+    "xterm",
+    "yakuake",
+];
+
+/// The built-in terminals plus `HYUSK_TERMINAL_APPS`, a comma-separated list of
+/// additional application names.
+fn configured_terminals() -> Vec<String> {
+    let mut terminals: Vec<String> = TERMINAL_APPS
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    match std::env::var("HYUSK_TERMINAL_APPS") {
+        Ok(value) => terminals.extend(parse_terminal_extension(&value)),
+        Err(_) => {}
+    }
+    terminals
+}
+
+fn parse_terminal_extension(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// True when the focused application is a terminal, so typing into it can run a
+/// shell command.
+pub fn is_terminal_app(app: &str) -> bool {
+    let app = app.trim().to_ascii_lowercase();
+    !app.is_empty() && configured_terminals().iter().any(|name| *name == app)
 }
 
 fn accessibility_requires_approval(args: &Value) -> bool {
@@ -1592,8 +1770,10 @@ fn is_consequential_text(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        approval_arguments, grant_key, pending_text, policy_for, preview,
-        requires_approval as check, secret_refusal, Decision, ToolName, PREVIEW_LIMIT,
+        approval_arguments, grant_key, is_terminal_app, pending_text, policy_for, preview,
+        preview_with_context, requires_approval as check,
+        requires_approval_with_context as check_with, requires_focus_context, secret_refusal,
+        Decision, FocusContext, ToolName, PREVIEW_LIMIT,
     };
     use serde_json::Value;
 
@@ -1761,6 +1941,200 @@ mod tests {
         let _ = std::fs::remove_file(&link);
         let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The focused window a decision is made against.
+    fn focus(app: &str) -> FocusContext {
+        FocusContext::new(app, "a window title")
+    }
+
+    /// True when the gate asks for a `computer` call in a focused app.
+    fn computer_check(app: &str, input: &str) -> bool {
+        check_with("computer", input, &focus(app))
+    }
+
+    #[test]
+    fn terminal_applications_are_recognised_by_name() {
+        for app in [
+            "kitty",
+            "Kitty",
+            "Alacritty",
+            "org.gnome.Terminal",
+            "gnome-terminal",
+            "org.gnome.Console",
+            "Console",
+            "foot",
+            "org.wezfurlong.wezterm",
+            "wezterm",
+            "com.mitchellh.ghostty",
+            "xterm",
+            "konsole",
+            "tilix",
+            "xfce4-terminal",
+        ] {
+            assert!(is_terminal_app(app), "{app} is a terminal");
+        }
+        for app in [
+            "code",
+            "org.gnome.gedit",
+            "firefox",
+            "brave-browser",
+            "org.gnome.Nautilus",
+            "slack",
+            "spotify",
+            "",
+            "   ",
+            "terminal notes", // a title, not an application
+        ] {
+            assert!(!is_terminal_app(app), "{app:?} is not a terminal");
+        }
+    }
+
+    #[test]
+    fn terminal_list_can_be_extended_without_a_code_change() {
+        // The extension list is a pure parse so a test never mutates the
+        // environment another thread reads.
+        assert_eq!(
+            super::parse_terminal_extension("MyTerm, ghostty ,, "),
+            vec!["myterm".to_string(), "ghostty".to_string()]
+        );
+        assert!(super::parse_terminal_extension("").is_empty());
+        // An unset or empty extension keeps the built-in list.
+        assert!(super::configured_terminals()
+            .iter()
+            .any(|name| name == "kitty"));
+    }
+
+    #[test]
+    fn typing_and_key_input_ask_in_a_terminal_and_fail_closed() {
+        for input in [
+            r#"{"action":"type_text","text":"rm -rf build"}"#,
+            r#"{"action":"type_text","text":"ls"}"#,
+            r#"{"action":"key_press","key":"enter"}"#,
+            r#"{"action":"key_combo","keys":["ctrl","c"]}"#,
+            r#"{"action":"batch","steps":[{"action":"type_text","text":"rm -rf /"},{"action":"key_press","key":"enter"}]}"#,
+        ] {
+            assert!(
+                computer_check("kitty", input),
+                "typing in a terminal must ask: {input}"
+            );
+            assert!(
+                computer_check("org.gnome.Terminal", input),
+                "the terminal check covers gnome-terminal too: {input}"
+            );
+            assert!(
+                check_with("computer", input, &FocusContext::unknown()),
+                "an unreadable focus must ask: {input}"
+            );
+            assert!(
+                check("computer", input),
+                "the context-free wrapper must fail closed: {input}"
+            );
+        }
+
+        // Outside a terminal, typing and navigation keys stay free.
+        for input in [
+            r#"{"action":"type_text","text":"hello"}"#,
+            r#"{"action":"key_press","key":"enter"}"#,
+            r#"{"action":"key_press","key":"escape"}"#,
+            r#"{"action":"key_combo","keys":["shift","tab"]}"#,
+            r#"{"action":"batch","steps":[{"action":"type_text","text":"thanks"},{"action":"key_press","key":"enter"}]}"#,
+            r#"{"action":"screenshot"}"#,
+            r#"{"action":"click_text","text":"Open settings"}"#,
+        ] {
+            assert!(
+                !computer_check("code", input),
+                "typing outside a terminal stays free: {input}"
+            );
+            assert!(
+                !computer_check("firefox", input),
+                "a browser field stays free: {input}"
+            );
+        }
+
+        // A consequential shortcut still asks outside a terminal.
+        assert!(computer_check(
+            "code",
+            r#"{"action":"key_combo","keys":["ctrl","enter"]}"#
+        ));
+        // An empty application name is no focus at all.
+        assert!(check_with(
+            "computer",
+            r#"{"action":"type_text","text":"ls"}"#,
+            &focus("")
+        ));
+        // Other tools do not depend on focus.
+        assert!(!check_with(
+            "window",
+            r#"{"action":"activate","query":"kitty"}"#,
+            &focus("kitty")
+        ));
+        assert!(check_with(
+            "shell",
+            r#"{"command":"rm -rf build"}"#,
+            &focus("kitty")
+        ));
+    }
+
+    #[test]
+    fn only_input_calls_read_the_focused_window() {
+        for input in [
+            r#"{"action":"type_text","text":"ls"}"#,
+            r#"{"action":"key_press","key":"enter"}"#,
+            r#"{"action":"key_combo","keys":["ctrl","c"]}"#,
+            r#"{"action":"batch","steps":[{"action":"screenshot"},{"action":"type_text","text":"ls"}]}"#,
+        ] {
+            assert!(requires_focus_context("computer", input), "{input}");
+        }
+        for input in [
+            r#"{"action":"screenshot"}"#,
+            r#"{"action":"click_text","text":"Send"}"#,
+            r#"{"action":"open_url","url":"https://example.com"}"#,
+            r#"{"action":"batch","steps":[{"action":"screenshot"}]}"#,
+            "not json",
+        ] {
+            assert!(!requires_focus_context("computer", input), "{input}");
+        }
+        assert!(!requires_focus_context("shell", r#"{"command":"ls"}"#));
+        assert!(!requires_focus_context("window", r#"{"action":"active"}"#));
+    }
+
+    #[test]
+    fn an_approval_for_typing_names_the_focused_terminal() {
+        assert_eq!(
+            preview_with_context(
+                "computer",
+                r#"{"action":"type_text","text":"npm install"}"#,
+                &focus("kitty")
+            ),
+            "computer action=type_text text=npm install (focused: kitty)"
+        );
+        // Outside a terminal the card has no focus suffix.
+        assert_eq!(
+            preview_with_context(
+                "computer",
+                r#"{"action":"type_text","text":"hello"}"#,
+                &focus("code")
+            ),
+            "computer action=type_text text=hello"
+        );
+        // An unknown focus cannot name the terminal, so the card is honest.
+        assert_eq!(
+            preview_with_context(
+                "computer",
+                r#"{"action":"type_text","text":"hello"}"#,
+                &FocusContext::unknown()
+            ),
+            "computer action=type_text text=hello"
+        );
+        // The suffix still respects the preview limit.
+        let long = preview_with_context(
+            "computer",
+            &serde_json::json!({"action": "type_text", "text": "x".repeat(400)}).to_string(),
+            &focus("kitty"),
+        );
+        assert_eq!(long.chars().count(), PREVIEW_LIMIT);
+        assert!(long.ends_with('…'));
     }
 
     #[test]
@@ -2034,7 +2408,10 @@ mod tests {
             // Guidance is generated into one prompt block, so no row may claim
             // a decision its classifier does not make.
             if matches!(policy.decision, Decision::Allow) {
-                assert!(!policy.asks(&Value::Null), "{name} is Allow but asks");
+                assert!(
+                    !policy.asks_with_context(&Value::Null, &super::FocusContext::unknown()),
+                    "{name} is Allow but asks"
+                );
             }
         }
         assert_eq!(names.len(), ToolName::ALL.len());
@@ -2240,14 +2617,21 @@ mod tests {
             "computer",
             r#"{"action":"mouse_click","x":10,"y":20}"#
         ));
-        assert!(!check(
+        // Typing is free only when the focused window is known and is not a
+        // terminal; the context-free wrapper asks (D1).
+        assert!(!computer_check(
+            "code",
+            r#"{"action":"type_text","text":"hello"}"#
+        ));
+        assert!(!computer_check(
+            "code",
+            r#"{"action":"key_press","key":"enter"}"#
+        ));
+        assert!(check(
             "computer",
             r#"{"action":"type_text","text":"hello"}"#
         ));
-        assert!(!check(
-            "computer",
-            r#"{"action":"key_press","key":"enter"}"#
-        ));
+        assert!(check("computer", r#"{"action":"key_press","key":"enter"}"#));
         assert!(!check("computer", r#"{"action":"screenshot"}"#));
         assert!(!check("computer", r#"{"action":"app_state"}"#));
         assert!(!check(

@@ -11,10 +11,9 @@ available from the `window` tool on both.
 
 ## D1 — Prompt for typing into a focused terminal
 
-- Status: open · Phase 2 · Priority: high
+- Status: done · 2026-10-29 · commit `D1PENDING` · Phase 2 · Priority: high
 - Depends on: A8
-- Evidence: `src/tools/safety.rs:410-458`, `src/tools/window.rs`,
-  `scripts/`
+- Evidence: `src/tools/safety.rs:410-458`, `src/tools/window.rs`, `scripts/`
 
 **Problem.** `type_text`, `key_press`, and `key_combo` are free, and
 `accessibility focus` is free. Focusing a terminal, typing a command, and
@@ -39,21 +38,64 @@ per-keystroke approval.
 
 **Acceptance criteria**
 
-- [ ] `computer type_text` with a terminal focused asks, and the card names the
+- [x] `computer type_text` with a terminal focused asks, and the card names the
       terminal.
-- [ ] `computer key_press`/`key_combo` with a terminal focused asks.
-- [ ] Typing into a text editor, browser field, or chat window stays free.
-- [ ] If focus cannot be determined, the action asks (fail closed).
-- [ ] The check works on GNOME and niri.
+- [x] `computer key_press`/`key_combo` with a terminal focused asks.
+- [x] Typing into a text editor, browser field, or chat window stays free.
+- [x] If focus cannot be determined, the action asks (fail closed).
+- [ ] The check works on GNOME and niri. (Manual check not run: it needs a live
+      GNOME Wayland and a niri session; see the notes.)
 
 **Tests**
 
-- [ ] Pure `is_terminal_app` table.
-- [ ] Context-aware decision tests.
-- [ ] Manual check on both sessions.
+- [x] Pure `is_terminal_app` table
+      (`terminal_applications_are_recognised_by_name`,
+      `terminal_list_can_be_extended_without_a_code_change`).
+- [x] Context-aware decision tests
+      (`typing_and_key_input_ask_in_a_terminal_and_fail_closed`,
+      `only_input_calls_read_the_focused_window`,
+      `an_approval_for_typing_names_the_focused_terminal`,
+      `focused_window_is_read_for_the_approval_gate_or_reports_none`).
+- [ ] Manual check on both sessions. Not run: no live GNOME or niri control in
+      this session.
 
-**Files.** `src/tools/safety.rs`, `src/agent/runner.rs`, `src/tools/window.rs`,
-`src/tools/computer.rs`.
+**Files.** `src/tools/safety.rs`, `src/agent/runner.rs`,
+`src/agent/runner/sonic.rs`, `src/tools/window.rs`, `src/tools/computer.rs`,
+`docs/tools.md`, `README.md`, `.env.example`, `AGENTS.md`, `CHANGELOG.md`.
+
+**Notes (2026-10-29, implemented).** `safety::FocusContext` carries the focused
+application and window title. `Decision` gained a `Contextual` variant, so the
+`computer` row is classified from the arguments *and* that context while every
+other row keeps its old decision. `requires_approval_with_context` is the new
+entry point; `requires_approval` stays as the wrapper and is deliberately
+fail-closed, so a caller without context asks for typing rather than running it.
+
+The runner reads focus only for calls whose decision needs it
+(`requires_focus_context`: `type_text`, `key_press`, `key_combo`, or a `batch`
+containing one) through the new `window::focused_window`, which parses the
+`focused_window` field of the existing bounded desktop snapshot. An unreadable
+focus, a missing field, an empty application name, or a timeout all yield
+`FocusContext::unknown`, which asks. The same wiring is in the Nova Sonic loop,
+because it shares the gate.
+
+`is_terminal_app` matches the lower-cased application name exactly against the
+built-in list plus `HYUSK_TERMINAL_APPS` (comma-separated, parsed by
+`parse_terminal_extension` so the extension is testable without mutating the
+environment). Matching is on the application, never the window title, so a title
+that merely says "terminal" does not gate typing. The approval preview appends
+` (focused: <app>)` when the terminal is the reason for asking, and stays within
+the 120-character limit.
+
+Not covered by an automated test: the runner-to-window wiring end to end. A test
+would read the live session, which is flaky and would touch the user's desktop,
+so the pieces (decision, preview, snapshot parse) are unit-tested and the two
+lane changes were reviewed by hand.
+
+Drift: the Evidence range (`safety.rs:410-458`) pointed at the task/window
+classifier helpers; the computer classifier and its new context live further
+down the file. `accessibility focus` stays free as the issue's scope says: it
+only changes focus, and `accessibility set_text` is D6's aliasing problem, not a
+key-input path that can press Enter.
 
 ## D2 — Classify browser mutations
 

@@ -381,6 +381,9 @@ impl Agent {
                     let args =
                         serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".into());
                     let signature = tool_call_signature(&call.name, &call.arguments, &args);
+                    // Typing and key input are classified by the focused
+                    // window, the same way as the text runner (D1).
+                    let focus = self.focus_context(&call.name, &args).await;
                     let result = if let Some(error) = &call.validation_error {
                         ToolResult::failure(format!(
                             "Nova Sonic tool request was rejected: {error}"
@@ -404,11 +407,15 @@ impl Agent {
                         // A credential read is refused outright; no card is
                         // published (S2).
                         ToolResult::failure(refusal)
-                    } else if crate::tools::safety::requires_approval(&call.name, &args) {
+                    } else if crate::tools::safety::requires_approval_with_context(
+                        &call.name, &args, &focus,
+                    ) {
                         // Preview the stored arguments, so the card and the
                         // tool result name exactly what approval will run.
                         let arguments = crate::tools::safety::approval_arguments(&call.name, &args);
-                        let preview = crate::tools::safety::preview(&call.name, &arguments);
+                        let preview = crate::tools::safety::preview_with_context(
+                            &call.name, &arguments, &focus,
+                        );
                         self.pending_approval = Some(PendingApproval {
                             name: call.name.clone(),
                             arguments,

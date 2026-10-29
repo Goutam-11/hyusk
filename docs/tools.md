@@ -44,6 +44,16 @@ tracks it, so `mouse_move` can still accept absolute coordinates.
 On X11 and Wayland compositors with virtual keyboard/pointer protocols, the
 native `enigo` backend is used.
 
+Typing and key input are classified by the focused window. When the focused
+application is a terminal, `type_text`, `key_press`, and `key_combo` could run a
+shell command, so the call asks for confirmation and the card names the
+terminal. If the focus cannot be read the call also asks, which fails closed.
+Outside a terminal they run freely, so driving a TUI needs one approval rather
+than one per keystroke. The terminal list is built in (`kitty`, `alacritty`,
+`gnome-terminal`, `org.gnome.Console`, `foot`, `wezterm`, `xterm`, `konsole`,
+and others) and can be extended with `HYUSK_TERMINAL_APPS`, a comma-separated
+list of application names as the session reports them.
+
 ```json
 { "action": "status" }
 { "action": "screenshot", "include_cursor": false }
@@ -570,6 +580,8 @@ The tool platform has guardrails but no sandbox:
   from the same table.
 - Read-only `shell` programs are confined to the project root, and a credential
   path on the denylist is refused outright, before any card is armed.
+- `computer` typing and key input ask when the focused window is a terminal (or
+  the focus cannot be read), and the card names the terminal.
 - Foreground `shell` commands are bounded at 120 s with truncated output; a
   turn is cancellable and tool loops stop after configured rounds/time.
 - None of that confines an approved action: `shell` can still read, modify, or

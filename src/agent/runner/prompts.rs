@@ -392,7 +392,7 @@ mod tests {
                     tool.name(),
                     policy.guidance
                 ),
-                Decision::Classified(_) => assert!(
+                Decision::Classified(_) | Decision::Contextual(_) => assert!(
                     (guidance.contains("asks") || guidance.contains(" ask"))
                         && !guidance.contains("never ask"),
                     "{} can ask but its guidance never says so: {}",
