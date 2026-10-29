@@ -1,11 +1,13 @@
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, MutexGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 
+pub(crate) use super::control::PendingApproval;
+use super::control::{self as control_state, AgentControl, ControlHandle};
 use crate::{
     model::{bedrock_sonic::BedrockSonicClient, openrouter::OpenRouterClient},
     model::{codex::CodexClient, SharedActiveModel},
@@ -38,26 +40,19 @@ const DROPPED_APPROVAL_NOTE: &str =
     "I dropped that pending action because you asked something else.";
 
 pub struct Agent {
-    client: OpenRouterClient,
-    openrouter_client: Option<OpenRouterClient>,
-    openai_client: Option<OpenRouterClient>,
-    bedrock_client: Option<OpenRouterClient>,
-    bedrock_sonic_client: Option<std::sync::Arc<BedrockSonicClient>>,
-    active_api_model: Option<SharedActiveModel>,
-    codex_client: Option<CodexClient>,
-    provider: String,
-    model: String,
+    /// Approval, model-selection, and paused-task state. It is reachable from
+    /// the event loop while a turn holds this struct's mutex, so an emergency
+    /// stop and a key save never queue behind the model.
+    control: ControlHandle,
     tools: ToolRegistry,
     tool_specs: Vec<Value>,
     tool_guide: String,
     messages: Vec<Message>,
     vision: bool,
-    pending_approval: Option<PendingApproval>,
     /// Tool and shape pairs the user allowed for the rest of the current turn.
     /// Cleared at turn start and turn end, and never written to a session.
     turn_grants: Vec<(String, String)>,
     action_journal: Vec<ActionJournalEntry>,
-    task_paused: bool,
     loaded_session_identity: Option<(String, String)>,
     reply_needs_follow_up: Option<bool>,
     loop_limits: AgentLoopLimits,
@@ -133,18 +128,6 @@ impl<'a> ReplySink<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct PendingApproval {
-    name: String,
-    arguments: String,
-    /// The exact call as the user sees it. Derived from `arguments`, which are
-    /// the stored arguments, so the approved call is the previewed call.
-    preview: String,
-    call_id: String,
-    result_index: usize,
-    expires_at: Instant,
-}
-
 impl AgentLoopLimits {
     fn from_env() -> Self {
         Self {
@@ -199,6 +182,23 @@ impl Agent {
         self.tools.clone()
     }
 
+    /// The shared control handle.
+    ///
+    /// The runtime takes it before it locks the agent, so control events never
+    /// wait for a turn. See [`Agent::control`] for the guard rules.
+    pub fn control_handle(&self) -> ControlHandle {
+        Arc::clone(&self.control)
+    }
+
+    /// Short-lived control access.
+    ///
+    /// Never hold the guard across an `.await` and never take it while waiting
+    /// for the agent mutex: the agent lock may be held while this one is taken
+    /// (the turn reads its own state), not the other way round.
+    fn control(&self) -> MutexGuard<'_, AgentControl> {
+        control_state::lock(&self.control)
+    }
+
     pub fn new(client: OpenRouterClient, model: String, tools: ToolRegistry) -> Self {
         let tool_specs = build_tool_specs(&tools);
         let tool_guide = build_tool_guide(&tools);
@@ -207,77 +207,58 @@ impl Agent {
         let (saved_messages, action_journal, task_paused, loaded_session_identity) = load_session();
         messages.extend(saved_messages);
         let vision = configured_vision();
+        let control = control_state::new_control("openrouter", model, Some(client), task_paused);
+        control_state::lock(&control).set_codex_client(CodexClient::discover().ok());
 
         Self {
-            client,
-            openrouter_client: None,
-            openai_client: None,
-            bedrock_client: None,
-            bedrock_sonic_client: None,
-            active_api_model: None,
-            codex_client: CodexClient::discover().ok(),
-            provider: "openrouter".to_string(),
-            model,
+            control,
             tools,
             tool_specs,
             tool_guide,
             messages,
             vision,
-            pending_approval: None,
             turn_grants: Vec::new(),
             action_journal,
-            task_paused,
             loaded_session_identity,
             reply_needs_follow_up: Some(false),
             loop_limits: AgentLoopLimits::from_env(),
         }
     }
 
-    pub fn with_openai(mut self, client: Option<OpenRouterClient>) -> Self {
-        self.openai_client = client;
+    pub fn with_openai(self, client: Option<OpenRouterClient>) -> Self {
+        self.control().set_provider_client("openai", client);
         self
     }
 
-    pub fn with_openrouter(mut self, client: Option<OpenRouterClient>) -> Self {
-        self.openrouter_client = client;
+    pub fn with_openrouter(self, client: Option<OpenRouterClient>) -> Self {
+        self.control().set_provider_client("openrouter", client);
         self
     }
 
-    pub fn with_bedrock(mut self, client: Option<OpenRouterClient>) -> Self {
-        self.bedrock_client = client;
+    pub fn with_bedrock(self, client: Option<OpenRouterClient>) -> Self {
+        self.control().set_provider_client("bedrock", client);
         self
     }
 
-    pub fn with_bedrock_sonic(
-        mut self,
-        client: Option<std::sync::Arc<BedrockSonicClient>>,
-    ) -> Self {
-        self.bedrock_sonic_client = client;
+    pub fn with_bedrock_sonic(self, client: Option<std::sync::Arc<BedrockSonicClient>>) -> Self {
+        self.control().set_sonic_client(client);
         self
     }
 
     pub fn uses_bedrock_sonic(&self) -> bool {
-        self.provider == "bedrock-sonic"
+        self.control().uses_sonic()
     }
 
-    pub fn with_active_api_model(mut self, active: SharedActiveModel) -> Self {
-        self.active_api_model = Some(active);
+    pub fn with_active_api_model(self, active: SharedActiveModel) -> Self {
+        self.control().set_active_api_model(active);
         self
     }
 
-    /// Register a provider client that was created after startup, so a key
-    /// saved from the indicator can be used without restarting the service.
-    pub fn set_provider_client(&mut self, provider: &str, client: OpenRouterClient) {
-        match provider {
-            "openrouter" => self.openrouter_client = Some(client),
-            "openai" => self.openai_client = Some(client),
-            "bedrock" => self.bedrock_client = Some(client),
-            _ => {}
-        }
-    }
-
-    pub fn awaiting_approval(&self) -> bool {
-        self.pending_approval.is_some()
+    /// Approval accessors are test-only now: the runtime reads the control
+    /// handle directly and never needs the agent mutex for them.
+    #[cfg(test)]
+    pub(crate) fn awaiting_approval(&self) -> bool {
+        self.control().armed()
     }
 
     /// Allow later calls with the same tool shape for the rest of this turn.
@@ -316,25 +297,23 @@ impl Agent {
     }
 
     /// The exact call in the armed confirmation, as the card shows it.
-    pub fn pending_approval_preview(&self) -> Option<&str> {
-        self.pending_approval
-            .as_ref()
-            .map(|pending| pending.preview.as_str())
+    pub fn pending_approval_preview(&self) -> Option<String> {
+        self.control().preview()
     }
 
     /// Disarm a stored confirmation without executing it.
     ///
     /// Used by an emergency stop: an aborted interaction must not leave a
     /// dangerous action armed for a later, unrelated confirmation.
-    pub fn clear_pending_approval(&mut self) -> bool {
-        self.pending_approval.take().is_some()
+    #[cfg(test)]
+    pub(crate) fn clear_pending_approval(&mut self) -> bool {
+        self.control().clear_pending_approval()
     }
 
     /// The deadline of the confirmation that is currently armed, if any.
-    pub fn approval_deadline(&self) -> Option<Instant> {
-        self.pending_approval
-            .as_ref()
-            .map(|pending| pending.expires_at)
+    #[cfg(test)]
+    pub(crate) fn approval_deadline(&self) -> Option<Instant> {
+        self.control().deadline()
     }
 
     /// Disarm a confirmation whose deadline has passed.
@@ -343,11 +322,17 @@ impl Agent {
     /// calls this from a timer, so an abandoned confirmation cannot stay armed
     /// for an unrelated "yes" or hold back queued scheduled input.
     pub fn expire_stale_approval(&mut self) -> Option<String> {
-        let pending = self.pending_approval.as_ref()?;
-        if Instant::now() <= pending.expires_at {
-            return None;
-        }
-        let pending = self.pending_approval.take().expect("approval was present");
+        // Take, test, and put back under one guard so the approval is never
+        // momentarily visible as unarmed to the event loop.
+        let pending = {
+            let mut control = self.control();
+            let pending = control.take_pending()?;
+            if Instant::now() <= pending.expires_at {
+                control.set_pending(Some(pending));
+                return None;
+            }
+            pending
+        };
         if let Some(message) = self.messages.get_mut(pending.result_index) {
             *message = Message::tool_result(
                 pending.call_id,
@@ -370,18 +355,19 @@ impl Agent {
 
     #[cfg(test)]
     pub(crate) fn arm_test_approval_at(&mut self, expires_at: Instant) {
-        self.pending_approval = Some(PendingApproval {
+        let result_index = self.messages.len();
+        self.control().set_pending(Some(PendingApproval {
             name: "shell".into(),
             arguments: "{\"command\":\"rm -rf build\"}".into(),
             preview: crate::tools::safety::preview("shell", "{\"command\":\"rm -rf build\"}"),
             call_id: "test-approval".into(),
-            result_index: self.messages.len(),
+            result_index,
             expires_at,
-        });
+        }));
     }
 
     pub fn has_paused_task(&self) -> bool {
-        self.task_paused
+        self.control().task_paused()
     }
 
     pub fn reply_needs_follow_up(&self) -> Option<bool> {
@@ -398,14 +384,13 @@ impl Agent {
 
     fn set_model(&mut self, provider: &str, model: &str, new_conversation: bool) -> Result<()> {
         if provider == "bedrock-sonic" {
-            if self.bedrock_sonic_client.is_none() {
+            if self.control().sonic_client().is_none() {
                 anyhow::bail!(
                     "Nova Sonic is unavailable: configure an AWS CLI profile/region and Bedrock access"
                 );
             }
-            self.provider = provider.to_string();
-            self.model = model.to_string();
-            self.pending_approval = None;
+            self.control().set_identity(provider, model);
+            self.control().set_pending(None);
             self.reply_needs_follow_up = Some(false);
             self.messages[0] = Message::system(build_system_prompt(&self.tool_guide, "", false));
             if new_conversation || self.session_belongs_to_another_model(provider, model) {
@@ -416,26 +401,25 @@ impl Agent {
         }
         let client = match provider {
             "openrouter" => self
-                .openrouter_client
-                .clone()
+                .control()
+                .provider_client("openrouter")
                 .context("OPENROUTER_API_KEY is not configured")?,
             "openai" => self
-                .openai_client
-                .clone()
+                .control()
+                .provider_client("openai")
                 .context("OPENAI_API_KEY is not configured")?,
             "bedrock" => self
-                .bedrock_client
-                .clone()
+                .control()
+                .provider_client("bedrock")
                 .context("Amazon Bedrock API key is not configured")?,
             "codex" => {
-                if self.codex_client.is_none() {
+                if !self.control().has_codex_client() {
                     anyhow::bail!("Codex CLI or HYUSK_WORKSPACE is unavailable");
                 }
-                self.provider = provider.to_string();
-                self.model = model.to_string();
+                self.control().set_identity(provider, model);
+                self.control().set_pending(None);
                 self.messages[0] =
                     Message::system(build_system_prompt(&self.tool_guide, "", false));
-                self.pending_approval = None;
                 self.reply_needs_follow_up = Some(false);
                 if new_conversation || self.session_belongs_to_another_model(provider, model) {
                     self.reset_conversation();
@@ -445,15 +429,12 @@ impl Agent {
             }
             _ => anyhow::bail!("Provider '{provider}' is not available"),
         };
-        if let Some(active) = &self.active_api_model {
-            active.select(provider, model, client.clone())?;
-        }
-        self.client = client;
+        self.control().select_api_model(provider, model, &client)?;
+        self.control().set_text_client(Some(client));
         self.vision = configured_vision();
-        self.provider = provider.to_string();
-        self.model = model.to_string();
+        self.control().set_identity(provider, model);
         self.messages[0] = Message::system(build_system_prompt(&self.tool_guide, "", false));
-        self.pending_approval = None;
+        self.control().set_pending(None);
         self.reply_needs_follow_up = Some(false);
         if new_conversation || self.session_belongs_to_another_model(provider, model) {
             self.reset_conversation();
@@ -473,17 +454,23 @@ impl Agent {
     fn reset_conversation(&mut self) {
         self.messages.truncate(1);
         self.action_journal.clear();
-        self.task_paused = false;
+        self.control().set_task_paused(false);
         self.persist_session();
     }
 
     fn persist_session(&self) {
+        // Copy the control state out before the file write so the control lock
+        // is never held across it.
+        let (task_paused, provider, model) = {
+            let control = self.control();
+            (control.task_paused(), control.provider(), control.model())
+        };
         save_session(
             &self.messages,
             &self.action_journal,
-            self.task_paused,
-            &self.provider,
-            &self.model,
+            task_paused,
+            &provider,
+            &model,
         );
     }
 
@@ -504,7 +491,7 @@ impl Agent {
         // A deterministic command must not bypass an outstanding approval.
         // Otherwise a new fast-path request could run while the old dangerous
         // action remains armed for a later, potentially unrelated "confirm".
-        if self.pending_approval.is_some() {
+        if self.control().armed() {
             return None;
         }
 
@@ -526,7 +513,7 @@ impl Agent {
         }
 
         if cancel.is_cancelled() {
-            self.task_paused = true;
+            self.control().set_task_paused(true);
             self.persist_session();
             return Some(String::new());
         }
@@ -536,7 +523,7 @@ impl Agent {
         let mut completed_actions = Vec::new();
         for action in &plan.actions {
             if cancel.is_cancelled() {
-                self.task_paused = true;
+                self.control().set_task_paused(true);
                 self.persist_session();
                 // `None` means "not handled" to the caller and would fall
                 // through to the model. An empty handled reply suppresses that
@@ -578,7 +565,7 @@ impl Agent {
                 if let Some(entry) = self.action_journal.last_mut() {
                     entry.status = "in_flight; outcome uncertain after interruption".into();
                 }
-                self.task_paused = true;
+                self.control().set_task_paused(true);
                 self.persist_session();
                 if cancel.is_cancelled() {
                     // Do not start remaining actions or let the caller send
@@ -672,11 +659,15 @@ impl Agent {
         sentences: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
         ui_tx: Option<&Sender<HyuskEvent>>,
     ) -> Option<Result<ModelReply>> {
-        if self.provider == "codex" {
-            let client = self.codex_client.as_ref().expect("checked when selected");
+        let model = self.control().model();
+        if self.control().provider() == "codex" {
+            let client = self
+                .control()
+                .codex_client()
+                .expect("checked when selected");
             let result = tokio::select! {
                 _ = cancel.cancelled() => return None,
-                result = client.chat(&self.model, &self.messages) => result,
+                result = client.chat(&model, &self.messages) => result,
             };
             return Some(result.map(|message| ModelReply {
                 message,
@@ -692,14 +683,20 @@ impl Agent {
             });
         }
 
+        // Clone the client so the request does not borrow the control lock
+        // while the stream is read.
+        let Some(client) = self.control().text_client() else {
+            return Some(Err(anyhow::anyhow!("No model client is selected")));
+        };
+
         let mut sink = ReplySink::new(sentences, ui_tx);
         let streamed = {
             let mut on_delta = |delta: &str| sink.on_delta(delta);
 
             tokio::select! {
                 _ = cancel.cancelled() => return None,
-                result = self.client.chat_stream(
-                    &self.model,
+                result = client.chat_stream(
+                    &model,
                     &self.messages,
                     &self.tool_specs,
                     &mut on_delta,
@@ -754,10 +751,14 @@ impl Agent {
     }
 
     async fn request_plain_model(&mut self, cancel: &CancellationToken) -> Option<Result<Message>> {
+        let Some(client) = self.control().text_client() else {
+            return Some(Err(anyhow::anyhow!("No model client is selected")));
+        };
+        let model = self.control().model();
         for attempt in 0..2 {
             let result = tokio::select! {
                 _ = cancel.cancelled() => return None,
-                result = self.client.chat(&self.model, &self.messages, &self.tool_specs) => result,
+                result = client.chat(&model, &self.messages, &self.tool_specs) => result,
             };
             if attempt == 0
                 && result
@@ -814,7 +815,10 @@ impl Agent {
             self.persist_session();
             return Ok(Some(reply));
         }
-        if let Some(pending) = self.pending_approval.take() {
+        // Bind first: a guard in an `if let` scrutinee lives for the whole
+        // body, and the body mutates turn state.
+        let pending = self.control().take_pending();
+        if let Some(pending) = pending {
             if is_denial(&user_input) {
                 if let Some(message) = self.messages.get_mut(pending.result_index) {
                     *message = Message::tool_result(
@@ -891,7 +895,7 @@ impl Agent {
             } else {
                 // A cancelled turn keeps its confirmation armed so a later
                 // answer still applies to the same call.
-                self.pending_approval = Some(pending);
+                self.control().set_pending(Some(pending));
                 self.messages.push(Message::user(user_input));
                 let reply = "I still need a clear yes or no for that action. Say confirm to allow it once, or no to cancel.";
                 self.messages.push(Message::assistant(reply));
@@ -930,7 +934,7 @@ impl Agent {
             );
         }
 
-        self.task_paused = false;
+        self.control().set_task_paused(false);
         self.messages.push(Message::user(user_input));
         self.reply_needs_follow_up = None;
         let turn_started = Instant::now();
@@ -940,7 +944,7 @@ impl Agent {
 
         loop {
             if cancel.is_cancelled() {
-                self.task_paused = true;
+                self.control().set_task_paused(true);
                 self.persist_session();
                 return Ok(None);
             }
@@ -974,7 +978,7 @@ impl Agent {
                     )
                 }
                 Ok(None) => {
-                    self.task_paused = true;
+                    self.control().set_task_paused(true);
                     self.persist_session();
                     return Ok(None);
                 }
@@ -991,7 +995,7 @@ impl Agent {
                             sentences,
                         );
                     }
-                    self.task_paused = true;
+                    self.control().set_task_paused(true);
                     self.persist_session();
                     return Err(error);
                 }
@@ -1034,7 +1038,7 @@ impl Agent {
                                     "The action was not started because the turn was cancelled.",
                                 ));
                             }
-                            self.task_paused = true;
+                            self.control().set_task_paused(true);
                             self.persist_session();
                             return Ok(None);
                         }
@@ -1107,14 +1111,14 @@ impl Agent {
                             let preview = crate::tools::safety::preview_with_context(
                                 &name, &arguments, &focus,
                             );
-                            self.pending_approval = Some(PendingApproval {
+                            self.control().set_pending(Some(PendingApproval {
                                 name: name.clone(),
                                 arguments,
                                 preview: preview.clone(),
                                 call_id: call.id.clone(),
                                 result_index: index,
                                 expires_at: Instant::now() + Duration::from_secs(300),
-                            });
+                            }));
                             approval_waiting = true;
                             ToolResult::failure(format!(
                                 "{}. Say what this will do in one short sentence, naming the tool and the first few argument words, then ask for one yes or no. Do not retry it until the user answers.",
@@ -1248,7 +1252,7 @@ impl Agent {
 
             let (text, needs_reply) = parse_structured_reply(&reply.message.text());
             self.reply_needs_follow_up = needs_reply;
-            self.task_paused = false;
+            self.control().set_task_paused(false);
             self.messages.push(Message::assistant(text.clone()));
             self.persist_session();
 
@@ -1275,7 +1279,7 @@ impl Agent {
         // Guardrail replies explicitly offer continuation, so keep the
         // hands-free follow-up window open for a spoken "continue".
         self.reply_needs_follow_up = Some(true);
-        self.task_paused = true;
+        self.control().set_task_paused(true);
         self.messages.push(Message::assistant(text.clone()));
         self.persist_session();
 
@@ -1295,7 +1299,7 @@ impl Agent {
     /// result. Compaction shifts message indices, so leave history alone until
     /// that confirmation is consumed.
     fn compact_at_tool_boundary(&mut self) -> bool {
-        if self.pending_approval.is_some() {
+        if self.control().armed() {
             return false;
         }
         self.compact_history()
@@ -1304,7 +1308,8 @@ impl Agent {
     /// Compact history to the budget derived from the selected model's context
     /// window. Returns whether anything changed.
     fn compact_history(&mut self) -> bool {
-        session::compact_history(&mut self.messages, session::history_budget(&self.model))
+        let model = self.control().model();
+        session::compact_history(&mut self.messages, session::history_budget(&model))
     }
 }
 
@@ -1687,14 +1692,14 @@ mod tests {
             "test-model".into(),
             tools,
         );
-        agent.pending_approval = Some(PendingApproval {
+        agent.control().set_pending(Some(PendingApproval {
             name: "shell".into(),
             arguments: "{\"command\":\"dangerous\"}".into(),
             preview: crate::tools::safety::preview("shell", "{\"command\":\"dangerous\"}"),
             call_id: "pending-call".into(),
             result_index: 0,
             expires_at: std::time::Instant::now() + Duration::from_secs(60),
-        });
+        }));
 
         let result = agent
             .try_fast_command("play music", &CancellationToken::new())
@@ -1933,7 +1938,7 @@ mod tests {
         // The stored preview is the exact call, and the model is told to repeat
         // it rather than paraphrase it.
         assert_eq!(
-            agent.pending_approval_preview(),
+            agent.pending_approval_preview().as_deref(),
             Some("shell command=rm -rf build")
         );
         let result = agent
@@ -2357,14 +2362,14 @@ mod tests {
             "pending-call",
             "Pending confirmation for: shell command=rm -rf build",
         ));
-        agent.pending_approval = Some(PendingApproval {
+        agent.control().set_pending(Some(PendingApproval {
             name: "shell".into(),
             arguments: "{\"command\":\"rm -rf build\"}".into(),
             preview: crate::tools::safety::preview("shell", "{\"command\":\"rm -rf build\"}"),
             call_id: "pending-call".into(),
             result_index: index,
             expires_at: Instant::now() + Duration::from_secs(300),
-        });
+        }));
         index
     }
 
@@ -2730,7 +2735,7 @@ mod tests {
             .await?;
         assert!(agent.awaiting_approval());
         assert_eq!(
-            agent.pending_approval_preview(),
+            agent.pending_approval_preview().as_deref(),
             Some("browser action=click target_id=tab-1 selector=#go")
         );
         assert_eq!(executions.load(Ordering::SeqCst), 0);
@@ -2807,7 +2812,7 @@ mod tests {
             "a different program still needs its own confirmation"
         );
         assert_eq!(
-            agent.pending_approval_preview(),
+            agent.pending_approval_preview().as_deref(),
             Some("shell command=python3 deploy.py")
         );
         Ok(())
@@ -2888,18 +2893,18 @@ mod tests {
             .push(Message::tool_result("call-live", "w".repeat(20_000)));
         let before = agent.messages.len();
 
-        agent.pending_approval = Some(PendingApproval {
+        agent.control().set_pending(Some(PendingApproval {
             name: "shell".into(),
             arguments: "{\"command\":\"dangerous\"}".into(),
             preview: crate::tools::safety::preview("shell", "{\"command\":\"dangerous\"}"),
             call_id: "pending-call".into(),
             result_index: 2,
             expires_at: std::time::Instant::now() + Duration::from_secs(60),
-        });
+        }));
         assert!(!agent.compact_at_tool_boundary());
         assert_eq!(agent.messages.len(), before, "indices must stay stable");
 
-        agent.pending_approval = None;
+        agent.control().set_pending(None);
         assert!(agent.compact_at_tool_boundary());
         assert!(agent.messages.len() < before);
         assert!(agent
@@ -2920,14 +2925,14 @@ mod tests {
             Message::user("delete the build folder"),
             Message::tool_result("call-1", "This action needs explicit user confirmation."),
         ];
-        agent.pending_approval = Some(PendingApproval {
+        agent.control().set_pending(Some(PendingApproval {
             name: "shell".into(),
             arguments: "{\"command\":\"rm -rf build\"}".into(),
             preview: crate::tools::safety::preview("shell", "{\"command\":\"rm -rf build\"}"),
             call_id: "call-1".into(),
             result_index: 2,
             expires_at: Instant::now() + Duration::from_secs(60),
-        });
+        }));
 
         assert!(
             agent.expire_stale_approval().is_none(),
@@ -2938,8 +2943,9 @@ mod tests {
             .text()
             .contains("needs explicit user confirmation"));
 
-        agent.pending_approval.as_mut().unwrap().expires_at =
-            Instant::now() - Duration::from_secs(1);
+        let mut expired_pending = agent.control().take_pending().expect("armed");
+        expired_pending.expires_at = Instant::now() - Duration::from_secs(1);
+        agent.control().set_pending(Some(expired_pending));
         let message = agent.expire_stale_approval().expect("expired");
         assert!(message.contains("expired"));
         assert!(!agent.awaiting_approval());

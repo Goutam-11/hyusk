@@ -18,6 +18,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use super::control::{self as control_state, ControlHandle};
 use crate::types::event::ApprovalScope;
 use crate::{
     agent::Agent,
@@ -175,6 +176,9 @@ pub async fn run_agent_task(
     stt: Option<Arc<SpeechToText>>,
     output_active: Arc<AtomicBool>,
 ) -> Result<()> {
+    // Control state is taken before the agent is wrapped in its mutex, so the
+    // event loop can reach it while a turn holds that mutex (L1).
+    let control = agent.control_handle();
     let mut sonic_mode = agent.uses_bedrock_sonic();
     // Clone the Arc-backed tools before any model turn can hold Agent's mutex.
     let workflow_tools = agent.workflow_tools();
@@ -210,7 +214,7 @@ pub async fn run_agent_task(
          */
         let event = tokio::select! {
             event = next_runtime_event(&mut event_rx, &mut pending_followups) => event,
-            _ = approval_expiry(&agent) => Some(HyuskEvent::ApprovalExpired),
+            _ = approval_expiry(&control) => Some(HyuskEvent::ApprovalExpired),
         };
         let Some(event) = event else {
             break;
@@ -224,7 +228,7 @@ pub async fn run_agent_task(
             // A panel decision is only meaningful while a confirmation is
             // armed. A stale click reports expiry and starts no turn.
             HyuskEvent::ApprovalDecision { approved, scope } => {
-                match apply_approval_decision(&agent, approved, scope).await {
+                match apply_approval_decision(&control, approved, scope) {
                     Ok(input) => HyuskEvent::UserInput(input),
                     Err(reply) => {
                         println!("[Agent] Ignored a stale approval decision");
@@ -382,7 +386,7 @@ pub async fn run_agent_task(
                         active.is_some(),
                         listen_capture_active(&listen),
                         voice_conversation,
-                        approval_blocks_scheduled_input(&agent),
+                        approval_blocks_scheduled_input(&control),
                     );
                     send_state(&ui_tx, HyuskState::Hidden).await;
                     wake_resume.resume();
@@ -433,7 +437,7 @@ pub async fn run_agent_task(
                         active.is_some(),
                         listen_capture_active(&listen),
                         voice_conversation,
-                        approval_blocks_scheduled_input(&agent),
+                        approval_blocks_scheduled_input(&control),
                     );
                     if resume_media.swap(false, Ordering::Relaxed) {
                         tokio::spawn(media::resume());
@@ -461,6 +465,7 @@ pub async fn run_agent_task(
                 let task_agent = Arc::clone(&agent);
                 let task_cancel = cancel.clone();
                 let task_output = Arc::clone(&output_active);
+                let task_control = Arc::clone(&control);
                 let task_listen_until = voice_listen_until;
 
                 let handle = tokio::spawn(async move {
@@ -471,6 +476,7 @@ pub async fn run_agent_task(
                         task_resume,
                         task_cancel,
                         task_agent,
+                        task_control,
                         task_output,
                         task_listen_until,
                         id,
@@ -553,7 +559,7 @@ pub async fn run_agent_task(
                     active.is_some(),
                     listen_capture_active(&listen),
                     voice_conversation,
-                    approval_blocks_scheduled_input(&agent),
+                    approval_blocks_scheduled_input(&control),
                 );
                 if resume_media.swap(false, Ordering::Relaxed) {
                     tokio::spawn(media::resume());
@@ -589,7 +595,7 @@ pub async fn run_agent_task(
                         active.is_some(),
                         listen_capture_active(&listen),
                         voice_conversation,
-                    ) || approval_blocks_scheduled_input(&agent))
+                    ) || approval_blocks_scheduled_input(&control))
                 {
                     // Never hand a scheduled prompt to a turn that is waiting
                     // for a yes/no confirmation: `handle` would treat it as
@@ -611,7 +617,7 @@ pub async fn run_agent_task(
                         foreground_active,
                         false,
                         voice_conversation,
-                        approval_blocks_scheduled_input(&agent),
+                        approval_blocks_scheduled_input(&control),
                     );
                     if !foreground_active {
                         if resume_media.swap(false, Ordering::Relaxed) {
@@ -757,7 +763,7 @@ pub async fn run_agent_task(
                         false,
                         listen_capture_active(&listen),
                         voice_conversation,
-                        approval_blocks_scheduled_input(&agent),
+                        approval_blocks_scheduled_input(&control),
                     );
                     if !scheduled_released && voice_conversation {
                         voice_listen_until =
@@ -827,7 +833,7 @@ pub async fn run_agent_task(
                     active.is_some(),
                     listen_capture_active(&listen),
                     voice_conversation,
-                ) || approval_blocks_scheduled_input(&agent)
+                ) || approval_blocks_scheduled_input(&control)
                 {
                     println!("[Scheduler #{id}] Queued behind the current interaction");
                     crate::status::card(
@@ -869,9 +875,10 @@ pub async fn run_agent_task(
             }
 
             HyuskEvent::ApprovalExpired => {
-                // The timer only fires when the lock was free to read the
-                // deadline, but a turn can start in between. Try the lock so a
-                // running turn never blocks the event loop.
+                // The timer reads the shared control, but applying the expiry
+                // rewrites turn state, so it still needs the agent mutex. Try
+                // the lock: a running turn ends the confirmation itself with
+                // `expire_stale_approval`, and the timer retries shortly.
                 let expired = agent
                     .try_lock()
                     .ok()
@@ -890,23 +897,23 @@ pub async fn run_agent_task(
                     active.is_some(),
                     listen_capture_active(&listen),
                     voice_conversation,
-                    approval_blocks_scheduled_input(&agent),
+                    approval_blocks_scheduled_input(&control),
                 );
             }
 
             HyuskEvent::StopRequested => {
                 println!("[Agent] Emergency stop requested");
+                // Disarmed before anything is interrupted: the control lock is
+                // free even while a turn holds the agent, so a slow model call
+                // cannot keep a dangerous action armed (L1).
+                if control_state::lock(&control).clear_pending_approval() {
+                    crate::status::card("approval", "Pending confirmation cancelled.", false);
+                }
                 clear_pending_interactions(&mut pending_followups, &mut scheduled_inputs);
                 last_finished_turn = None;
                 deferred_reply_listen = None;
                 interrupt_interaction(&mut active, &mut listen, &mut active_workflow, &ui_tx, true)
                     .await;
-                // An emergency stop disarms a stored confirmation. Otherwise a
-                // later, unrelated "yes" could execute the aborted action, and
-                // queued scheduled input would stay blocked behind it.
-                if agent.lock().await.clear_pending_approval() {
-                    crate::status::card("approval", "Pending confirmation cancelled.", false);
-                }
                 let queued = workflow_queue.len();
                 workflow_queue.clear();
                 if queued > 0 {
@@ -936,7 +943,7 @@ pub async fn run_agent_task(
                     active.is_some(),
                     listen_capture_active(&listen),
                     voice_conversation,
-                    approval_blocks_scheduled_input(&agent),
+                    approval_blocks_scheduled_input(&control),
                 );
                 if resume_media.swap(false, Ordering::Relaxed) {
                     tokio::spawn(media::resume());
@@ -973,7 +980,7 @@ pub async fn run_agent_task(
                     false,
                 );
                 let result = agent.lock().await.select_model(&provider, &model);
-                sonic_mode = agent.lock().await.uses_bedrock_sonic();
+                sonic_mode = control_state::lock(&control).uses_sonic();
                 let message = match result {
                     Ok(()) => {
                         crate::status::model(&provider, &model);
@@ -1004,7 +1011,9 @@ pub async fn run_agent_task(
                 // the next model switch uses it without a service restart.
                 let message = match crate::model::configured_client(&provider).await {
                     Some(client) => {
-                        agent.lock().await.set_provider_client(&provider, client);
+                        // Installed through the shared control, so a key save
+                        // never waits for a running turn to finish (L1).
+                        control_state::lock(&control).set_provider_client(&provider, Some(client));
                         format!("Saved the {provider} key. Pick a model from the Hyusk panel.")
                     }
                     None => format!(
@@ -1158,24 +1167,26 @@ fn should_defer_scheduled_input(
 /// Resolve when the armed confirmation's deadline passes, or never when no
 /// confirmation is armed.
 ///
-/// The deadline is read with `try_lock`: a held lock means a turn is running,
-/// and the next turn completion wakes the loop to re-read it.
-async fn approval_expiry(agent: &Arc<Mutex<Agent>>) {
-    match agent
-        .try_lock()
-        .ok()
-        .and_then(|agent| agent.approval_deadline())
-    {
-        Some(deadline) => tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await,
-        None => std::future::pending().await,
+/// The deadline comes from the shared control state, so a turn holding the
+/// agent mutex can neither hide it nor delay the timer.
+async fn approval_expiry(control: &ControlHandle) {
+    // Bind the deadline first: a guard in a `match` scrutinee lives until the
+    // end of the match, which would hold the control lock across the sleep.
+    let deadline = control_state::lock(control).deadline();
+    let Some(deadline) = deadline else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    let delay = deadline.saturating_duration_since(std::time::Instant::now());
+    if delay.is_zero() {
+        // Already due but not yet applied, because a turn held the agent mutex
+        // when the expiry arrived. Retry shortly instead of spinning the loop.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    } else {
+        tokio::time::sleep(delay).await;
     }
 }
 
-/// Whether an armed tool approval holds back queued scheduled input.
-///
-/// A scheduled prompt is not an answer to a confirmation. While one is armed
-/// the prompt waits instead of being consumed as a yes/no reply. A locked agent
-/// means a turn is running, which defers the input either way.
 /// The reply for a panel decision that has nothing left to decide.
 const STALE_APPROVAL_REPLY: &str =
     "That confirmation expired, so I did not perform the action. Please ask again if you still want it.";
@@ -1185,8 +1196,8 @@ const STALE_APPROVAL_REPLY: &str =
 /// `Ok(input)` is the turn input that answers the stored call ("yes" or "no");
 /// `Err(reply)` means no confirmation is armed, so the click is stale and must
 /// not start a turn.
-async fn apply_approval_decision(
-    agent: &Arc<Mutex<Agent>>,
+fn apply_approval_decision(
+    control: &ControlHandle,
     approved: bool,
     scope: ApprovalScope,
 ) -> std::result::Result<String, &'static str> {
@@ -1198,34 +1209,27 @@ async fn apply_approval_decision(
         (false, _) => "no",
     }
     .to_string();
-    match armed_approval(agent).await {
-        // The lock stayed busy (a Sonic session holds it for the whole
-        // interaction), so keep the pre-A7 forwarding rather than block the
-        // event loop on it.
-        None | Some(true) => Ok(input),
-        Some(false) => Err(STALE_APPROVAL_REPLY),
+    if armed_approval(control) {
+        Ok(input)
+    } else {
+        Err(STALE_APPROVAL_REPLY)
     }
 }
 
-/// Whether a confirmation is armed, without blocking the event loop.
+/// Whether a confirmation is armed.
 ///
-/// The agent lock is held for a whole turn, so wait briefly for it and give up
-/// with `None` instead of stalling every other event.
-async fn armed_approval(agent: &Arc<Mutex<Agent>>) -> Option<bool> {
-    for _ in 0..20 {
-        if let Ok(agent) = agent.try_lock() {
-            return Some(agent.awaiting_approval());
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    None
+/// Read from the shared control state, so the answer is always current: a turn
+/// or a Sonic session holding the agent mutex cannot make it unknowable.
+fn armed_approval(control: &ControlHandle) -> bool {
+    control_state::lock(control).armed()
 }
 
-fn approval_blocks_scheduled_input(agent: &Arc<Mutex<Agent>>) -> bool {
-    agent
-        .try_lock()
-        .map(|agent| agent.awaiting_approval())
-        .unwrap_or(true)
+/// Whether an armed tool approval holds back queued scheduled input.
+///
+/// A scheduled prompt is not an answer to a confirmation. While one is armed
+/// the prompt waits instead of being consumed as a yes/no reply.
+fn approval_blocks_scheduled_input(control: &ControlHandle) -> bool {
+    armed_approval(control)
 }
 
 fn release_next_scheduled_input(
@@ -1428,6 +1432,7 @@ async fn handle_listen(
     wake_resume: WakeResume,
     cancel: CancellationToken,
     agent: Arc<Mutex<Agent>>,
+    control: ControlHandle,
     output_active: Arc<AtomicBool>,
     listen_until: Option<std::time::Instant>,
     listen_id: u64,
@@ -1438,7 +1443,9 @@ async fn handle_listen(
 
     let stt_start = std::time::Instant::now();
 
-    if agent.lock().await.uses_bedrock_sonic() {
+    // Read the selection from the shared control: a turn may be finishing and
+    // holding the agent mutex while this capture starts (L1).
+    if control_state::lock(&control).uses_sonic() {
         output_active.store(true, Ordering::Relaxed);
         let _output_guard = OutputOnDrop(output_active);
         send_state(&ui_tx, HyuskState::Listening).await;
@@ -1646,14 +1653,14 @@ async fn run_turn(
 
     crate::timing::mark("agent turn (model + tools)", turn_start);
 
-    let (requires_approval, approval_preview, model_needs_reply) = {
+    let (approval_preview, model_needs_reply) = {
         let agent = agent.lock().await;
         (
-            agent.awaiting_approval(),
-            agent.pending_approval_preview().map(str::to_string),
+            agent.pending_approval_preview(),
             agent.reply_needs_follow_up(),
         )
     };
+    let requires_approval = approval_preview.is_some();
     crate::status::card(
         if requires_approval {
             crate::status::APPROVAL_CARD_KIND
@@ -1743,7 +1750,7 @@ mod tests {
         ActiveWorkflow, WorkflowJob,
     };
     use crate::{
-        agent::{commands::Action, Agent},
+        agent::{commands::Action, control as control_state, Agent},
         tools::{Tool, ToolRegistry, ToolResult},
     };
     use anyhow::Result;
@@ -1980,7 +1987,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_running_turn_or_armed_approval_blocks_scheduled_input() {
+    async fn a_running_turn_does_not_hide_an_armed_approval() {
         let mut agent = Agent::new(
             crate::model::openrouter::OpenRouterClient::new(
                 "test-key".into(),
@@ -1990,21 +1997,113 @@ mod tests {
             ToolRegistry::new(),
         );
         agent.arm_test_approval();
+        let control = agent.control_handle();
         let agent = Arc::new(tokio::sync::Mutex::new(agent));
 
         assert!(
-            approval_blocks_scheduled_input(&agent),
+            approval_blocks_scheduled_input(&control),
             "an armed confirmation holds scheduled input"
         );
-        assert!(agent.lock().await.clear_pending_approval());
-        assert!(!approval_blocks_scheduled_input(&agent), "disarmed");
 
-        // A held lock means a turn is running; defer conservatively.
+        // The event loop reads the approval while a turn holds the agent
+        // mutex, which is what the split exists for (L1).
         let running_turn = agent.lock().await;
-        assert!(approval_blocks_scheduled_input(&agent), "running turn");
+        assert!(
+            approval_blocks_scheduled_input(&control),
+            "the armed confirmation is still visible during a turn"
+        );
+        assert!(running_turn.awaiting_approval());
         drop(running_turn);
 
-        assert!(!approval_blocks_scheduled_input(&agent));
+        assert!(agent.lock().await.clear_pending_approval());
+        assert!(!approval_blocks_scheduled_input(&control), "disarmed");
+
+        // With nothing armed, a running turn no longer holds scheduled input
+        // back on its own: the loop defers turns explicitly, and the old
+        // "locked means defer" fallback would stall queued prompts forever.
+        let holding = agent.lock().await;
+        assert!(
+            !approval_blocks_scheduled_input(&control),
+            "a running turn is not an armed confirmation"
+        );
+        drop(holding);
+    }
+
+    /// L1: a turn holds the agent mutex across the model future. The stop path
+    /// and a key save must still work immediately, and the turn must still see
+    /// its cancellation token.
+    #[tokio::test]
+    async fn a_slow_model_call_cannot_hold_the_stop_path_or_a_key_save() {
+        let mut agent = Agent::new(
+            crate::model::openrouter::OpenRouterClient::new(
+                "test-key".into(),
+                "http://127.0.0.1".into(),
+            ),
+            "test-model".into(),
+            ToolRegistry::new(),
+        );
+        agent.arm_test_approval();
+        let control = agent.control_handle();
+        assert!(
+            control_state::lock(&control).armed(),
+            "the handle must be the turn's own control state"
+        );
+        let agent = Arc::new(tokio::sync::Mutex::new(agent));
+
+        // Stand-in for a turn: it owns the agent mutex and waits on a slow,
+        // cancellable model future, exactly as `run_turn` does.
+        let turn_cancel = CancellationToken::new();
+        let slow_model = {
+            let agent = Arc::clone(&agent);
+            let cancel = turn_cancel.clone();
+            tokio::spawn(async move {
+                let _turn = agent.lock().await;
+                tokio::select! {
+                    _ = cancel.cancelled() => {}
+                    _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+                }
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Emergency stop: the armed approval is disarmed without the agent.
+        let started = std::time::Instant::now();
+        assert!(control_state::lock(&control).clear_pending_approval());
+        assert!(!control_state::lock(&control).armed());
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "the stop path waited for the turn"
+        );
+
+        // Key save: the client is installed without the agent.
+        let started = std::time::Instant::now();
+        control_state::lock(&control).set_provider_client(
+            "openrouter",
+            Some(crate::model::openrouter::OpenRouterClient::new(
+                "saved-key".into(),
+                "https://example.test/v1".into(),
+            )),
+        );
+        assert!(control_state::lock(&control)
+            .provider_client("openrouter")
+            .is_some());
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "the key save waited for the turn"
+        );
+
+        // The turn is still running and still owns the agent.
+        assert!(agent.try_lock().is_err(), "the turn still holds the agent");
+
+        // Cancelling the turn is observed promptly, so no lock was left held.
+        let stopped = std::time::Instant::now();
+        turn_cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), slow_model)
+            .await
+            .expect("the turn observes its cancellation")
+            .expect("the turn task finished");
+        assert!(stopped.elapsed() < Duration::from_millis(500));
+        assert!(agent.try_lock().is_ok(), "the turn released the agent");
     }
 
     #[tokio::test]
@@ -2018,32 +2117,31 @@ mod tests {
             ToolRegistry::new(),
         );
         agent.arm_test_approval_at(std::time::Instant::now());
+        let control = agent.control_handle();
         let agent = Arc::new(tokio::sync::Mutex::new(agent));
 
-        tokio::time::timeout(Duration::from_secs(1), approval_expiry(&agent))
+        tokio::time::timeout(Duration::from_secs(1), approval_expiry(&control))
             .await
             .expect("an expired deadline resolves immediately");
 
         agent.lock().await.clear_pending_approval();
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), approval_expiry(&agent))
+            tokio::time::timeout(Duration::from_millis(50), approval_expiry(&control))
                 .await
                 .is_err(),
             "no armed confirmation means no timer"
         );
 
-        // A held lock is skipped so the event loop never waits on a running turn.
+        // A held agent mutex no longer defers the check: the deadline lives in
+        // the shared control, so the timer still fires during a slow turn (L1).
         agent
             .lock()
             .await
             .arm_test_approval_at(std::time::Instant::now());
         let running_turn = agent.lock().await;
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), approval_expiry(&agent))
-                .await
-                .is_err(),
-            "a running turn defers the expiry check"
-        );
+        tokio::time::timeout(Duration::from_secs(1), approval_expiry(&control))
+            .await
+            .expect("the timer fires while a turn holds the agent");
         drop(running_turn);
     }
 
@@ -2060,7 +2158,10 @@ mod tests {
             ToolRegistry::new(),
         );
         agent.arm_test_approval_at(std::time::Instant::now());
+        let control = agent.control_handle();
         let agent = Arc::new(tokio::sync::Mutex::new(agent));
+
+        assert!(approval_blocks_scheduled_input(&control));
 
         let mut scheduled = VecDeque::from(["scheduled prompt".to_string()]);
         let mut pending = VecDeque::new();
@@ -2070,7 +2171,7 @@ mod tests {
             false,
             false,
             false,
-            approval_blocks_scheduled_input(&agent),
+            approval_blocks_scheduled_input(&control),
         ));
         assert_eq!(scheduled.len(), 1, "held while the confirmation is armed");
 
@@ -2082,7 +2183,7 @@ mod tests {
             false,
             false,
             false,
-            approval_blocks_scheduled_input(&agent),
+            approval_blocks_scheduled_input(&control),
         ));
         assert!(matches!(
             pending.pop_front(),
@@ -2685,43 +2786,52 @@ mod approval_decision_tests {
     #[tokio::test]
     async fn a_decision_without_a_pending_approval_reports_expiry() {
         let agent = test_agent();
-        let reply = apply_approval_decision(&agent, true, ApprovalScope::Once)
-            .await
+        let control = agent.lock().await.control_handle();
+        let reply = apply_approval_decision(&control, true, ApprovalScope::Once)
             .expect_err("a stale approval must not start a turn");
         assert!(reply.contains("expired"), "{reply}");
         assert!(!agent.lock().await.awaiting_approval());
         // Nothing was armed, so approving twice is still stale.
-        assert!(apply_approval_decision(&agent, false, ApprovalScope::Once)
-            .await
-            .is_err());
+        assert!(apply_approval_decision(&control, false, ApprovalScope::Once).is_err());
     }
 
     #[tokio::test]
     async fn an_armed_confirmation_accepts_the_decision_as_turn_input() {
         let agent = test_agent();
-        agent.lock().await.arm_test_approval();
+        let mut armed = agent.lock().await;
+        armed.arm_test_approval();
+        let control = armed.control_handle();
+        // The decision is read while the agent mutex is still held, which is
+        // the point of the split (L1).
         assert_eq!(
-            apply_approval_decision(&agent, true, ApprovalScope::Once)
-                .await
-                .as_deref(),
+            apply_approval_decision(&control, true, ApprovalScope::Once).as_deref(),
             Ok("yes")
         );
         assert_eq!(
-            apply_approval_decision(&agent, false, ApprovalScope::Once)
-                .await
-                .as_deref(),
+            apply_approval_decision(&control, false, ApprovalScope::Once).as_deref(),
             Ok("no")
         );
         // "Allow for this turn" rides the spoken path, so the runner records the
         // grant exactly as it does for the spoken form.
         assert_eq!(
-            apply_approval_decision(&agent, true, ApprovalScope::Turn)
-                .await
-                .as_deref(),
+            apply_approval_decision(&control, true, ApprovalScope::Turn).as_deref(),
             Ok(crate::agent::runner::ALLOW_FOR_THIS_TURN)
         );
         // The decision does not itself consume the stored call.
-        assert!(agent.lock().await.awaiting_approval());
+        assert!(armed.awaiting_approval());
+    }
+
+    #[tokio::test]
+    async fn a_stale_click_is_detected_while_a_turn_holds_the_agent() {
+        let agent = test_agent();
+        let control = agent.lock().await.control_handle();
+        // Hold the agent mutex, as a turn does, and decide anyway. Before the
+        // split this call gave up after half a second and forwarded the click.
+        let holding = agent.lock().await;
+        let reply = apply_approval_decision(&control, true, ApprovalScope::Once)
+            .expect_err("nothing is armed, so the click is stale");
+        assert!(reply.contains("expired"), "{reply}");
+        drop(holding);
     }
 
     #[test]

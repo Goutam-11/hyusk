@@ -55,6 +55,19 @@
 
 ### Changed
 
+- Runtime controls no longer wait for a turn. Approval, model-selection, and
+  paused-task state moved out of the agent into a small control struct
+  (`src/agent/control.rs`) behind its own lock, which the event loop takes
+  without the agent mutex. An emergency stop now disarms a stored confirmation
+  immediately instead of after the turn is interrupted, and a saved API key is
+  installed at once instead of waiting for a running turn to finish. A panel
+  decision is classified from the current state even while a turn or a Nova
+  Sonic session holds the agent: a stale click now reports expiry instead of
+  being forwarded, and an expired confirmation can be resolved during a Sonic
+  session. The agent keeps the turn-owned state (messages, tool grants, journal)
+  and is still locked for a whole turn, so nothing about turns, approvals, or
+  the tool loop changed. Lock order is agent then control, documented in the new
+  module.
 - Streamed replies are no longer cut by the whole-request timeout. The client
   carried a single 150-second limit that also capped the response body, so a
   long answer that kept producing tokens was truncated mid-reply and the turn

@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **382 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **387 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -140,6 +140,13 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   `0700`, files mode `0600`, unique names); the shared temporary directory is a
   fallback only, and a backend that replaces a file is followed by
   `paths::restrict_file`. Do not hand-build a path into the temporary directory.
+- Control state (L1): the armed approval, provider/model, paused-task flag, and
+  provider clients live in `agent/control.rs` behind their own lock, so the
+  event loop reads and changes them while a turn holds the agent mutex. The lock
+  order is agent then control; a control guard is never held across an `.await`
+  and never taken while waiting for the agent. Keep runner approval changes
+  routed through the control (or through the `Agent` wrappers that do), not in a
+  second copy.
 - Wake defaults: `WAKE_CLAP_ENABLED` and `WAKE_WORD_DENOISE` are off unless set;
   `.env.example` documents both.
 - Never print `.env` contents or API keys. Keys are keyring-first, then

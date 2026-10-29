@@ -87,6 +87,7 @@ for the microphone at the same time.
 | `agent/runner/sonic.rs` | Runs Nova Sonic conversations, tool dispatch, audio playback, and stream cleanup. |
 | `agent/runtime.rs` | Consumes `HyuskEvent`s, runs post-wake STT, invokes the agent, emits responses, and calls TTS. |
 | `agent/commands.rs` | Deterministic app/site/workflow command router and workflow validation. |
+| `agent/control.rs` | Approval, model-selection, and paused-task state shared with the event loop so control events never wait for a turn (lock order: agent then control). |
 | `apps.rs` | Installed-application discovery for the workflow editor and aliases. |
 | `credentials.rs` | Login-keyring lookup and storage for provider keys. |
 | `link/` | Opt-in TLS WebSocket server, pairing auth, and phone command channel. |

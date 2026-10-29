@@ -43,14 +43,14 @@ impl Agent {
     ) -> Result<Option<String>> {
         let live_conversation = live_stt.is_some();
         let client = self
-            .bedrock_sonic_client
-            .clone()
+            .control()
+            .sonic_client()
             .context("Nova Sonic is not configured")?;
         if cancel.is_cancelled() {
             return Ok(None);
         }
         self.compact_history();
-        self.task_paused = false;
+        self.control().set_task_paused(false);
         self.reply_needs_follow_up = None;
         let mut prompt = build_system_prompt(&self.tool_guide, text_input.unwrap_or(""), true);
         for message in self
@@ -71,10 +71,11 @@ impl Agent {
                 short(&message.text())
             ));
         }
-        let awaiting_confirmation = self.pending_approval.is_some();
+        let awaiting_confirmation = self.control().armed();
         if awaiting_confirmation {
             prompt.push_str("\nThe user is responding to a pending computer-action confirmation. Do not initiate any new action. Wait for Hyusk to send the verified outcome.");
-            if let Some(pending) = self.pending_approval.as_ref() {
+            let pending = self.control().pending_cloned();
+            if let Some(pending) = pending {
                 prompt.push_str(&format!(
                     " Pending action: {} with arguments {}.",
                     pending.name, pending.arguments
@@ -155,7 +156,7 @@ impl Agent {
                 if let Some(task) = audio_send.take() {
                     task.abort();
                 }
-                self.task_paused = true;
+                self.control().set_task_paused(true);
                 self.persist_session();
                 return Ok(None);
             }
@@ -169,7 +170,7 @@ impl Agent {
                     if let Some(task) = audio_send.take() {
                         task.abort();
                     }
-                    self.task_paused = true;
+                    self.control().set_task_paused(true);
                     self.persist_session();
                     return Ok(None);
                 }
@@ -277,8 +278,8 @@ impl Agent {
                     }
                 }
                 SonicEvent::UserTranscriptEnd => {
-                    if self.pending_approval.is_some() && !confirmation_resolved {
-                        let Some(pending) = self.pending_approval.take() else {
+                    if self.control().armed() && !confirmation_resolved {
+                        let Some(pending) = self.control().take_pending() else {
                             confirmation_resolved = true;
                             continue;
                         };
@@ -328,7 +329,7 @@ impl Agent {
                                 pending.name
                             ));
                         } else {
-                            self.pending_approval = Some(pending);
+                            self.control().set_pending(Some(pending));
                             tool_history.push_str(
                                 "The confirmation was unclear; ask for a clear yes or no. ",
                             );
@@ -388,7 +389,7 @@ impl Agent {
                         ToolResult::failure(format!(
                             "Nova Sonic tool request was rejected: {error}"
                         ))
-                    } else if self.pending_approval.is_some() {
+                    } else if self.control().armed() {
                         ToolResult::failure(
                             "Only a confirmation response was expected; no new action was started.",
                         )
@@ -422,14 +423,15 @@ impl Agent {
                         let preview = crate::tools::safety::preview_with_context(
                             &call.name, &arguments, &focus,
                         );
-                        self.pending_approval = Some(PendingApproval {
+                        let result_index = self.messages.len();
+                        self.control().set_pending(Some(PendingApproval {
                             name: call.name.clone(),
                             arguments,
                             preview: preview.clone(),
                             call_id: call.id.clone(),
-                            result_index: self.messages.len(),
+                            result_index,
                             expires_at: Instant::now() + Duration::from_secs(300),
-                        });
+                        }));
                         confirmation_resolved = false;
                         crate::status::awaiting_reply(true);
                         crate::status::card(
@@ -520,7 +522,7 @@ impl Agent {
                                     .push(Message::user(user_text.trim().to_string()));
                             }
                             let response = if assistant_text.trim().is_empty() {
-                                if self.pending_approval.is_some() {
+                                if self.control().armed() {
                                     "This action needs your confirmation before I continue."
                                         .to_string()
                                 } else if completed_actions.is_empty() {
@@ -532,16 +534,17 @@ impl Agent {
                                 assistant_text.trim().to_string()
                             };
                             self.messages.push(Message::assistant(response.clone()));
-                            self.reply_needs_follow_up = Some(self.pending_approval.is_some());
+                            let awaiting_confirmation = self.control().armed();
+                            self.reply_needs_follow_up = Some(awaiting_confirmation);
                             self.persist_session();
                             crate::status::card(
-                                if self.pending_approval.is_some() {
+                                if self.control().armed() {
                                     crate::status::APPROVAL_CARD_KIND
                                 } else {
                                     "response"
                                 },
                                 &response,
-                                self.pending_approval.is_some(),
+                                self.control().armed(),
                             );
                             if let Some(tx) = ui_tx {
                                 let _ = tx.try_send(HyuskEvent::Response(response));
@@ -557,7 +560,7 @@ impl Agent {
                         rounds = 0;
                         sonic_progress = ToolProgress::default();
                         discard_interrupted_audio = false;
-                        confirmation_resolved = self.pending_approval.is_none();
+                        confirmation_resolved = !self.control().armed();
                         turn_started = Instant::now();
                         reply_deadline = None;
                         idle_deadline = Some(Instant::now() + Duration::from_secs(30));
@@ -599,7 +602,7 @@ impl Agent {
             self.messages.push(Message::user(user_text.clone()));
         }
         if assistant_text.trim().is_empty() {
-            assistant_text = if self.pending_approval.is_some() {
+            assistant_text = if self.control().armed() {
                 "This action needs your confirmation before I continue.".into()
             } else if sonic_round_limit_reached {
                 format!(
@@ -630,10 +633,10 @@ impl Agent {
         }
         self.messages
             .push(Message::assistant(assistant_text.clone()));
-        self.reply_needs_follow_up = Some(
-            self.pending_approval.is_some() || sonic_round_limit_reached || stalled_by_repetition,
-        );
-        self.task_paused = stream_stalled || stalled_by_repetition;
+        self.reply_needs_follow_up =
+            Some(self.control().armed() || sonic_round_limit_reached || stalled_by_repetition);
+        self.control()
+            .set_task_paused(stream_stalled || stalled_by_repetition);
         self.persist_session();
         #[cfg(target_os = "linux")]
         if let Some(player) = audio_player {

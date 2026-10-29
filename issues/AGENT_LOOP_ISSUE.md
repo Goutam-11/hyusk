@@ -2,16 +2,18 @@
 
 The runtime is one event loop around `Arc<Mutex<Agent>>`. A turn locks the
 agent, then awaits the model, tools, speech, and persistence while holding the
-lock. Control events (stop, model switch, key save) need the same lock, so they
-wait for the turn to end. This file records the resulting responsiveness and
-plumbing issues. None of them blocks the permission work, but they explain why
-some controls feel unresponsive.
+lock. Control state that the event loop needs mid-turn lives in the shared
+`agent/control.rs` instead (L1). This file records the resulting
+responsiveness and plumbing issues. None of them blocks the permission work,
+but they explain why some controls feel unresponsive.
 
 ## L1 — Split the agent mutex
 
-- Status: open · Phase 3 · Priority: high
+- Status: done · 2026-10-30 · commit `L1PENDING` · Phase 3 · Priority: high
 - Depends on: —
-- Evidence: `src/agent/runtime.rs:1514-1575`, `src/agent/runtime.rs:877-995`
+- Evidence: `src/agent/runtime.rs:897-925` (the `StopRequested` arm),
+  `src/agent/runtime.rs:956-1015` (`ModelSelected` and `ApiKeySaved`),
+  `src/agent/runtime.rs:1588-1589` (the turn locking the agent)
 
 **Problem.** A turn holds `agent.lock().await` across the whole model/tool loop.
 `StopRequested` cancels without the lock, but `clear_pending_approval`,
@@ -32,20 +34,83 @@ the runner as a task.
 
 **Acceptance criteria**
 
-- [ ] Emergency stop disarms an approval within a bounded time during a model
+- [x] Emergency stop disarms an approval within a bounded time during a model
       call.
-- [ ] Saving a key or switching a model does not wait for a turn to finish.
-- [ ] No new lock-order deadlock; the turn observes a cancelled token.
-- [ ] Existing turn tests pass unchanged.
+- [x] Saving a key or switching a model does not wait for a turn to finish.
+- [x] No new lock-order deadlock; the turn observes a cancelled token.
+- [x] Existing turn tests pass unchanged.
 
 **Tests**
 
-- [ ] Concurrency test with a slow model future and an intervening control
-      event.
-- [ ] Lock-order documentation test or comment.
+- [x] Concurrency test with a slow model future and an intervening control
+      event:
+      `agent::runtime::tests::a_slow_model_call_cannot_hold_the_stop_path_or_a_key_save`
+      holds the agent mutex across a cancellable 30-second model future, then
+      disarms an approval, installs a saved key, and cancels the turn, asserting
+      each step is bounded and the turn observes its token.
+- [x] Lock-order documentation test or comment: the rules are documented on
+      `agent::control` and `Agent::control`, and four tests hold the agent mutex
+      while reading the control
+      (`a_running_turn_does_not_hide_an_armed_approval`,
+      `a_stale_click_is_detected_while_a_turn_holds_the_agent`,
+      `an_armed_confirmation_accepts_the_decision_as_turn_input`,
+      `approval_expiry_sleeps_until_the_deadline_or_forever`).
 
-**Files.** `src/agent/runtime.rs`, `src/agent/runner.rs`,
-`src/types/event.rs`.
+**Files.** `src/agent/control.rs` (new), `src/agent/mod.rs`,
+`src/agent/runtime.rs`, `src/agent/runner.rs`, `src/agent/runner/sonic.rs`,
+`docs/architecture.md`, `AGENTS.md`, `CHANGELOG.md`.
+
+**Notes (2026-10-30, implemented).** New `src/agent/control.rs` owns the state
+the event loop needs mid-turn behind a `std::sync::Mutex`:
+`AgentControl { provider, model, pending approval, task_paused, text client,
+openrouter/openai/bedrock clients, sonic client, active API model, codex
+client }`. `Agent` keeps the turn-owned state (messages, tool grants, journal,
+loaded identity, follow-up flag, loop limits) and holds an `Arc` of the
+control; `Agent::control_handle()` gives the runtime the handle *before* it
+locks the agent, so no control event needs that lock.
+
+The event loop now disarms a stopped approval, installs a saved key, reads the
+armed approval, decides a panel click, and arms the expiry timer through the
+control. Three behaviours changed for the better, and each has a test:
+a click that arrives while a Sonic session (or any turn) holds the agent is
+now classified from the current state instead of being forwarded blindly after
+a half-second wait; a stale click reports expiry even while a turn runs; a
+running turn no longer makes an unarmed confirmation look armed to the
+scheduled-input gate. The expiry timer also fires during a Sonic session now,
+and retries every 100 ms instead of spinning when the deadline is due but the
+turn still holds the agent for the message rewrite.
+
+Decisions: the guard is a leaf - held for a statement, never across an
+`.await`, never while waiting for the agent mutex - and the lock order is agent
+then control, documented in both places. A poisoned control lock is recovered
+rather than propagated, because losing it would leave the loop unable to
+disarm an approval. `expire_stale_approval` takes, tests, and puts back the
+approval under one guard so the event loop never sees it momentarily unarmed.
+`pending_approval_preview` returns an owned string because the preview now
+comes from behind a guard; the post-turn card derives the card kind from that
+same read so the kind and the text cannot disagree.
+
+Two decision details were changed, recorded here: the **current turn id** was
+left in the runtime, which already tracks `next_turn_id`/`ActiveTurn.id` and
+cannot act on a second copy without the agent lock, so mirroring it would only
+create a value that could drift; and the **provider clients** had to join the
+control although the decision named only provider/model, because a key save
+installs a client and that is the acceptance criterion ("saving a key does not
+wait for a turn to finish"). A model switch still interrupts the turn and then
+takes the agent lock, because it rebuilds the system prompt and resets the
+conversation - turn-owned state - but it does not wait for the turn to finish.
+
+Runner and Sonic tests changed only mechanically (field writes go through the
+control, preview comparisons use the owned string). Three runtime tests changed
+meaningfully because they asserted the removed fallbacks: "a busy lock means
+defer" and "give up when the lock is held" are now "a running turn does not
+hide an armed approval" and "a stale click is detected while a turn holds the
+agent".
+
+Drift: the Evidence line pointed at `runtime.rs:1514-1575` and `877-995`, which
+were the turn lock and the control arms before later sessions shifted them; the
+ranges above are current. `src/types/event.rs` needed no change: the events
+already carried only what the control needs.
 
 ## L2 — Async session and status writes
 

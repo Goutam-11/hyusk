@@ -1,4 +1,5 @@
 pub mod commands;
+pub(crate) mod control;
 pub mod runner;
 pub mod runtime;
 
