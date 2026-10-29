@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **283 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **289 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -79,7 +79,8 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
 
 ## Safety invariants — do not weaken
 
-- `src/tools/safety.rs::requires_approval` is the central gate; unknown shapes
+- `src/tools/safety.rs::requires_approval` is the central gate, driven by the
+  explicit per-tool table in the same file; unknown tools and unknown shapes
   fail closed. `task` delegation (both profiles) and `mobile` invocations follow
   the policy there.
 - The model-facing `mobile` schema exposes only `list`/`invoke`. Pairing codes

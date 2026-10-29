@@ -389,6 +389,9 @@ impl Agent {
                         ToolResult::failure(
                             "Only a confirmation response was expected; no new action was started.",
                         )
+                    } else if self.tools.get(&call.name).is_none() {
+                        // Unknown or unavailable tools never arm a confirmation.
+                        ToolResult::failure(format!("Tool '{}' does not exist.", call.name))
                     } else if crate::tools::safety::requires_approval(&call.name, &args) {
                         self.pending_approval = Some(PendingApproval {
                             name: call.name.clone(),
@@ -407,8 +410,6 @@ impl Agent {
                         ToolResult::failure(
                             "This action requires user confirmation. Ask the user to clearly confirm or decline; do not execute it yet.",
                         )
-                    } else if self.tools.get(&call.name).is_none() {
-                        ToolResult::failure(format!("Tool '{}' does not exist.", call.name))
                     } else {
                         let remaining =
                             self.loop_limits.remaining(turn_started).unwrap_or_default();

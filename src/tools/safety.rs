@@ -1,25 +1,239 @@
 //! Central approval policy for tool calls that can change user data or commit
-//! consequential actions. This runs before tool dispatch; unknown shapes fail
-//! closed.
+//! consequential actions. This runs before tool dispatch; unknown tools and
+//! unknown shapes fail closed.
+//!
+//! One table is the source of truth for three consumers: the gate
+//! ([`requires_approval`]), the model-facing approval guidance generated in
+//! `agent::runner::prompts`, and the preview labels added by A3.
 
 use serde_json::Value;
+
+/// Every tool the composition root can register.
+///
+/// [`ToolName::policy`] matches this enum exhaustively with no wildcard, so a
+/// new tool cannot compile without a decision. `main.rs` walks the registry it
+/// actually builds, so a tool registered there without a variant here fails a
+/// test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolName {
+    Accessibility,
+    Browser,
+    Computer,
+    GnomeDoctor,
+    Media,
+    Memory,
+    Mobile,
+    Process,
+    Scheduler,
+    Shell,
+    Task,
+    Timer,
+    WebSearch,
+    Window,
+}
+
+/// How the gate decides one call.
+#[derive(Clone, Copy, Debug)]
+pub enum Decision {
+    /// Runs without asking.
+    Allow,
+    /// Decided from the call's JSON arguments by this rule. A tool that must
+    /// always ask uses a rule that returns true.
+    Classified(fn(&Value) -> bool),
+}
+
+/// One row of the approval policy table.
+#[derive(Clone, Copy, Debug)]
+pub struct ToolPolicy {
+    /// How each call is decided.
+    pub decision: Decision,
+    /// When this tool asks, written for the model. Generated guidance is
+    /// derived from this text, so it must never contradict `decision`.
+    pub guidance: &'static str,
+}
+
+impl ToolName {
+    /// Every tool the policy knows, in name order.
+    pub const ALL: &'static [ToolName] = &[
+        ToolName::Accessibility,
+        ToolName::Browser,
+        ToolName::Computer,
+        ToolName::GnomeDoctor,
+        ToolName::Media,
+        ToolName::Memory,
+        ToolName::Mobile,
+        ToolName::Process,
+        ToolName::Scheduler,
+        ToolName::Shell,
+        ToolName::Task,
+        ToolName::Timer,
+        ToolName::WebSearch,
+        ToolName::Window,
+    ];
+
+    /// The name the registry and a model call use.
+    pub fn name(self) -> &'static str {
+        match self {
+            ToolName::Accessibility => "accessibility",
+            ToolName::Browser => "browser",
+            ToolName::Computer => "computer",
+            ToolName::GnomeDoctor => "gnome_doctor",
+            ToolName::Media => "media",
+            ToolName::Memory => "memory",
+            ToolName::Mobile => "mobile",
+            ToolName::Process => "process",
+            ToolName::Scheduler => "scheduler",
+            ToolName::Shell => "shell",
+            ToolName::Task => "task",
+            ToolName::Timer => "timer",
+            ToolName::WebSearch => "web_search",
+            ToolName::Window => "window",
+        }
+    }
+
+    /// Resolve the tool a call names. `None` means the policy does not know it;
+    /// callers fail closed.
+    pub fn from_name(name: &str) -> Option<Self> {
+        ToolName::ALL
+            .iter()
+            .copied()
+            .find(|tool| tool.name() == name)
+    }
+
+    /// The explicit decision for this tool. Exhaustive with no wildcard, so a
+    /// new variant does not compile until it has a policy.
+    pub fn policy(self) -> ToolPolicy {
+        match self {
+            ToolName::Accessibility => ToolPolicy {
+                decision: Decision::Classified(accessibility_requires_approval),
+                guidance: "reading the screen, listing apps and windows, focusing, and \
+                           setting text run freely; clicking a control whose label or \
+                           action says send, delete, remove, pay, purchase, buy, submit, \
+                           confirm, transfer, publish, post, share, install, uninstall, \
+                           reset, or place an order asks, and an unrecognised action asks",
+            },
+            // Every browser action is currently allowed. D2 classifies the
+            // mutations (click, fill, press_key); until then this row records
+            // today's decision rather than pretending they are gated.
+            ToolName::Browser => ToolPolicy {
+                decision: Decision::Allow,
+                guidance: "every action runs without confirmation today, including \
+                           click, fill, and press_key, so only act on the page when the \
+                           user asked for that outcome",
+            },
+            ToolName::Computer => ToolPolicy {
+                decision: Decision::Classified(computer_requires_approval),
+                guidance: "screenshots, OCR, find, cursor, app state, mouse moves, clicks, \
+                           scrolling, typing, single key presses, and setting clipboard \
+                           text run freely; reading or clearing the clipboard, \
+                           click_text or an accessibility click on a consequential label \
+                           (send, delete, pay, submit, and so on), and shortcuts that \
+                           commit or quit (ctrl, alt, meta, or super with enter, delete, \
+                           backspace, or F4; ctrl+q or ctrl+w) ask",
+            },
+            ToolName::GnomeDoctor => ToolPolicy {
+                decision: Decision::Allow,
+                guidance: "read-only diagnostics never ask",
+            },
+            ToolName::Media => ToolPolicy {
+                decision: Decision::Allow,
+                guidance: "playback control never asks",
+            },
+            ToolName::Memory => ToolPolicy {
+                decision: Decision::Classified(memory_requires_approval),
+                guidance: "remembering, searching, and graph queries run freely; \
+                           forgetting asks",
+            },
+            ToolName::Mobile => ToolPolicy {
+                decision: Decision::Classified(mobile_requires_approval),
+                guidance: "listing devices and the routine phone actions (apps, url, \
+                           search, status, timers, reminders, ui, media, volume, system \
+                           navigation, camera, dial, sms.compose, share, clipboard.write) \
+                           run freely; invoking a consequential phone action (send, \
+                           delete, install, call, clipboard read or clear, \
+                           memory.forget, shell.execute) or an unknown action asks",
+            },
+            ToolName::Process => ToolPolicy {
+                decision: Decision::Classified(process_requires_approval),
+                guidance: "a bare launch of a configured app alias (firefox, chrome, \
+                           brave, code, and so on) runs freely; extra arguments, an \
+                           unknown program, or a raw executable path ask",
+            },
+            ToolName::Scheduler => ToolPolicy {
+                decision: Decision::Allow,
+                guidance: "scheduling, listing, and cancelling a reminder, workflow, or \
+                           agent task never asks",
+            },
+            ToolName::Shell => ToolPolicy {
+                decision: Decision::Classified(shell_requires_approval),
+                guidance: "one simple read-only command runs freely (pwd, ls, cat, head, \
+                           tail, rg, sed -n, find without -delete or -exec, git status, \
+                           diff, log, rev-parse, show or branch --list, sort, cargo test, \
+                           check, build, fmt, clippy); chaining, pipes, redirection, \
+                           expansion, in-place writes, and unknown programs ask, and a \
+                           detached mode asks unless it launches an app",
+            },
+            ToolName::Task => ToolPolicy {
+                decision: Decision::Classified(task_requires_approval),
+                guidance: "every delegate call asks, for both the research and workspace \
+                           profiles; list and cancel run freely",
+            },
+            ToolName::Timer => ToolPolicy {
+                decision: Decision::Allow,
+                guidance: "setting, listing, showing the time, and cancelling a timer \
+                           never asks",
+            },
+            ToolName::WebSearch => ToolPolicy {
+                decision: Decision::Allow,
+                guidance: "searching the web never asks",
+            },
+            ToolName::Window => ToolPolicy {
+                decision: Decision::Classified(window_requires_approval),
+                guidance: "listing, reading the active window, and activating a window \
+                           run freely; closing a window asks",
+            },
+        }
+    }
+}
+
+impl ToolPolicy {
+    /// True when this call must be held for the user.
+    pub fn asks(self, args: &Value) -> bool {
+        match self.decision {
+            Decision::Allow => false,
+            Decision::Classified(rule) => rule(args),
+        }
+    }
+}
+
+/// The model-facing approval guidance, rendered from the table so the prose
+/// cannot drift from the gate: one line per tool, in the order of
+/// [`ToolName::ALL`]. The system prompt embeds this text instead of a
+/// hand-written list (A1).
+#[allow(dead_code)] // read by the generated prompt guidance in A1
+pub fn approval_guidance() -> String {
+    let mut guidance = String::new();
+    for tool in ToolName::ALL {
+        guidance.push_str(&format!("- {}: {}\n", tool.name(), tool.policy().guidance));
+    }
+    guidance
+}
+
+/// The policy for a registered tool, or `None` when the name is unknown.
+pub fn policy_for(name: &str) -> Option<ToolPolicy> {
+    ToolName::from_name(name).map(ToolName::policy)
+}
 
 /// Return true when this tool call should be held for user approval.
 pub fn requires_approval(name: &str, arguments: &str) -> bool {
     let Ok(args) = serde_json::from_str::<Value>(arguments) else {
         return true;
     };
-    match name {
-        "shell" => shell_requires_approval(&args),
-        "process" => process_requires_approval(&args),
-        "computer" => computer_requires_approval(&args),
-        "accessibility" => accessibility_requires_approval(&args),
-        "window" => args.get("action").and_then(Value::as_str) == Some("close"),
-        "mobile" => mobile_requires_approval(&args),
-        "memory" => args.get("action").and_then(Value::as_str) == Some("forget"),
-        "task" => task_requires_approval(&args),
-        // For any other tool, preserve the existing tool-specific policy.
-        _ => false,
+    // An unknown tool name fails closed: a tool registered without a policy
+    // entry must ask, so a new tool can never quietly skip the gate.
+    match policy_for(name) {
+        Some(policy) => policy.asks(&args),
+        None => true,
     }
 }
 
@@ -51,6 +265,14 @@ fn task_requires_approval(args: &Value) -> bool {
     // Research is read-only but still runs a second model; workspace can edit
     // any project root the model names, so it must never start unconfirmed.
     action(args) == "delegate"
+}
+
+fn memory_requires_approval(args: &Value) -> bool {
+    action(args) == "forget"
+}
+
+fn window_requires_approval(args: &Value) -> bool {
+    action(args) == "close"
 }
 
 fn action(args: &Value) -> &str {
@@ -609,8 +831,75 @@ fn is_consequential_text(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{approval_arguments, requires_approval as check};
+    use super::{approval_arguments, policy_for, requires_approval as check, Decision, ToolName};
     use serde_json::Value;
+
+    #[test]
+    fn policy_table_names_every_tool_once_and_matches_its_decision() {
+        let mut names = Vec::new();
+        for tool in ToolName::ALL {
+            let name = tool.name();
+            assert!(!name.is_empty());
+            assert_eq!(
+                ToolName::from_name(name),
+                Some(*tool),
+                "{name} must resolve to its own variant"
+            );
+            assert!(!names.contains(&name), "duplicate policy name: {name}");
+            names.push(name);
+
+            let policy = tool.policy();
+            assert!(
+                !policy.guidance.trim().is_empty(),
+                "missing guidance for {name}"
+            );
+            assert!(
+                !policy.guidance.contains('\n'),
+                "guidance for {name} must be one line"
+            );
+            // Guidance is generated into one prompt block, so no row may claim
+            // a decision its classifier does not make.
+            if matches!(policy.decision, Decision::Allow) {
+                assert!(!policy.asks(&Value::Null), "{name} is Allow but asks");
+            }
+        }
+        assert_eq!(names.len(), ToolName::ALL.len());
+    }
+
+    #[test]
+    fn generated_guidance_lists_every_policy_row_once() {
+        let guidance = super::approval_guidance();
+        let lines: Vec<&str> = guidance.lines().collect();
+        assert_eq!(lines.len(), ToolName::ALL.len());
+        for (line, tool) in lines.iter().zip(ToolName::ALL) {
+            assert!(
+                line.starts_with(&format!("- {}: ", tool.name())),
+                "guidance line for {} is {line}",
+                tool.name()
+            );
+            assert!(!line.trim_end().ends_with(':'), "empty guidance in {line}");
+        }
+        for tool in ToolName::ALL {
+            assert_eq!(
+                guidance.matches(&format!("- {}: ", tool.name())).count(),
+                1,
+                "{} must appear once in the guidance",
+                tool.name()
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_tool_names_and_bad_arguments_fail_closed() {
+        assert!(check("mystery_tool", "{}"));
+        assert!(check("shell_typo", r#"{"command":"ls"}"#));
+        assert!(check("Shell", r#"{"command":"ls"}"#));
+        assert!(check("shell", "not json"));
+        assert!(check("browser", "not json"));
+        assert!(policy_for("mystery_tool").is_none());
+        assert!(policy_for("shell").is_some());
+        assert!(!check("browser", r#"{"action":"read","target_id":"1"}"#));
+    }
 
     #[test]
     fn task_delegation_requires_confirmation_and_pins_the_workspace_root() {

@@ -938,6 +938,11 @@ impl Agent {
                             )
                         } else if timed_out {
                             ToolResult::failure("Skipped because the turn time limit was reached.")
+                        } else if self.tools.get(&name).is_none() {
+                            // The policy holds unknown names closed, so resolve
+                            // existence first: asking the user to approve a call
+                            // that cannot run would be a dead end.
+                            ToolResult::failure(format!("Tool '{name}' does not exist."))
                         } else if requires_approval {
                             let index = self.messages.len();
                             self.pending_approval = Some(PendingApproval {
@@ -953,7 +958,7 @@ impl Agent {
                             ToolResult::failure(
                                 "This action needs explicit user confirmation. Explain the exact action and ask the user to reply yes, confirm, or go ahead. Do not retry it until then.",
                             )
-                        } else if self.tools.get(&name).is_some() {
+                        } else {
                             match self.loop_limits.remaining(turn_started) {
                                 Some(remaining) => {
                                     self.action_journal.push(ActionJournalEntry {
@@ -991,8 +996,6 @@ impl Agent {
                                     )
                                 }
                             }
-                        } else {
-                            ToolResult::failure(format!("Tool '{}' does not exist.", name))
                         };
 
                         let success = result.success;
@@ -1510,6 +1513,114 @@ mod tests {
         assert!(result.is_none());
         assert_eq!(executions.load(Ordering::SeqCst), 0);
         assert!(agent.awaiting_approval());
+    }
+
+    /// Serve chat-completions requests: `calls` until the conversation carries
+    /// a tool result, then `reply`. Streaming attempts receive the same JSON
+    /// body and fall back to the plain request.
+    async fn serve_tool_call_then_reply(calls: Value, reply: Value) -> Result<String> {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut bytes = Vec::new();
+                let mut body_start = None;
+                while bytes.len() < 1_000_000 {
+                    let mut chunk = [0; 8192];
+                    let Ok(read) = stream.read(&mut chunk).await else {
+                        break;
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk[..read]);
+                    if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&bytes[..index]).to_ascii_lowercase();
+                        let length: usize = header
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .unwrap_or("0")
+                            .trim()
+                            .parse()
+                            .unwrap_or(0);
+                        if bytes.len() >= index + 4 + length {
+                            body_start = Some(index + 4);
+                            break;
+                        }
+                    }
+                }
+                let Some(body_start) = body_start else {
+                    continue;
+                };
+                let request: Value =
+                    serde_json::from_slice(&bytes[body_start..]).unwrap_or(Value::Null);
+                let has_tool_result = request["messages"]
+                    .as_array()
+                    .map(|messages| messages.iter().any(|message| message["role"] == "tool"))
+                    .unwrap_or(false);
+                let body = if has_tool_result {
+                    reply.clone()
+                } else {
+                    calls.clone()
+                }
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        Ok(base)
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_name_reports_a_missing_tool_instead_of_arming_an_approval() -> Result<()>
+    {
+        let base = serve_tool_call_then_reply(
+            json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
+                {"id":"call-ghost","type":"function","function":{"name":"ghost","arguments":"{}"}}
+            ]},"finish_reason":"tool_calls"}]}),
+            json!({"choices":[{"message":{"role":"assistant","content":"{\"text\":\"There is no such tool.\",\"needs_reply\":false,\"reply_type\":\"none\"}"},"finish_reason":"stop"}]}),
+        )
+        .await?;
+        let mut agent = Agent::new(
+            OpenRouterClient::new("local-test".into(), base),
+            "test-model".into(),
+            ToolRegistry::new(),
+        );
+        // Keep the turn independent of any session another test persisted.
+        agent.messages = vec![Message::system("Test")];
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            agent.handle(
+                "use the ghost tool".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            ),
+        )
+        .await??;
+
+        assert!(reply.is_some());
+        assert!(
+            !agent.awaiting_approval(),
+            "an unknown tool name must not arm a confirmation"
+        );
+        assert!(agent
+            .messages
+            .iter()
+            .any(|message| message.role == "tool" && message.text().contains("does not exist")));
+        Ok(())
     }
 
     #[test]

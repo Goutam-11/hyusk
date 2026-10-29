@@ -103,7 +103,7 @@ for the microphone at the same time.
 | `tools/window.rs` | Lists and activates windows over niri IPC or the extension's D-Bus. |
 | `tools/gnome_doctor.rs` | Read-only checks for GNOME window, accessibility, and capture support. |
 | `tools/memory.rs` | SQLite memory, FTS search, and knowledge-graph triples. |
-| `tools/safety.rs` | Classifies risky actions and arms one-shot confirmations that expire. |
+| `tools/safety.rs` | Holds the explicit per-tool approval table (unknown names ask), classifies risky calls, and arms one-shot confirmations that expire. |
 | `tools/scheduler.rs` | Persists one-shot reminders, workflows, and agent tasks. |
 | `tools/task.rs` | Bounded research and Codex workspace workers. |
 | `tools/timer.rs` | In-process countdown timers with desktop notifications. |

@@ -276,7 +276,7 @@ voice loop, which only needs the kind change.
 
 ## A8 — Explicit policy registry with exhaustive coverage
 
-- Status: open · Phase 1 · Priority: high · Do this first
+- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
 - Depends on: —
 - Evidence: `src/tools/safety.rs:8-24`, `src/tools/registry.rs`
 
@@ -294,17 +294,52 @@ changing individual decisions (each has its own issue).
 
 **Acceptance criteria**
 
-- [ ] Adding a tool without a policy fails a test.
-- [ ] An unknown tool name asks.
-- [ ] Every tool registered in `main.rs` has an explicit decision.
-- [ ] The table feeds A1's generated guidance and A3's preview labels.
+- [x] Adding a tool without a policy fails a test. `main::build_tools` is the
+      only place tools are registered, and
+      `tool_policy_tests::every_registered_tool_has_an_explicit_policy` walks
+      that registry. Verified by temporarily registering a probe tool: the test
+      failed with `tools registered without an approval policy: ["ghost"]`.
+- [x] An unknown tool name asks. `requires_approval` returns true when the name
+      is not in `ToolName`, and when the arguments are not JSON.
+- [x] Every tool registered in `main.rs` has an explicit decision.
+- [x] The table feeds A1's generated guidance and A3's preview labels.
+      `safety::approval_guidance()` renders one line per row (A1 consumes it);
+      A3 derives its preview label from the same row.
 
 **Tests**
 
-- [ ] Registry coverage test.
-- [ ] Unknown-name case.
+- [x] Registry coverage test (`src/main.rs`, `tool_policy_tests`).
+- [x] Unknown-name case (`safety::tests::unknown_tool_names_and_bad_arguments_fail_closed`).
+- [x] `policy_table_names_every_tool_once_and_matches_its_decision` and
+      `generated_guidance_lists_every_policy_row_once`.
+- [x] `runner::tests::unknown_tool_name_reports_a_missing_tool_instead_of_arming_an_approval`.
 
-**Files.** `src/tools/safety.rs`, `src/main.rs`, `src/tools/registry.rs`.
+**Files.** `src/tools/safety.rs`, `src/main.rs`, `src/agent/runner.rs`,
+`src/agent/runner/sonic.rs`.
+
+**Notes (2026-10-29, implemented).** `requires_approval` is now
+`policy_for(name)` plus a per-row classifier; `ToolName` is an enum with
+`ALL`, `name()`, `from_name()` and an exhaustive `policy()` match with no
+wildcard, so a new tool cannot compile without a decision. Each row carries the
+model-facing guidance so prose and gate cannot drift. `main.rs` grew
+`ToolSetup`/`build_tools` so a test can walk the registry the composition root
+actually builds.
+
+Drift found while implementing:
+
+- The Evidence range (`safety.rs:8-24`) was exact; the file has moved on and the
+  gate now sits near `safety.rs:215`.
+- `browser` is recorded as `Decision::Allow`. The Problem and Decision text say
+  D2 classifies it while Scope says individual decisions are out of scope; the
+  row makes today's effective decision explicit and leaves the classification to
+  D2. Nothing about browser calls changed.
+- Making unknown names ask would have let a hallucinated tool name arm a
+  confirmation for a call that cannot run. The text and Sonic paths now report
+  "Tool 'x' does not exist." before arming; the gate itself still asks for the
+  unknown name.
+- `mobile` is registered only while the opt-in link server runs, so the coverage
+  test cannot construct it; its row is asserted directly in
+  `tool_policy_tests`.
 
 ## A9 — Fast-command lane uses the same policy
 

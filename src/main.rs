@@ -583,6 +583,74 @@ async fn nova_sonic_test_mode() -> Result<()> {
     Ok(())
 }
 
+/// The runtime dependencies the tool registry needs from the composition root.
+struct ToolSetup<'a> {
+    events: &'a mpsc::Sender<HyuskEvent>,
+    active_model: SharedActiveModel,
+    link_server: Option<Arc<link::LinkServer>>,
+    brave_search_key: Option<String>,
+}
+
+/// Build the model-facing tool registry.
+///
+/// Every tool registered here must have an explicit row in
+/// `tools::safety::ToolName`: the compiler enforces the naming match and
+/// `tool_policy_tests::every_registered_tool_has_an_explicit_policy` checks the
+/// registry this function actually builds, so a tool cannot be added without a
+/// decision.
+fn build_tools(setup: ToolSetup<'_>) -> ToolRegistry {
+    let ToolSetup {
+        events,
+        active_model,
+        link_server,
+        brave_search_key,
+    } = setup;
+
+    let mut tools = ToolRegistry::new();
+
+    match tools::browser::BrowserTool::new() {
+        Ok(browser) => tools.register(browser),
+        Err(error) => eprintln!("[Browser] CDP configuration is unavailable: {error}"),
+    }
+
+    tools.register(ComputerTool::new());
+
+    #[cfg(target_os = "linux")]
+    tools.register(AccessibilityTool::new());
+
+    #[cfg(target_os = "linux")]
+    tools.register(tools::gnome_doctor::GnomeDoctorTool::new());
+
+    #[cfg(target_os = "linux")]
+    tools.register(tools::window::WindowTool::new());
+
+    tools.register(MemoryTool::new());
+
+    tools.register(ShellTool::new());
+
+    tools.register(ProcessTool::new());
+
+    tools.register(MediaTool::new());
+    tools.register(tools::timer::TimerTool::default());
+
+    match tools::web_search::WebSearchTool::new(brave_search_key) {
+        Ok(tool) => tools.register(tool),
+        Err(error) => eprintln!("[Web] Native search unavailable: {error}"),
+    }
+
+    // The phone tool exists only while the opt-in link server is running.
+    if let Some(server) = link_server {
+        tools.register(MobileTool::new(server));
+    }
+
+    // The task tool needs the runtime channel so a completed background task
+    // can wake the main assistant without replacing the active user turn.
+    tools.register(tools::scheduler::SchedulerTool::new(events.clone()));
+    tools.register(tools::task::TaskTool::new(events.clone(), active_model));
+
+    tools
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
@@ -657,46 +725,6 @@ async fn main() -> Result<()> {
         SharedActiveModel::new(default_provider, default_model.clone(), client.clone());
 
     // ==========================================
-    // Tools
-    // ==========================================
-
-    let mut tools = ToolRegistry::new();
-
-    match tools::browser::BrowserTool::new() {
-        Ok(browser) => tools.register(browser),
-        Err(error) => eprintln!("[Browser] CDP configuration is unavailable: {error}"),
-    }
-
-    tools.register(ComputerTool::new());
-
-    #[cfg(target_os = "linux")]
-    tools.register(AccessibilityTool::new());
-
-    #[cfg(target_os = "linux")]
-    tools.register(tools::gnome_doctor::GnomeDoctorTool::new());
-
-    #[cfg(target_os = "linux")]
-    tools.register(tools::window::WindowTool::new());
-
-    tools.register(MemoryTool::new());
-
-    tools.register(ShellTool::new());
-
-    tools.register(ProcessTool::new());
-
-    tools.register(MediaTool::new());
-    tools.register(tools::timer::TimerTool::default());
-
-    let brave_search_key = match std::env::var("BRAVE_SEARCH_API_KEY") {
-        Ok(key) => Some(key),
-        Err(_) => credentials::lookup("brave_search").await,
-    };
-    match tools::web_search::WebSearchTool::new(brave_search_key) {
-        Ok(tool) => tools.register(tool),
-        Err(error) => eprintln!("[Web] Native search unavailable: {error}"),
-    }
-
-    // ==========================================
     // Audio
     // ==========================================
 
@@ -749,7 +777,6 @@ async fn main() -> Result<()> {
                 if let Err(error) = publish_pairing(&server.pairing_payload()) {
                     eprintln!("[Link] Could not publish pairing code: {error:#}");
                 }
-                tools.register(MobileTool::new(Arc::clone(&server)));
                 link_server = Some(server);
 
                 let mut status_updates = status::subscribe();
@@ -810,13 +837,20 @@ async fn main() -> Result<()> {
         }
     }
 
-    // The task tool needs the runtime channel so a completed background task
-    // can wake the main assistant without replacing the active user turn.
-    tools.register(tools::scheduler::SchedulerTool::new(agent_tx.clone()));
-    tools.register(tools::task::TaskTool::new(
-        agent_tx.clone(),
-        active_api_model.clone(),
-    ));
+    // ==========================================
+    // Tools
+    // ==========================================
+
+    let brave_search_key = match std::env::var("BRAVE_SEARCH_API_KEY") {
+        Ok(key) => Some(key),
+        Err(_) => credentials::lookup("brave_search").await,
+    };
+    let tools = build_tools(ToolSetup {
+        events: &agent_tx,
+        active_model: active_api_model.clone(),
+        link_server: link_server.clone(),
+        brave_search_key,
+    });
 
     let saved_selection = settings::load();
     let selected_provider = saved_selection
@@ -1445,5 +1479,73 @@ mod control_tests {
         let schedule = control_schedule(&control).expect("decoded schedule");
         assert_eq!(schedule.workflow.as_deref(), Some("Focus"));
         assert_eq!(schedule.delay_seconds, 900);
+    }
+}
+
+#[cfg(test)]
+mod tool_policy_tests {
+    use super::*;
+
+    fn test_tools() -> ToolRegistry {
+        let (events, _receiver) = mpsc::channel(4);
+        build_tools(ToolSetup {
+            events: &events,
+            active_model: SharedActiveModel::new(
+                "openrouter",
+                "fixture",
+                OpenRouterClient::new("unused".into(), "http://127.0.0.1:1".into()),
+            ),
+            link_server: None,
+            brave_search_key: None,
+        })
+    }
+
+    /// A tool registered without an approval policy must fail here rather than
+    /// silently running unconfirmed.
+    #[tokio::test]
+    async fn every_registered_tool_has_an_explicit_policy() {
+        let tools = test_tools();
+        let mut missing = Vec::new();
+        for tool in tools.iter() {
+            if tools::safety::policy_for(tool.name()).is_none() {
+                missing.push(tool.name().to_string());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "tools registered without an approval policy: {missing:?}"
+        );
+        // Guard the walk itself: a tool that failed to construct would be
+        // skipped above and the coverage check would pass by accident.
+        for name in [
+            "browser",
+            "computer",
+            "media",
+            "memory",
+            "process",
+            "scheduler",
+            "shell",
+            "task",
+            "timer",
+            "web_search",
+        ] {
+            assert!(tools.get(name).is_some(), "{name} was not registered");
+        }
+        #[cfg(target_os = "linux")]
+        for name in ["accessibility", "gnome_doctor", "window"] {
+            assert!(tools.get(name).is_some(), "{name} was not registered");
+        }
+    }
+
+    /// `mobile` is registered only while the opt-in link server runs, so it
+    /// cannot be built here; its policy row is asserted directly.
+    #[test]
+    fn every_known_tool_including_the_conditional_one_has_a_policy() {
+        assert!(tools::safety::policy_for("mobile").is_some());
+        assert!(tools::safety::requires_approval(
+            "mobile",
+            r#"{"action":"invoke","phone_action":"messages.send"}"#
+        ));
+        assert!(tools::safety::requires_approval("not_a_tool", "{}"));
     }
 }

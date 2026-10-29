@@ -515,9 +515,15 @@ sent to the model.
 
 The tool platform has guardrails but no sandbox:
 
-- `tools/safety.rs` arms consequential actions (destructive shell commands,
-  payments, sending messages, deleting data) for a one-shot confirmation card
-  or phone prompt, and an unanswered request expires instead of running.
+- `tools/safety.rs` holds one explicit policy table with a row per registered
+  tool. Each row is an allow decision or a classifier over the call's
+  arguments, so consequential actions (destructive shell commands, payments,
+  sending messages, deleting data) arm a one-shot confirmation card or phone
+  prompt, and an unanswered request expires instead of running. A tool name the
+  table does not know asks rather than runs, a new tool cannot compile without
+  a decision, and `main.rs` walks the registry it builds so a tool registered
+  without a row fails a test. The system prompt's approval guidance is rendered
+  from the same table.
 - Foreground `shell` commands are bounded at 120 s with truncated output; a
   turn is cancellable and tool loops stop after configured rounds/time.
 - None of that confines an approved action: `shell` can still read, modify, or

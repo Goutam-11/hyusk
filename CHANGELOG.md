@@ -55,6 +55,15 @@
 
 ### Changed
 
+- The approval gate is now one explicit policy table (`tools/safety.rs`) with a
+  row per registered tool: an allow decision or a classifier over the call's
+  arguments, plus the guidance the system prompt renders. A tool name the table
+  does not know asks instead of running, a new tool cannot be added without a
+  decision, and a registry coverage test fails when `main.rs` registers a tool
+  that has no row. Behaviour is unchanged: every current decision, including
+  `browser` remaining ungated, is recorded rather than reinterpreted. An
+  unknown tool name now reports a missing tool instead of arming a confirmation
+  that could never run.
 - `hyusk_agent` is a standalone Cargo workspace: the crate owns `Cargo.lock`,
   `target/`, and build profiles, the parent workspace excludes the directory,
   and the installer and docs use the local target directory.
