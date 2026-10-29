@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **356 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **357 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -111,6 +111,12 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   `safety::requires_approval_with_context`. The terminal list is explicit plus
   `HYUSK_TERMINAL_APPS`. Adding a context-sensitive decision means adding a
   `Decision::Contextual` row, not a second gate.
+- Clicks (D4): `is_consequential_text` is an explicit table. High-risk words
+  (`delete`, `remove`, `pay`, `purchase`, `buy`, `transfer`, `reset`,
+  `uninstall`, place order) always ask; submission words (`submit`, `send`,
+  `post`, `share`, `install`, `confirm`, `publish`) ask unless a benign
+  qualifier (`search`, `filter`, `query`, `calculator`, `feedback`, `link`) is
+  in the same label; the table is documented in `docs/tools.md`.
 - `browser` (D2): `status`, `start`, `new_tab`, `tabs`, `read`, and `navigate`
   run free; `click`, `fill`, and `press_key` ask, and the classifier is a
   whitelist, so an unknown action fails closed. Grants are keyed by the mutation,

@@ -248,7 +248,7 @@ same functions but at different lines.
 
 ## D4 — Refine consequential click labels
 
-- Status: open · Phase 2 · Priority: medium
+- Status: done · 2026-10-29 · commit `D4PENDING` · Phase 2 · Priority: medium
 - Depends on: A8
 - Evidence: `src/tools/safety.rs:573-608`
 
@@ -267,16 +267,45 @@ present (`search`, `filter`, `query`, `calculator`, `feedback`, `link`,
 
 **Acceptance criteria**
 
-- [ ] "Submit search" and "Send feedback" do not ask.
-- [ ] "Send message" and "Post comment" ask.
-- [ ] "Delete account" and "Place order" ask.
-- [ ] The rule is documented in `docs/tools.md`.
+- [x] "Submit search" and "Send feedback" do not ask.
+- [x] "Send message" and "Post comment" ask.
+- [x] "Delete account" and "Place order" ask.
+- [x] The rule is documented in `docs/tools.md`.
 
 **Tests**
 
-- [ ] Label table with true and false positives.
+- [x] Label table with true and false positives
+      (`consequential_labels_ask_only_without_a_benign_qualifier`), including
+      both routes (`accessibility` click and `computer` `click_text`), the
+      action name, and a high-risk word that a benign qualifier must not soften.
 
-**Files.** `src/tools/safety.rs`, `docs/tools.md`.
+**Files.** `src/tools/safety.rs`, `docs/tools.md`, `README.md`, `AGENTS.md`,
+`CHANGELOG.md`.
+
+**Notes (2026-10-29, implemented).** `is_consequential_text` is now driven by
+three explicit tables: `HIGH_RISK_LABEL_WORDS` (buy, delete, pay, purchase,
+remove, reset, transfer, uninstall) always asks; `SUBMISSION_LABEL_WORDS`
+(confirm, install, post, publish, send, share, submit) asks unless
+`BENIGN_LABEL_WORDS` (calculator, feedback, filter, link, query, search) also
+appears in the label; the "place order" pair and the existing "call" rules are
+unchanged. The same function serves `computer` `click_text` and `accessibility`
+clicks, including the control's action name, and the two policy rows' guidance
+was rewritten to match the table.
+
+Two judgement calls, both recorded here rather than left implicit:
+
+- The decision lists `comment` as a possible benign qualifier but the
+  acceptance says "Post comment" must ask. The acceptance was treated as
+  authoritative, so `comment` is not a qualifier. Adding it later would make
+  "Post comment" free, which the acceptance forbids.
+- `confirm` and `publish` were in the old flat list but are not named in the
+  decision's keep/conditional lists. They were kept as submission words
+  (conditional), which preserves the old behaviour except next to a benign
+  qualifier.
+
+Drift: the Evidence range (`safety.rs:573-608`) now points at the mobile phone
+action helper; the label table lives in `is_consequential_text` further down the
+file.
 
 ## D5 — Consistent keyboard risk model
 

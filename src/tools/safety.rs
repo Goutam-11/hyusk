@@ -147,9 +147,12 @@ impl ToolName {
                 decision: Decision::Classified(accessibility_requires_approval),
                 guidance: "reading the screen, listing apps and windows, focusing, and \
                            setting text run freely; clicking a control whose label or \
-                           action says send, delete, remove, pay, purchase, buy, submit, \
-                           confirm, transfer, publish, post, share, install, uninstall, \
-                           reset, or place an order asks, and an unrecognised action asks",
+                           action names a high-risk word (delete, remove, pay, purchase, \
+                           buy, transfer, reset, uninstall, or place an order) asks, \
+                           clicking a submit/send/post/share/install control asks unless \
+                           the label also names a benign qualifier (search, filter, query, \
+                           calculator, feedback, or link), and an unrecognised action \
+                           asks",
                 preview_keys: &["action", "name", "text", "action_name"],
             },
             ToolName::Browser => ToolPolicy {
@@ -167,10 +170,12 @@ impl ToolName {
                            single key presses also run freely, except when a terminal is \
                            focused or the focus cannot be read, because the keystrokes \
                            could run a shell command; reading or clearing the clipboard, \
-                           click_text or an accessibility click on a consequential label \
-                           (send, delete, pay, submit, and so on), and shortcuts that \
-                           commit or quit (ctrl, alt, meta, or super with enter, delete, \
-                           backspace, or F4; ctrl+q or ctrl+w) ask",
+                           click_text on a consequential label (delete, pay, buy, remove, \
+                           transfer, reset, uninstall, place order, or a submit/send/post/ \
+                           share/install word without a benign qualifier such as search, \
+                           filter, query, calculator, feedback, or link), and shortcuts \
+                           that commit or quit (ctrl, alt, meta, or super with enter, \
+                           delete, backspace, or F4; ctrl+q or ctrl+w) ask",
                 preview_keys: &["action", "text", "keys", "key"],
             },
             ToolName::GnomeDoctor => ToolPolicy {
@@ -1737,32 +1742,52 @@ pub(crate) fn phone_action_requires_confirmation(action: &str) -> bool {
         || action.starts_with("call.")
 }
 
+/// Label words that always make a click consequential (D4).
+const HIGH_RISK_LABEL_WORDS: &[&str] = &[
+    "buy",
+    "delete",
+    "pay",
+    "purchase",
+    "remove",
+    "reset",
+    "transfer",
+    "uninstall",
+];
+
+/// Submission words: consequential on their own, but benign when the same
+/// label names a search, a filter, feedback, a link, and so on.
+const SUBMISSION_LABEL_WORDS: &[&str] = &[
+    "confirm", "install", "post", "publish", "send", "share", "submit",
+];
+
+/// Qualifiers that make a submission word benign, for example "Submit search"
+/// or "Send feedback". They never soften a high-risk word.
+const BENIGN_LABEL_WORDS: &[&str] = &[
+    "calculator",
+    "feedback",
+    "filter",
+    "link",
+    "query",
+    "search",
+];
+
+/// True when clicking a control with this label or action commits something
+/// consequential. A submission word asks unless the label also names a benign
+/// qualifier; a high-risk word asks whatever else the label says (D4).
 fn is_consequential_text(text: &str) -> bool {
     let words = text
         .split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|word| !word.is_empty())
         .map(str::to_ascii_lowercase)
         .collect::<Vec<_>>();
-    [
-        "send",
-        "delete",
-        "remove",
-        "pay",
-        "purchase",
-        "buy",
-        "submit",
-        "confirm",
-        "transfer",
-        "publish",
-        "post",
-        "share",
-        "install",
-        "uninstall",
-        "reset",
-    ]
-    .iter()
-    .any(|term| words.iter().any(|word| word == term))
-        || words.windows(2).any(|pair| pair == ["place", "order"])
+    let names = |table: &[&str]| words.iter().any(|word| table.contains(&word.as_str()));
+    if names(HIGH_RISK_LABEL_WORDS) {
+        return true;
+    }
+    if names(SUBMISSION_LABEL_WORDS) && !names(BENIGN_LABEL_WORDS) {
+        return true;
+    }
+    words.windows(2).any(|pair| pair == ["place", "order"])
         || matches!(words.as_slice(), [call] if call == "call")
         || matches!(words.as_slice(), [call, now] if call == "call" && now == "now")
         || matches!(words.as_slice(), [place, call] if place == "place" && call == "call")
@@ -2705,6 +2730,96 @@ mod tests {
                 "a browser mutation must ask: {input}"
             );
         }
+    }
+
+    #[test]
+    fn consequential_labels_ask_only_without_a_benign_qualifier() {
+        let label = |text: &str| serde_json::json!({ "action": "click", "name": text }).to_string();
+
+        // A submission word asks on its own.
+        for text in [
+            "Send message",
+            "Post comment",
+            "Submit form",
+            "Share photo",
+            "Install app",
+            "Publish article",
+            "Confirm booking",
+        ] {
+            assert!(
+                check("accessibility", &label(text)),
+                "{text} must ask for confirmation"
+            );
+        }
+
+        // The same word is benign next to a search, filter, feedback, or link.
+        for text in [
+            "Submit search",
+            "Send feedback",
+            "Share link",
+            "Submit query",
+            "Send search",
+        ] {
+            assert!(
+                !check("accessibility", &label(text)),
+                "{text} only submits a search or feedback"
+            );
+        }
+
+        // A high-risk word asks whatever else the label says.
+        for text in [
+            "Delete account",
+            "Remove feedback",
+            "Pay with link",
+            "Reset query",
+            "Transfer search",
+            "Place order",
+            "Place order for search",
+        ] {
+            assert!(
+                check("accessibility", &label(text)),
+                "{text} is consequential whatever the qualifier"
+            );
+        }
+
+        // Ordinary labels and actions stay free.
+        for text in [
+            "Open settings",
+            "Search",
+            "Apply filter",
+            "Next page",
+            "Download report",
+        ] {
+            assert!(!check("accessibility", &label(text)), "{text} is routine");
+        }
+        assert!(!check(
+            "accessibility",
+            r#"{"action":"click","name":"Play","action_name":"click"}"#
+        ));
+        // The action name is read too, so a submission action asks even with a
+        // plain label.
+        assert!(check(
+            "accessibility",
+            r#"{"action":"click","name":"Continue","action_name":"submit"}"#
+        ));
+
+        // The computer tool uses the same table for `click_text`.
+        assert!(!check(
+            "computer",
+            r#"{"action":"click_text","text":"Submit search"}"#
+        ));
+        assert!(!check(
+            "computer",
+            r#"{"action":"click_text","text":"Send feedback"}"#
+        ));
+        assert!(check(
+            "computer",
+            r#"{"action":"click_text","text":"Send message"}"#
+        ));
+        assert!(check(
+            "computer",
+            r#"{"action":"click_text","text":"Delete account"}"#
+        ));
     }
 
     #[test]

@@ -258,6 +258,18 @@ is much faster than screenshots for apps that expose an accessible tree.
 | `get_text` | `path` or `name`/`role`/`text` | Reads text from a text interface. |
 | `read` | `app` or `path` | Dumps visible text as labelled lines (native screen reader). |
 
+Click labels are classified before the click runs, and the same table serves
+`computer` `click_text`:
+
+- A high-risk word - `delete`, `remove`, `pay`, `purchase`, `buy`, `transfer`,
+  `reset`, `uninstall`, or the phrase "place order" - asks whatever else the
+  label says.
+- A submission word - `submit`, `send`, `post`, `share`, `install`, `confirm`,
+  `publish` - asks unless the same label names a benign qualifier (`search`,
+  `filter`, `query`, `calculator`, `feedback`, `link`), so "Submit search" and
+  "Send feedback" are free while "Send message" and "Post comment" ask.
+- Any other label, and an ordinary action name such as `click`, is free.
+
 Prerequisites: `python3` with `pyatspi` and a running AT-SPI bus. Apps only
 appear if they publish a tree, so run `scripts/setup-accessibility.sh` once:
 
@@ -608,6 +620,9 @@ The tool platform has guardrails but no sandbox:
 - A denied or unsupported OS capability (portal input, screen capture, AT-SPI)
   returns a capability error before arming a card; the state is one line in the
   per-turn context and in `gnome_doctor`.
+- A click on a control whose label commits something (payment, deletion,
+  transfer, a submission without a benign qualifier) asks; the table is in
+  `docs/tools.md` under Accessibility.
 - Foreground `shell` commands are bounded at 120 s with truncated output; a
   turn is cancellable and tool loops stop after configured rounds/time.
 - None of that confines an approved action: `shell` can still read, modify, or

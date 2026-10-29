@@ -55,6 +55,15 @@
 
 ### Changed
 
+- Click labels are classified more narrowly. Words that commit a payment,
+  deletion, transfer, removal, reset, or uninstall still ask whatever else the
+  label says, and "place order" asks; a submission word (`submit`, `send`,
+  `post`, `share`, `install`, `confirm`, `publish`) asks only when the same
+  label does not name a benign qualifier such as `search`, `filter`, `query`,
+  `calculator`, `feedback`, or `link`. "Submit search", "Send feedback", and
+  "Share link" no longer ask, while "Send message", "Post comment", "Delete
+  account", and "Place order" still do. The same table serves `computer`
+  `click_text` and `accessibility` clicks.
 - Desktop capability state is recorded and used before asking. The computer and
   accessibility tools now record what the OS last reported for input,
   screenshot, and accessibility (`granted`, `denied`, `unsupported`, or

@@ -331,6 +331,11 @@ the keystrokes could run a shell command; the card names the terminal. Outside a
 terminal they stay free, and an unreadable focus asks too. Add a terminal that is
 not recognised with `HYUSK_TERMINAL_APPS` (comma-separated application names).
 
+Clicking OCR text whose label commits something asks: a payment, deletion,
+transfer, reset, or uninstall word always asks, and a submit/send/post/share/
+install word asks unless the label also says search, filter, query, calculator,
+feedback, or link. "Submit search" is free; "Send message" asks.
+
 ```json
 { "action": "screenshot" }
 { "action": "app_state", "max_nodes": 300 }
