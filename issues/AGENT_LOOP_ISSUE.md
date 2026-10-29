@@ -78,7 +78,7 @@ Keep the synchronous path for shutdown and tests.
 
 ## L3 — Streaming idle timeout
 
-- Status: done · 2026-10-30 · commit `L3PENDING` · Phase 3 · Priority: medium
+- Status: done · 2026-10-30 · commit `884b0f1` · Phase 3 · Priority: medium
 - Depends on: —
 - Evidence: `src/model/openrouter.rs:84-88` (was 85-86: the client builder's
   `connect_timeout` and `timeout`)
