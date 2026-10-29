@@ -159,7 +159,15 @@ tables list every supported wake setting.
 
 ---
 
-## D4 — `voice-and-ui.md` contains stale implementation details (P2)
+## D4 — `voice-and-ui.md` contains stale implementation details (P2) — resolved 2026-10-29
+
+**Status:** resolved. The flow diagram now shows `transcribe_from_microphone(8.0)`
+and `speak_cancellable`; the removed `speak_async` sentence was deleted; the
+fixed-recording-window limitation was replaced with the real onset/8-second cap
+limitation; the cancellation and text-display bullets now distinguish the
+`eframe` orb from the GNOME card and Noctalia tooltip; and the integration
+checklist drops the completed VAD and barge-in items and narrows the
+text-display item to the orb.
 
 **File:** [`docs/voice-and-ui.md`](../docs/voice-and-ui.md)
 
@@ -171,11 +179,12 @@ tables list every supported wake setting.
 | [228](../docs/voice-and-ui.md#L228) | "Tool calls and STT have no user-facing cancellation path" | Stop / Stop listening exist and are documented at line 96 and in the GNOME/Noctalia menus. |
 | [227](../docs/voice-and-ui.md#L227) | "The UI does not display transcripts or response text" | True only for the `eframe` orb; the GNOME card and Noctalia tooltip show text. Clarify the subject. |
 
-**Fix:** update those five statements; keep the "Remaining limitations" section
-about echo cancellation, portal approval, and orb placement.
+**Fix applied:** those five statements were updated; the "Remaining
+limitations" section still covers echo cancellation, portal approval, and orb
+placement.
 
-**Done when:** the file no longer references removed symbols or contradicts its
-own endpointing section.
+**Done:** the file no longer references removed symbols or contradicts its own
+endpointing section.
 
 ---
 
@@ -272,6 +281,9 @@ must stay, gate it with an approval and avoid returning the secret verbatim.
 
 ## Resolved
 
+- **D4 (voice-and-ui.md)** was corrected on 2026-10-29: the stale recording
+  duration, removed `speak_async` reference, fixed-window limitation,
+  cancellation claim, and text-display claim now match the implementation.
 - **D1 (API-key flow)** was corrected on 2026-10-29 in `README.md`,
   `CHANGELOG.md`, `docs/gnome-indicator.md`, and `docs/tools.md`: the GNOME
   restart and the transient Noctalia control-file handoff are now stated per

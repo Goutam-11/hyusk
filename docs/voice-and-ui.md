@@ -18,7 +18,7 @@ run_agent_task
    |
    |  StateChanged(Waking)
    |  StateChanged(Listening)
-   |  SpeechToText::transcribe_from_microphone(6.0)
+   |  SpeechToText::transcribe_from_microphone(8.0)
    |  WakeResume::resume
    v
 UserInput event
@@ -27,7 +27,7 @@ UserInput event
 Agent::handle -> OpenRouter -> tool loop -> final text
    |
    +-> Response event
-   +-> TextToSpeech::speak (awaited)
+   +-> TextToSpeech::speak_cancellable (awaited)
    +-> StateChanged(Hidden)
    +-> UI event channel
 
@@ -188,9 +188,6 @@ If Piper cannot run, it tries `espeak-ng`, then `espeak`. macOS uses the `say`
 command and Windows uses PowerShell's speech synthesizer. These executables are
 external to the Rust binary and must be installed separately.
 
-The older `TextToSpeech::speak_async` helper remains but is no longer used by
-the runtime, so TTS completion now tracks the UI state.
-
 ## Desktop overlay
 
 `ui::run` creates a 160 x 160 transparent, undecorated, always-on-top `eframe`
@@ -217,15 +214,20 @@ top bar. See [gnome-indicator.md](gnome-indicator.md).
 
 - Wake detection requires a compatible local classifier and is disabled when it
   is absent.
-- STT uses a fixed recording window rather than voice-activity detection, so a
-  very short or delayed command can be missed.
+- Onset detection is heuristic: a command that starts quietly or lasts only a
+  fraction of a second can be discarded as "no sustained speech", and capture is
+  capped at eight seconds, so a long dictation is truncated.
 - There is no echo cancellation. While the agent is producing output the clap
   scanner is disabled and the wake-word threshold is raised so it does not
   trigger on its own TTS, but the wake word stays live: saying "alexa" during a
   turn barges in, stops the agent, and starts listening again. A new wake word
   also stops Linux TTS.
-- The UI does not display transcripts or response text.
-- Tool calls and STT have no user-facing cancellation path.
+- The `eframe` orb does not display transcripts or response text; the GNOME
+  response card and the Noctalia tooltip show the latest response.
+- The **Stop** control ends the active turn, and **Stop listening** ends an
+  in-flight recording. Local Whisper cancellation is cooperative between
+  compute nodes, so an individual native compute operation may still finish
+  before its worker exits.
 - GNOME Wayland input and screenshots use the desktop portals and require a
   one-time user approval dialog; see [tools.md](tools.md) for `computer`
   behavior.
@@ -236,10 +238,7 @@ top bar. See [gnome-indicator.md](gnome-indicator.md).
 
 Useful next steps for the voice/UI layer:
 
-1. Add voice-activity detection so the recording window ends at natural
-   silence.
-2. Render the latest transcript or response in the overlay or a companion
-   window.
-3. Add a barge-in/cancellation path for long model or TTS operations.
-4. Implement the desktop-portal screenshot approval flow for GNOME Wayland.
-5. Surface microphone, STT, model, tool, and TTS failures as distinct states.
+1. Render the latest transcript or response in the `eframe` orb; the GNOME card
+   and the Noctalia tooltip already show it.
+2. Implement the desktop-portal screenshot approval flow for GNOME Wayland.
+3. Surface microphone, STT, model, tool, and TTS failures as distinct states.
