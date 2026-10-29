@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **340 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **342 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -92,7 +92,9 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   delegation pins the canonical workspace root via `approval_arguments`.
 - Workflows execute deterministic `Action` steps from `src/agent/commands.rs`;
   there is no task-delegation step. Approval-gated steps stop the workflow and
-  point the user at the assistant.
+  point the user at the assistant, and the instant command lane defers the whole
+  utterance to the model path when any step would ask (A9), so the model,
+  instant, and workflow lanes never disagree.
 - `shell` (S1, S2): read-only programs run free only while every path they
   name stays inside the project root (`HYUSK_WORKSPACE`, else the working
   directory; `~` expanded, `..` resolved, unknown options ask); file operations

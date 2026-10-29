@@ -457,8 +457,14 @@ well under a second:
 - `next song`, `pause`, `volume up`, `set volume to 30`
 - `play something`, `play lofi beats` (plays via `mpv` + `yt-dlp` when
   installed, otherwise opens a YouTube Music search)
-- `lock the screen`, `screenshot`, `take a note buy milk`
+- `screenshot`, `take a note buy milk`
 - chains: `open Brave and go to YouTube`
+
+A command whose steps need confirmation is not run locally: `mute`,
+`brightness up`/`down`, and `lock the screen` run through the `shell` tool, so
+the request goes to the model path and the usual approval card appears. A chain
+that mixes a free step with a guarded one takes the same path as a whole, and
+nothing runs before you answer.
 
 Built-in aliases live in `src/agent/commands.rs`; add your own in
 `~/.config/hyusk/commands.json`:
@@ -494,10 +500,11 @@ each `steps` entry locally in order:
 
 Workflow steps use the built-in deterministic command vocabulary, so they do
 not require an API key, model call, or screenshots. They can launch configured
-apps, open sites, switch windows, control media, set timers, change brightness,
-lock the session, take screenshots, and save notes. Arbitrary shell text is not
-accepted as a workflow step. Dangerous operations continue to require the
-normal Hyusk confirmation path when invoked through the model. Background
+apps, open sites, switch windows, control media, set timers, take screenshots,
+and save notes. Arbitrary shell text is not accepted as a workflow step, and a
+step that needs confirmation - changing the brightness or locking the session
+both go through `shell` - stops the workflow before it runs and points you at
+the assistant. Background
 `task` delegation is not a workflow step either: it starts a second model or
 Codex worker, and a workspace delegation needs the assistant's one-shot
 confirmation, so ask the assistant directly instead of adding it to a workflow.
@@ -507,7 +514,8 @@ single item. The supported forms include `open <app-or-site>`, `launch
 <app>`, `go to <site>`, `switch to <window>`, `play`/`pause`/`next song`,
 `volume up`/`volume down`/`set volume to <0-100>`, `set timer for <number>
 <seconds|minutes|hours>`, `brightness up`/`brightness down`, `lock the screen`,
-`screenshot`, and `remember that <text>`. App and site aliases from the same
+`screenshot`, and `remember that <text>`. The brightness and lock forms ask for
+confirmation, so a workflow containing them stops at that step. App and site aliases from the same
 file are available inside workflows, so add an alias before using a custom
 application or site.
 

@@ -491,8 +491,9 @@ impl Agent {
     ///
     /// Common desktop commands ("open Firefox", "go to YouTube", "next song")
     /// execute directly, without a model round trip. Returns `None` when the
-    /// utterance is not a recognized command or a required tool is missing, so
-    /// the caller falls back to the model for full reasoning.
+    /// utterance is not a recognized command, a required tool is missing, or
+    /// any step of the plan would ask for approval, so the caller falls back to
+    /// the model for full reasoning or a confirmation (A9).
     pub async fn try_fast_command(
         &mut self,
         user_input: &str,
@@ -512,6 +513,15 @@ impl Agent {
             .iter()
             .any(|name| self.tools.get(name).is_none())
         {
+            return None;
+        }
+
+        // The instant lane obeys the same policy as the model and workflow
+        // lanes. If any step would ask, nothing runs: the utterance goes to the
+        // model path, where the runtime can hold the call and confirm it (A9).
+        if plan.actions.iter().any(|action| {
+            crate::tools::safety::requires_approval(action.tool_name(), &action.tool_input())
+        }) {
             return None;
         }
 
@@ -1638,6 +1648,42 @@ mod tests {
         assert!(result.is_none());
         assert_eq!(executions.load(Ordering::SeqCst), 0);
         assert!(agent.awaiting_approval());
+    }
+
+    #[tokio::test]
+    async fn fast_command_defers_a_guarded_plan_before_the_first_side_effect() {
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(ShellStub(Arc::clone(&executions)));
+        tools.register(CountingTool(Arc::clone(&executions)));
+        let mut agent = Agent::new(
+            OpenRouterClient::new("test-key".into(), "http://127.0.0.1".into()),
+            "test-model".into(),
+            tools,
+        );
+
+        // "mute" runs `pactl`, which the shell policy guards; "volume up" is
+        // free on its own. A plan containing the guarded step must run neither.
+        let guarded = agent
+            .try_fast_command("mute", &CancellationToken::new())
+            .await;
+        assert!(
+            guarded.is_none(),
+            "a guarded action must defer to the model path"
+        );
+
+        let mixed = agent
+            .try_fast_command("mute; volume up", &CancellationToken::new())
+            .await;
+        assert!(
+            mixed.is_none(),
+            "a plan with one guarded step must defer as a whole"
+        );
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            0,
+            "no step may run when any step would ask"
+        );
     }
 
     /// Requests the stub model received, in order.

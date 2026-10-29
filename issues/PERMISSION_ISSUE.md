@@ -576,7 +576,7 @@ Drift found while implementing:
 
 ## A9 — Fast-command lane uses the same policy
 
-- Status: open · Phase 2 · Priority: medium
+- Status: done · 2026-10-29 · commit `A9PENDING` · Phase 2 · Priority: medium
 - Depends on: A8
 - Evidence: `src/agent/runner.rs:438-571`
 
@@ -591,17 +591,41 @@ utterance to the model path so the runtime can hold and confirm it.
 
 **Acceptance criteria**
 
-- [ ] A plan containing a guarded action executes nothing and defers to the
+- [x] A plan containing a guarded action executes nothing and defers to the
       model path.
-- [ ] A three-lane parity test covers an identical request.
+- [x] A three-lane parity test covers an identical request
+      (`the_model_fast_and_workflow_lanes_agree_on_a_guarded_request`).
 
 **Tests**
 
-- [ ] Fast-path test with a guarded action.
-- [ ] Workflow lane comparison.
+- [x] Fast-path test with a guarded action
+      (`fast_command_defers_a_guarded_plan_before_the_first_side_effect`:
+      `mute`, and a chain that mixes `mute` with the free `volume up`, run
+      nothing).
+- [x] Workflow lane comparison in the parity test, which also asserts the
+      model lane's gate asks for the same call.
 
-**Files.** `src/agent/runner.rs`, `src/agent/runtime.rs`,
-`src/agent/commands.rs`.
+**Files.** `src/agent/runner.rs`, `src/agent/runtime.rs`, `README.md`,
+`AGENTS.md`, `CHANGELOG.md`.
+
+**Notes (2026-10-29, implemented).** `try_fast_command` checks every action of
+the parsed plan with `safety::requires_approval(action.tool_name(),
+&action.tool_input())` after the "tools are registered" check and before the
+cancellation, journal, or execution loops. A single guarded step defers the
+whole plan: `None` tells the runtime to run the utterance through the model
+path, where the usual card is armed, so no part of a mixed chain runs before the
+decision. The check is a plain `any`, which keeps it cheap and side-effect free.
+
+The commands that now defer are the `shell` ones in the vocabulary: `mute` and
+`unmute` (`pactl`), `brightness up`/`down` (`brightnessctl`), and `lock the
+screen` (`loginctl`). Everything else in the vocabulary is already free under
+the table. No vocabulary was changed, so `commands.rs` needed no code change.
+
+Drift found in the docs while verifying the lanes: README listed `lock the
+screen` as an instant command and claimed workflows can change the brightness
+and lock the session, while the shell policy asks for both and a workflow stops
+before a gated step. Those three claims were corrected. Evidence line drift:
+`try_fast_command` now starts at `runner.rs:496`, not `438`.
 
 ## A10 — Approval audit log
 

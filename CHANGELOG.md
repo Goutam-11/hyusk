@@ -55,6 +55,13 @@
 
 ### Changed
 
+- The instant command lane now obeys the approval policy. If any step of a
+  parsed command would ask — `mute` and `brightness up`/`down` run `pactl` or
+  `brightnessctl`, and `lock the screen` runs `loginctl` — nothing executes and
+  the utterance goes to the model path, where the runtime arms the usual
+  confirmation. A chain that mixes a free step with a guarded one defers as a
+  whole, so no part runs before the decision. Workflows already stopped before
+  a gated step; the model, instant, and workflow lanes now agree.
 - `shell` no longer gives an allowlisted decision to a program named by a path.
   The classifier used to take the last path component, so a binary at
   `/tmp/x/ls` or `./ls` inherited `ls`'s free pass; such a call now asks, and an

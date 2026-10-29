@@ -2367,6 +2367,82 @@ mod tests {
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
+    struct ShellStub(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Tool for ShellStub {
+        fn name(&self) -> &str {
+            "shell"
+        }
+        fn description(&self) -> &str {
+            "Test shell action."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        async fn execute(&self, _input: &str) -> Result<ToolResult> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(ToolResult::success("ran"))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_model_fast_and_workflow_lanes_agree_on_a_guarded_request() {
+        // One identical request, "lock screen", which the instant router turns
+        // into `shell loginctl lock-session`. The policy guards that command, so
+        // every lane must stop short of running it (A9).
+        let plan = crate::agent::commands::parse("lock screen").expect("a fast command");
+        assert_eq!(
+            plan.actions,
+            vec![Action::Shell {
+                command: "loginctl lock-session".into(),
+            }]
+        );
+        let action = plan.actions[0].clone();
+
+        // Model lane: the gate the runner consults asks for this exact call.
+        assert!(
+            crate::tools::safety::requires_approval(action.tool_name(), &action.tool_input()),
+            "the model lane must ask"
+        );
+
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut agent_tools = ToolRegistry::new();
+        agent_tools.register(ShellStub(Arc::clone(&executions)));
+        let mut workflow_tools = ToolRegistry::new();
+        workflow_tools.register(ShellStub(Arc::clone(&executions)));
+        let mut agent = Agent::new(
+            crate::model::openrouter::OpenRouterClient::new(
+                "test-key".into(),
+                "http://127.0.0.1".into(),
+            ),
+            "test-model".into(),
+            agent_tools,
+        );
+
+        // Fast lane: the instant router defers before the first side effect.
+        let fast = agent
+            .try_fast_command("lock screen", &CancellationToken::new())
+            .await;
+        assert!(
+            fast.is_none(),
+            "a guarded plan must defer to the model path, not answer locally"
+        );
+
+        // Workflow lane: the step stops before executing and says why.
+        let error =
+            execute_workflow_actions(&plan.actions, &workflow_tools, &CancellationToken::new())
+                .await
+                .unwrap_err();
+        assert!(error.contains("requires user approval"), "{error}");
+
+        assert_eq!(
+            executions.load(Ordering::Relaxed),
+            0,
+            "no lane may run the guarded step"
+        );
+    }
+
     #[tokio::test]
     async fn workflow_refuses_a_credential_read_before_holding_it_for_approval() {
         let calls = Arc::new(AtomicUsize::new(0));
