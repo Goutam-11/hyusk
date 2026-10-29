@@ -283,7 +283,7 @@ were at `reply.rs:122-142` when this was written; the tables now start at
 
 ## A5 — Unrelated speech cancels the pending action and proceeds
 
-- Status: open · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
 - Depends on: A4
 - Evidence: `src/agent/runner.rs:718-773`
 
@@ -303,19 +303,61 @@ turn with the new input. If the utterance denies and then gives an instruction
 
 **Acceptance criteria**
 
-- [ ] Saying "open Firefox" while an approval is pending opens Firefox and
-      cancels the action, with a one-line note.
-- [ ] "yes" and "no" keep their current behaviour.
-- [ ] No stale placeholder is left saying "needs confirmation".
-- [ ] The new request runs in the same turn.
+- [x] Saying "open Firefox" while an approval is pending opens Firefox and
+      cancels the action, with a one-line note. The placeholder records the
+      drop, "I dropped that pending action because you asked something else."
+      reaches the speech sink, and the model receives "open Firefox".
+- [x] "yes" and "no" keep their current behaviour: "yes" runs the stored call
+      once, a bare "no" answers "Understood. I did not perform that action.",
+      and neither reaches the model more than the turn needs.
+- [x] No stale placeholder is left saying "needs confirmation": the stored tool
+      result is replaced in place.
+- [x] The new request runs in the same turn: the drop branch falls through to
+      the normal model loop instead of returning early.
 
 **Tests**
 
-- [ ] Armed-approval runner tests for unrelated, denial-plus-instruction, and
-      pure yes/no inputs.
-- [ ] A batch with a skipped call after the cancellation.
+- [x] Armed-approval runner tests:
+      `unrelated_request_drops_the_pending_action_and_runs_in_the_same_turn`,
+      `denial_with_an_instruction_denies_and_answers_the_instruction`,
+      `bare_denial_keeps_the_short_refusal_reply`,
+      `plain_yes_executes_the_stored_call_once`, and
+      `cancelled_turn_keeps_the_confirmation_armed`.
+- [x] A batch with a skipped call after the cancellation
+      (`a_batch_keeps_its_skipped_call_after_the_cancellation`).
+- [x] `reply::tests::a_denial_can_carry_an_instruction` covers the split itself.
+- [x] The unrelated and batch tests fail when the drop branch is disabled.
 
-**Files.** `src/agent/runner.rs`, `src/agent/runner/reply.rs`.
+**Files.** `src/agent/runner.rs`, `src/agent/runner/reply.rs`,
+`docs/voice-and-ui.md`, `docs/tools.md`.
+
+**Notes (2026-10-29, implemented).** `reply::denial_instruction` splits
+"no, open Firefox" at a clause boundary (or strips the leading denial phrase
+when there is no punctuation) and ignores filler such as "no, thanks", so the
+runner can tell a bare refusal from a refusal plus a request. The denial branch
+records the refusal, then continues the turn with the instruction as the new
+input, so the model answers "open Firefox" without the leading "no" confusing
+it.
+
+The drop branch replaces the placeholder with "Not confirmed: this action was
+dropped because the user asked something else. Do not execute it; answer the new
+request instead.", sends one short note to the speech sink, and falls through to
+the model loop with the user's new request.
+
+Decisions beyond the letter of the issue:
+
+- A cancelled turn keeps the confirmation armed (the old re-ask path). The user
+  never answered, so dropping the call there would lose an approved action to a
+  barge-in.
+- The note goes to the speech sink rather than the conversation, so the model
+  does not see a second assistant message before the user's request; the model
+  learns about the drop from the tool result.
+
+Evidence drift: the old `if let Some(pending)` block sat at `runner.rs:718-773`;
+`handle` now starts at 715 and the branch spans roughly 733-830.
+
+**Manual check outstanding.** The voice path was exercised through the speech
+sink in tests, but no live microphone/STT/provider session was run.
 
 ## A6 — Allow for this turn
 

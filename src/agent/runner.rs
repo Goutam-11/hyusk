@@ -25,9 +25,13 @@ mod sonic;
 mod stream;
 use prompts::{append_desktop_context, build_system_prompt, build_tool_guide, build_tool_specs};
 pub(crate) use reply::is_voice_session_stop;
-use reply::{confirms, is_denial, parse_structured_reply, tool_call_preamble};
+use reply::{confirms, denial_instruction, is_denial, parse_structured_reply, tool_call_preamble};
 use session::{load_session, save_session, ActionJournalEntry};
 use stream::ReplyStream;
+
+/// Spoken once when an unrelated request drops an armed confirmation.
+const DROPPED_APPROVAL_NOTE: &str =
+    "I dropped that pending action because you asked something else.";
 
 pub struct Agent {
     client: OpenRouterClient,
@@ -710,7 +714,7 @@ impl Agent {
     /// speech after its structured envelope has been removed.
     pub async fn handle(
         &mut self,
-        user_input: String,
+        mut user_input: String,
         ui_tx: Option<&Sender<HyuskEvent>>,
         cancel: &CancellationToken,
         sentences: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
@@ -734,14 +738,21 @@ impl Agent {
                         "The user declined this action. Do not execute it.",
                     );
                 }
-                self.messages.push(Message::user(user_input));
-                let reply = "Understood. I did not perform that action.";
-                self.messages.push(Message::assistant(reply));
-                self.reply_needs_follow_up = Some(false);
                 self.persist_session();
-                return Ok(Some(reply.to_string()));
-            }
-            if confirms(&user_input) && !cancel.is_cancelled() {
+                // "no, open Firefox" is a denial plus a new request: record the
+                // refusal and answer the instruction in this same turn.
+                match denial_instruction(&user_input) {
+                    Some(instruction) => user_input = instruction,
+                    None => {
+                        self.messages.push(Message::user(user_input));
+                        let reply = "Understood. I did not perform that action.";
+                        self.messages.push(Message::assistant(reply));
+                        self.reply_needs_follow_up = Some(false);
+                        self.persist_session();
+                        return Ok(Some(reply.to_string()));
+                    }
+                }
+            } else if confirms(&user_input) && !cancel.is_cancelled() {
                 // The confirmation authorizes this stored call directly. The model
                 // does not get another opportunity to substitute its arguments.
                 self.action_journal.push(ActionJournalEntry {
@@ -772,7 +783,24 @@ impl Agent {
                     *message = Message::tool_result(pending.call_id, result.as_agent_message());
                 }
                 self.persist_session();
+            } else if !cancel.is_cancelled() {
+                // The user said something else, so the stored call is dropped
+                // instead of holding the conversation hostage. The pending
+                // state is already cleared, the placeholder records what
+                // happened, and the new request runs in this same turn.
+                if let Some(message) = self.messages.get_mut(pending.result_index) {
+                    *message = Message::tool_result(
+                        pending.call_id,
+                        "Not confirmed: this action was dropped because the user asked something else. Do not execute it; answer the new request instead.",
+                    );
+                }
+                if let Some(sink) = sentences {
+                    let _ = sink.send(DROPPED_APPROVAL_NOTE.to_string());
+                }
+                self.persist_session();
             } else {
+                // A cancelled turn keeps its confirmation armed so a later
+                // answer still applies to the same call.
                 self.pending_approval = Some(pending);
                 self.messages.push(Message::user(user_input));
                 let reply = "I still need a clear yes or no for that action. Say confirm to allow it once, or no to cancel.";
@@ -1538,16 +1566,25 @@ mod tests {
         assert!(agent.awaiting_approval());
     }
 
+    /// Requests the stub model received, in order.
+    type RequestLog = Arc<std::sync::Mutex<Vec<Value>>>;
+
     /// Serve chat-completions requests: `calls` until the conversation carries
     /// a tool result, then `reply`. Streaming attempts receive the same JSON
-    /// body and fall back to the plain request.
-    async fn serve_tool_call_then_reply(calls: Value, reply: Value) -> Result<String> {
+    /// body and fall back to the plain request. Every request body is recorded
+    /// so a test can check what actually reached the model.
+    async fn serve_tool_call_then_reply(
+        calls: Value,
+        reply: Value,
+    ) -> Result<(String, RequestLog)> {
         use tokio::{
             io::{AsyncReadExt, AsyncWriteExt},
             net::TcpListener,
         };
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let base = format!("http://{}", listener.local_addr()?);
+        let log: RequestLog = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&log);
         tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
@@ -1584,31 +1621,48 @@ mod tests {
                 };
                 let request: Value =
                     serde_json::from_slice(&bytes[body_start..]).unwrap_or(Value::Null);
+                recorded.lock().unwrap().push(request.clone());
                 let has_tool_result = request["messages"]
                     .as_array()
                     .map(|messages| messages.iter().any(|message| message["role"] == "tool"))
                     .unwrap_or(false);
-                let body = if has_tool_result {
+                let canned = if has_tool_result {
                     reply.clone()
                 } else {
                     calls.clone()
-                }
-                .to_string();
+                };
+                // A streamed request needs SSE; replay the canned text as one
+                // delta so the assembled reply matches the plain body.
+                let (content_type, body) = if request["stream"].as_bool().unwrap_or(false) {
+                    let text = canned["choices"][0]["message"]["content"]
+                        .as_str()
+                        .unwrap_or_default();
+                    let delta = json!({"choices":[{
+                        "delta": {"role": "assistant", "content": text},
+                        "finish_reason": "stop"
+                    }]});
+                    (
+                        "text/event-stream",
+                        format!("data: {delta}\n\ndata: [DONE]\n\n"),
+                    )
+                } else {
+                    ("application/json", canned.to_string())
+                };
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 let _ = stream.write_all(response.as_bytes()).await;
                 let _ = stream.shutdown().await;
             }
         });
-        Ok(base)
+        Ok((base, log))
     }
 
     #[tokio::test]
     async fn unknown_tool_name_reports_a_missing_tool_instead_of_arming_an_approval() -> Result<()>
     {
-        let base = serve_tool_call_then_reply(
+        let (base, _requests) = serve_tool_call_then_reply(
             json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
                 {"id":"call-ghost","type":"function","function":{"name":"ghost","arguments":"{}"}}
             ]},"finish_reason":"tool_calls"}]}),
@@ -1666,7 +1720,7 @@ mod tests {
 
     #[tokio::test]
     async fn guarded_call_is_held_once_and_the_pending_call_names_it() -> Result<()> {
-        let base = serve_tool_call_then_reply(
+        let (base, _requests) = serve_tool_call_then_reply(
             json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
                 {"id":"call-shell","type":"function","function":{"name":"shell","arguments":"{\"command\":\"rm -rf build\"}"}}
             ]},"finish_reason":"tool_calls"}]}),
@@ -1758,7 +1812,7 @@ mod tests {
 
     #[tokio::test]
     async fn research_delegation_runs_without_an_approval_card() -> Result<()> {
-        let base = serve_tool_call_then_reply(
+        let (base, _requests) = serve_tool_call_then_reply(
             task_delegate_call(
                 r#"{"action":"delegate","task":"summarise the notes","profile":"research"}"#,
             ),
@@ -1795,7 +1849,7 @@ mod tests {
 
     #[tokio::test]
     async fn unavailable_workspace_delegation_reports_instead_of_asking() -> Result<()> {
-        let base = serve_tool_call_then_reply(
+        let (base, _requests) = serve_tool_call_then_reply(
             task_delegate_call(
                 r#"{"action":"delegate","task":"fix the build","profile":"workspace","workspace":"/nonexistent/hyusk-workspace-probe"}"#,
             ),
@@ -1827,6 +1881,275 @@ mod tests {
                     .contains("Workspace delegation is unavailable")),
             "the failure must reach the model"
         );
+        Ok(())
+    }
+
+    /// Arm a one-shot confirmation for a stored `shell` call, with the
+    /// placeholder result the runner would have pushed.
+    fn arm_shell_approval(agent: &mut Agent) -> usize {
+        // The conversation must hold the assistant call the placeholder answers.
+        agent.messages.push(
+            serde_json::from_value(json!({
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "pending-call",
+                    "type": "function",
+                    "function": {"name": "shell", "arguments": "{\"command\":\"rm -rf build\"}"}
+                }]
+            }))
+            .expect("assistant tool call"),
+        );
+        let index = agent.messages.len();
+        agent.messages.push(Message::tool_result(
+            "pending-call",
+            "Pending confirmation for: shell command=rm -rf build",
+        ));
+        agent.pending_approval = Some(PendingApproval {
+            name: "shell".into(),
+            arguments: "{\"command\":\"rm -rf build\"}".into(),
+            preview: crate::tools::safety::preview("shell", "{\"command\":\"rm -rf build\"}"),
+            call_id: "pending-call".into(),
+            result_index: index,
+            expires_at: Instant::now() + Duration::from_secs(300),
+        });
+        index
+    }
+
+    fn shell_agent(base: String, executions: &Arc<AtomicUsize>) -> Agent {
+        let mut tools = ToolRegistry::new();
+        tools.register(ShellStub(Arc::clone(executions)));
+        let mut agent = Agent::new(
+            OpenRouterClient::new("local-test".into(), base),
+            "test-model".into(),
+            tools,
+        );
+        agent.messages = vec![Message::system("Test")];
+        agent
+    }
+
+    /// The last user message the model actually received.
+    fn last_user_text(requests: &RequestLog) -> String {
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|request| request["messages"].as_array())
+            .flatten()
+            .filter(|message| message["role"] == "user")
+            .filter_map(|message| message["content"].as_str())
+            .next_back()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn unrelated_request_drops_the_pending_action_and_runs_in_the_same_turn() -> Result<()> {
+        let (base, requests) = serve_tool_call_then_reply(Value::Null, final_reply()).await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut agent = shell_agent(base, &executions);
+        let index = arm_shell_approval(&mut agent);
+        let (sentences, mut speech) = tokio::sync::mpsc::unbounded_channel();
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            agent.handle(
+                "open Firefox".into(),
+                None,
+                &CancellationToken::new(),
+                Some(&sentences),
+            ),
+        )
+        .await??;
+
+        assert_eq!(reply.as_deref(), Some("Understood."));
+        assert!(
+            !agent.awaiting_approval(),
+            "the pending action must be gone"
+        );
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            0,
+            "the dropped action must not run"
+        );
+        let placeholder = agent.messages[index].text();
+        assert!(
+            placeholder.contains("dropped because the user asked something else"),
+            "{placeholder}"
+        );
+        assert!(
+            !placeholder.contains("Pending confirmation for:"),
+            "no stale placeholder may remain: {placeholder}"
+        );
+        assert_eq!(
+            speech.try_recv().ok().as_deref(),
+            Some("I dropped that pending action because you asked something else."),
+            "the user hears one short note"
+        );
+        assert_eq!(
+            last_user_text(&requests),
+            "open Firefox",
+            "the new request runs in the same turn"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn denial_with_an_instruction_denies_and_answers_the_instruction() -> Result<()> {
+        let (base, requests) = serve_tool_call_then_reply(Value::Null, final_reply()).await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut agent = shell_agent(base, &executions);
+        let index = arm_shell_approval(&mut agent);
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            agent.handle(
+                "no, open Firefox".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            ),
+        )
+        .await??;
+
+        assert_eq!(reply.as_deref(), Some("Understood."));
+        assert!(!agent.awaiting_approval());
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        assert!(agent.messages[index].text().contains("declined"));
+        assert_eq!(
+            last_user_text(&requests),
+            "open Firefox",
+            "only the instruction reaches the model"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bare_denial_keeps_the_short_refusal_reply() -> Result<()> {
+        let (base, requests) = serve_tool_call_then_reply(Value::Null, final_reply()).await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut agent = shell_agent(base, &executions);
+        let index = arm_shell_approval(&mut agent);
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            agent.handle("no thanks".into(), None, &CancellationToken::new(), None),
+        )
+        .await??;
+
+        assert_eq!(
+            reply.as_deref(),
+            Some("Understood. I did not perform that action.")
+        );
+        assert!(!agent.awaiting_approval());
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        assert!(agent.messages[index].text().contains("declined"));
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "a bare refusal needs no model call"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn plain_yes_executes_the_stored_call_once() -> Result<()> {
+        let (base, _requests) = serve_tool_call_then_reply(Value::Null, final_reply()).await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut agent = shell_agent(base, &executions);
+        let index = arm_shell_approval(&mut agent);
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            agent.handle("yes".into(), None, &CancellationToken::new(), None),
+        )
+        .await??;
+
+        assert_eq!(reply.as_deref(), Some("Understood."));
+        assert!(!agent.awaiting_approval());
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            1,
+            "the approved call runs exactly once"
+        );
+        assert!(agent.messages[index].text().contains("ran"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelled_turn_keeps_the_confirmation_armed() -> Result<()> {
+        let (base, _requests) = serve_tool_call_then_reply(Value::Null, final_reply()).await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut agent = shell_agent(base, &executions);
+        arm_shell_approval(&mut agent);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            agent.handle("open Firefox".into(), None, &cancel, None),
+        )
+        .await??;
+
+        assert!(reply.unwrap().contains("clear yes or no"));
+        assert!(
+            agent.awaiting_approval(),
+            "a cancelled turn must not silently drop the call"
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_batch_keeps_its_skipped_call_after_the_cancellation() -> Result<()> {
+        // Two calls in one batch: the first arms a confirmation, the second is
+        // skipped. An unrelated request then drops the armed call; the skipped
+        // record stays truthful instead of turning into a stale prompt.
+        let (base, requests) = serve_tool_call_then_reply(
+            json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
+                {"id":"call-shell","type":"function","function":{"name":"shell","arguments":"{\"command\":\"rm -rf build\"}"}},
+                {"id":"call-media","type":"function","function":{"name":"media","arguments":"{\"action\":\"play\"}"}}
+            ]},"finish_reason":"tool_calls"}]}),
+            final_reply(),
+        )
+        .await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut agent = shell_agent(base, &executions);
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            agent.handle(
+                "delete the build folder".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            ),
+        )
+        .await??;
+        assert!(reply.is_some());
+        assert!(agent.awaiting_approval());
+        assert!(agent.messages.iter().any(|message| message.role == "tool"
+            && message
+                .text()
+                .contains("Skipped because an earlier action in this batch")));
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            agent.handle("open Firefox".into(), None, &CancellationToken::new(), None),
+        )
+        .await??;
+
+        assert!(reply.is_some());
+        assert!(!agent.awaiting_approval());
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        assert!(agent.messages.iter().any(|message| message.role == "tool"
+            && message
+                .text()
+                .contains("dropped because the user asked something else")));
+        assert!(
+            !agent.messages.iter().any(|message| message.role == "tool"
+                && message.text().contains("Pending confirmation for:")),
+            "no stale confirmation placeholder after the drop"
+        );
+        assert_eq!(last_user_text(&requests), "open Firefox");
         Ok(())
     }
 

@@ -241,10 +241,80 @@ pub(super) fn is_denial(text: &str) -> bool {
     leads_with_phrase(&normalized_decision_phrase(text), NEGATIONS)
 }
 
+/// The instruction that follows a denial, when the utterance carries one.
+///
+/// "no, open Firefox" becomes `Some("open Firefox")`; a bare refusal such as
+/// "no thanks" or "don't do that" becomes `None`, so the caller can answer the
+/// refusal instead of treating filler as a request.
+pub(super) fn denial_instruction(text: &str) -> Option<String> {
+    if !is_denial(text) {
+        return None;
+    }
+    let clauses: Vec<&str> = text
+        .split([',', ';', '.', '!', '?', '\n', '—'])
+        .map(str::trim)
+        .filter(|clause| !clause.is_empty())
+        .collect();
+    // A clause boundary is the clearest separator: "no, open Firefox".
+    if clauses.len() > 1 && is_denial(clauses[0]) {
+        let rest = clauses[1..].join(", ");
+        if is_request(&normalized_decision_phrase(&rest)) {
+            return Some(rest);
+        }
+    }
+    // Without punctuation, strip the leading denial phrase and keep the rest.
+    let normalized = normalized_decision_phrase(text);
+    let consumed = leading_phrase_tokens(&normalized, NEGATIONS)?;
+    let rest = text
+        .split_whitespace()
+        .skip(consumed)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let rest = rest
+        .trim_start_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
+        .trim();
+    is_request(&normalized_decision_phrase(rest)).then(|| rest.to_string())
+}
+
+/// Filler that only completes a refusal ("no, thanks") is not a request.
+fn is_request(normalized: &str) -> bool {
+    const FILLER: &[&str] = &[
+        "thanks",
+        "thank you",
+        "do that",
+        "do it",
+        "that",
+        "it",
+        "please",
+        "okay",
+        "ok",
+        "sure",
+        "now",
+        "then",
+        "at all",
+    ];
+    !normalized.is_empty() && !FILLER.contains(&normalized)
+}
+
+/// How many words the longest leading phrase from `phrases` consumes.
+fn leading_phrase_tokens(normalized: &str, phrases: &[&str]) -> Option<usize> {
+    phrases
+        .iter()
+        .filter(|phrase| {
+            normalized == **phrase
+                || normalized
+                    .strip_prefix(*phrase)
+                    .is_some_and(|rest| rest.starts_with(' '))
+        })
+        .map(|phrase| phrase.split_whitespace().count())
+        .max()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        confirms, is_denial, is_voice_session_stop, parse_structured_reply, tool_call_preamble,
+        confirms, denial_instruction, is_denial, is_voice_session_stop, parse_structured_reply,
+        tool_call_preamble,
     };
 
     /// The documented affirmative set, plus the exact sentences the old
@@ -345,6 +415,43 @@ mod tests {
         // A statement without a question mark is still not an approval.
         assert!(!confirms("is it done"));
         assert!(!confirms("what did you delete"));
+    }
+
+    #[test]
+    fn a_denial_can_carry_an_instruction() {
+        // A clause boundary separates the refusal from the request.
+        assert_eq!(
+            denial_instruction("no, open Firefox").as_deref(),
+            Some("open Firefox")
+        );
+        assert_eq!(
+            denial_instruction("No. Open Firefox.").as_deref(),
+            Some("Open Firefox")
+        );
+        assert_eq!(
+            denial_instruction("don't do that, just tell me what it would do").as_deref(),
+            Some("just tell me what it would do")
+        );
+        // Without punctuation the leading denial phrase is stripped instead.
+        assert_eq!(
+            denial_instruction("no open Firefox").as_deref(),
+            Some("open Firefox")
+        );
+        // Filler only completes the refusal, so there is nothing to do.
+        for phrase in [
+            "no",
+            "no thanks",
+            "no, thanks",
+            "don't do that",
+            "stop",
+            "nope",
+            "cancel",
+            "not now",
+            "yes",
+            "open Firefox",
+        ] {
+            assert_eq!(denial_instruction(phrase), None, "{phrase}");
+        }
     }
 
     #[test]

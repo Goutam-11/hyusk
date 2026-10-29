@@ -48,8 +48,13 @@ confirm approve; no, nope, don't, do not, cancel, stop, and deny refuse. A
 denial anywhere in the utterance wins over a leading approval, so "yes, but not
 yet" and "yes, don't do that" do not approve, and a question ("is it done?",
 "what did you delete?") never approves. A refusal followed by an instruction
-("no, open Firefox") is a denial plus a new request. Everything else keeps the
-stored call armed rather than acting on an ambiguous reply.
+("no, open Firefox") is a denial and the instruction runs in the same turn.
+
+Anything else drops the stored call instead of holding the conversation
+hostage: the placeholder records that the action was dropped because the user
+asked something else, one short spoken note says so, and the new request runs
+immediately. Only a cancelled turn keeps the call armed, because the user never
+got to answer.
 
 ## Wake-word detector
 

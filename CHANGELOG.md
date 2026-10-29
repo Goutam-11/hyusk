@@ -55,6 +55,11 @@
 
 ### Changed
 
+- A pending confirmation no longer hijacks the conversation. Unrelated speech
+  drops the stored call - the placeholder says it was dropped because the user
+  asked something else, one short spoken note says so, and the new request runs
+  in the same turn - while "no, open Firefox" records the refusal and runs the
+  instruction. Only a cancelled turn keeps the call armed.
 - Spoken confirmations are classified by their leading phrase instead of nine
   exact sentences, so "okay", "sure", "yeah", "do it", and "please do" approve
   and "don't do that" denies. A denial anywhere in the utterance wins over a
