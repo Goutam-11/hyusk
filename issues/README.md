@@ -68,7 +68,8 @@ Suggested session opener:
 
 ## Order
 
-Phase 1 first. Within a phase, dependencies win over listed order.
+Phase 1 and Phase 2 are complete (2026-10-29); Phase 3 is next. Within a phase,
+dependencies win over listed order.
 
 | ID | Title | Phase | Pri | Depends on |
 | --- | --- | --- | --- | --- |

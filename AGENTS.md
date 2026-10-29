@@ -165,14 +165,18 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
 Tracked in [`issues/`](issues/README.md) since 2026-10-29, one file per area:
 permission and approval policy (`A`), shell policy (`S`), desktop control (`D`),
 secrets (`X`), and the agent loop/runtime (`L`). Each entry records the
-evidence, the decision taken, acceptance criteria, and tests. Start with `A8`,
-then `A1` and `A2`; the phase order is in the issue index.
+evidence, the decision taken, acceptance criteria, and tests.
+
+Permission Phase 1 and Phase 2 are complete (2026-10-29): A1-A8, A9, S1-S3,
+X1, X2, and D1-D4 are closed. Phase 3 remains: A10, S4, D5/D6, X3/X4, and the
+agent-loop items L1-L6; the order and dependencies are in the issue index.
 
 Do not add new bullets here — open an issue file instead.
 
 Architecture work (prune and feature-gate, tool manifests and the MCP boundary,
 memory v2, preferences) is tracked in `issues/ARCHITECTURE_ISSUE.md` and
-designed in `docs/architecture-roadmap.md`. Start it after permission Phase 1.
+designed in `docs/architecture-roadmap.md`. Start it after permission Phase 1
+(now unblocked).
 
 ## Memory and session notes
 
