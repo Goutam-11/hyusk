@@ -99,7 +99,7 @@ key-input path that can press Enter.
 
 ## D2 — Classify browser mutations
 
-- Status: done · 2026-10-29 · commit `D2PENDING` · Phase 2 · Priority: medium
+- Status: done · 2026-10-29 · commit `542e099` · Phase 2 · Priority: medium
 - Depends on: A8
 - Evidence: `src/tools/safety.rs:8-24`, `src/tools/browser.rs:471-480`
 
