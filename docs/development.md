@@ -3,9 +3,9 @@
 ## Repository position
 
 This repository is a standalone Cargo workspace. It used to be a member of the
-parent Hyusk workspace alongside the `hyusk` CLI in `../crates/hyusk-cli`; it
-now declares its own `[workspace]` and owns its `Cargo.lock` and `target/`, and
-the parent workspace excludes this directory.
+parent Hyusk workspace alongside the older `hyusk` CLI workspace; it now
+declares its own `[workspace]` and owns its `Cargo.lock` and `target/`, and the
+parent workspace excludes this directory.
 
 Package metadata (version, edition, authors, license, repository), dependency
 versions, and build profiles are declared in this crate's own

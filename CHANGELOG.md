@@ -14,8 +14,8 @@
   (`credentials.rs`). The GNOME menu writes the key with `secret-tool` and
   restarts `hyusk.service`; the Noctalia panel hands it over through
   `hyusk-control.json`, which the agent scrubs as soon as it has read the key
-  and then stores and refreshes the catalog. Keys are not persisted in `commands.json` or the
-  session snapshot.
+  and then stores and refreshes the catalog. Keys are not persisted in
+  `commands.json` or the session snapshot.
 - `hyusk-control.json` channel with monotonic revisions for the indicators:
   `set_model`, `set_api_key`, `refresh_models`, workflow/stop actions, and
   immediate scrubbing of any key payload the agent has consumed.
@@ -44,6 +44,9 @@
 
 ### Changed
 
+- `hyusk_agent` is a standalone Cargo workspace: the crate owns `Cargo.lock`,
+  `target/`, and build profiles, the parent workspace excludes the directory,
+  and the installer and docs use the local target directory.
 - The Noctalia widget names the state and a running timer's countdown on the
   bar, and its panel carries the GNOME indicator's menu as Agent, Models,
   Workflows, and Device tabs (transport keys, reply card with approve/deny,
@@ -65,6 +68,9 @@
 
 ### Fixed
 
+- Streamed replies no longer speak the same text twice when a provider repeats
+  the preceding prose in an unfenced response envelope; the envelope is stripped
+  and only the unsaid remainder is spoken (`agent/runner/reply.rs`).
 - Android guided actions verify the resulting screen instead of assuming a
   dispatch succeeded, and Nova stream expiry now surfaces instead of wedging
   the live session.

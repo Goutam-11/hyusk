@@ -6,9 +6,8 @@ workspace). Read
 [`DSH_SESSION_NOTES.md`](../memory/DSH_SESSION_NOTES.md) first for build,
 environment, and tooling context.
 
-Status: **open**. Build/tests are green; these are accuracy issues, not build
-failures. Nothing here has been fixed yet except the items marked
-**resolved**.
+Status: **open** — D2, D3, and D7 need behaviour decisions. All docs-only
+issues (D1, D4, D5, D6, D8) are resolved; build/tests are green.
 
 ## Verified baseline
 
@@ -269,12 +268,13 @@ must stay, gate it with an approval and avoid returning the secret verbatim.
 
 ---
 
-## D8 — Minor consistency items (P3)
+## D8 — Minor consistency items (P3) — resolved 2026-10-29
 
-- **CHANGELOG:** add entries for `4e28322` (streamed-reply dedupe) and
-  `8ee8c37` (standalone workspace), plus the D3/D7 changes once made.
-- **README project layout** ([`README.md:687-L733`](../README.md#L687-L733)):
-  add `Cargo.lock` now that it is committed and owned by this crate.
+- **CHANGELOG:** added entries for `4e28322` (streamed-reply dedupe, Fixed) and
+  `8ee8c37` (standalone workspace, Changed). D3/D7 entries remain pending those
+  decisions.
+- **README project layout** ([`README.md`](../README.md#L700-L752)): `Cargo.lock`
+  is now listed as the committed lockfile for this workspace.
 - **README status table** ([`README.md:46`](../README.md#L46)): the
   `hey_hyusk`/`hey_livekit`-only wording omits the auto-discovered
   `alexa`/`hey_jarvis`/`hey_mycroft`/`hey_rhasspy` classifiers — fixed with D5.
@@ -282,25 +282,29 @@ must stay, gate it with an approval and avoid returning the secret verbatim.
   "keys never enter … the runtime control file" claim — fixed with D1.
 - **`docs/development.md:5-L8`:** the historical reference to
   `../crates/hyusk-cli` is fine in the parent checkout but not in a standalone
-  clone; optional reword to "the older `hyusk` CLI workspace".
+  clone; reworded to "the older `hyusk` CLI workspace".
 
 ---
 
 ## Suggested next-session order
 
-1. Decide D2, D3, D7 (behavior).
-2. Implement the code changes (approval arm, defaults, remove pairing action).
-3. Apply the doc-only fixes: D1, D4, D5, D6, D8.
-4. Re-run:
+1. Decide D2, D3, D7 (behaviour), then implement the code changes (approval
+   arm, wake defaults, remove the pairing action) and add the matching
+   CHANGELOG entries.
+2. Re-run:
    - `cargo fmt --all -- --check`
    - `cargo check --all-targets --offline`
    - `cargo test --all-targets --offline` (isolate XDG paths; see `memory/DSH_SESSION_NOTES.md`)
    - `cargo clippy --all-targets --offline`
    - relative-link check for `README.md`, `ARCHITECTURE.md`, `docs/*.md`
-5. Commit the doc/code changes with a message referencing this file.
+3. Commit the doc/code changes with a message referencing this file.
 
 ## Resolved
 
+- **D8 (minor consistency items)** was corrected on 2026-10-29: CHANGELOG
+  entries for the streamed-reply dedupe and standalone workspace, `Cargo.lock`
+  in the README layout, and the `docs/development.md` historical path. Only the
+  D3/D7 changelog entries remain pending their decisions.
 - **D6 (mobile-link sync)** was corrected on 2026-10-29: the protocol document
   now marks `memory.sync`/`workflow.sync` reserved in v1, documents the
   acknowledge-and-drop behaviour and v1 payloads, and keeps conflict/tombstone

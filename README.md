@@ -697,6 +697,7 @@ authoritative over both.
 hyusk_agent/
 ├── .env.example
 ├── Cargo.toml
+├── Cargo.lock                # committed dependency lockfile for this workspace
 ├── README.md
 ├── ARCHITECTURE.md
 ├── CHANGELOG.md

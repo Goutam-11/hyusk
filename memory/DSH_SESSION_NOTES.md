@@ -111,15 +111,19 @@ markdown links.
 Working and verified: build/check/clippy/fmt, 282 unit tests, standalone
 workspace separation, installer paths, committed docs for the workspace change.
 
-Docs progress: D1 (API-key flow claims), D4 (`docs/voice-and-ui.md`), D5
-(architecture statements), and D6 (mobile-link sync) resolved 2026-10-29. D1:
-GNOME restart and transient `hyusk-control.json` handoff stated per client. D4:
-flow diagram, removed-symbol reference, limitations, and checklist now match the
+Docs progress: all docs-only issues resolved 2026-10-29 — D1 (API-key flow
+claims), D4 (`docs/voice-and-ui.md`), D5 (architecture statements), D6
+(mobile-link sync), and D8 (minor consistency items). D1: GNOME restart and
+transient `hyusk-control.json` handoff stated per client. D4: flow diagram,
+removed-symbol reference, limitations, and checklist now match the
 implementation. D5: wake probe vs immediate cancellation, unconditional Linux
 tool registration, and the full classifier candidate order corrected in
 ARCHITECTURE/docs/architecture, README, and voice docs. D6: `memory.sync` and
 `workflow.sync` marked reserved in protocol v1 with the acknowledge-and-drop
-behaviour. D2, D3, D7 still need a code-vs-docs decision; D8 remains docs-only.
+behaviour. D8: CHANGELOG entries for the streamed-reply dedupe and standalone
+workspace, `Cargo.lock` in the README layout, and the `docs/development.md`
+historical path. D2, D3, D7 still need a code-vs-docs decision, then their
+CHANGELOG entries.
 
 Known open code issues (not fixed; details in the earlier audit / to be filed):
 
@@ -140,8 +144,8 @@ Known open code issues (not fixed; details in the earlier audit / to be filed):
 - Timer/scheduler accept unbounded durations (possible `Instant` overflow).
 - Mobile-link replay protection is per connection (sequence resets).
 - Documentation inaccuracies: see
-  [`DOCS_ISSUES.md`](../issues/DOCS_ISSUES.md) (D2, D3, D8 open; D1, D4, D5, D6
-  resolved 2026-10-29).
+  [`DOCS_ISSUES.md`](../issues/DOCS_ISSUES.md) (D2, D3, D7 open behaviour
+  decisions; D1, D4, D5, D6, D8 resolved 2026-10-29).
 
 ## Working conventions for this repo
 
