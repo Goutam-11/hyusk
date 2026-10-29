@@ -1285,7 +1285,7 @@ async fn execute_workflow_actions(
         let input = action.tool_input();
         if crate::tools::safety::requires_approval(name, &input) {
             return Err(format!(
-                "step {} requires user approval, which is unavailable in workflow execution",
+                "step {} ({name}) requires user approval; workflows cannot confirm it, so run it from the assistant instead",
                 completed + 1
             ));
         }
@@ -2259,7 +2259,9 @@ mod tests {
         let result =
             execute_workflow_actions(&[action, protected], &tools, &CancellationToken::new()).await;
 
-        assert!(result.unwrap_err().contains("requires user approval"));
+        let error = result.unwrap_err();
+        assert!(error.contains("requires user approval"));
+        assert!(error.contains("(shell)"));
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 

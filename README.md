@@ -489,7 +489,10 @@ not require an API key, model call, or screenshots. They can launch configured
 apps, open sites, switch windows, control media, set timers, change brightness,
 lock the session, take screenshots, and save notes. Arbitrary shell text is not
 accepted as a workflow step. Dangerous operations continue to require the
-normal Hyusk confirmation path when invoked through the model.
+normal Hyusk confirmation path when invoked through the model. Background
+`task` delegation is not a workflow step either: it starts a second model or
+Codex worker and needs the assistant's one-shot confirmation, so ask the
+assistant directly instead of adding it to a workflow.
 
 Each `steps` item is one command; a semicolon can also separate commands in a
 single item. The supported forms include `open <app-or-site>`, `launch

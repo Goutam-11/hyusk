@@ -54,6 +54,9 @@
 - `task` delegation now arms a one-shot confirmation for both the research and
   workspace profiles before a worker starts, and the approved call pins the
   canonical workspace root.
+- Workflow execution now names the tool in its approval-gated step error and
+  points at the assistant; the README states that `task` delegation is not a
+  workflow step.
 - The Noctalia widget names the state and a running timer's countdown on the
   bar, and its panel carries the GNOME indicator's menu as Agent, Models,
   Workflows, and Device tabs (transport keys, reply card with approve/deny,

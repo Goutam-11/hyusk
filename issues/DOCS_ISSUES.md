@@ -103,6 +103,12 @@ runner and Sonic paths store the canonicalised workspace via
 research, list, cancel, and the pinned root. Verified with fmt, check, clippy
 (the same 3 pre-existing warnings), and the full suite (283 passed, 7 ignored).
 
+Workflows cannot reach `task`: the deterministic `Action` vocabulary has no task
+step, so the approval guard does not regress workflow execution. The remaining
+approval-gated workflow case (for example a destructive shell action) now names
+the tool and points at the assistant, and the README says delegation is not a
+workflow step.
+
 **Files:** [`README.md`](../README.md#L244-L250), [`docs/tools.md`](../docs/tools.md#L444-L448)
 
 **Claim:** starting either `research` or `workspace` requires "explicit user
