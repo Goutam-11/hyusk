@@ -141,7 +141,7 @@ is a sink, not the source, and is covered by its own round-trip test.
 
 ## X3 — Private runtime files
 
-- Status: done · 2026-10-29 · commit `X3PENDING` · Phase 3 · Priority: medium
+- Status: done · 2026-10-29 · commit `39b4fbc` · Phase 3 · Priority: medium
 - Depends on: —
 - Evidence: `src/speech/speech.rs:251-257` (`next_piper_output_path`),
   `src/tools/computer.rs:380-455` (`screenshot_path` and
