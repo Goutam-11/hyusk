@@ -355,6 +355,11 @@ and the managed automation browser profile, including the `git show REV:.env`
 form that reads a blob from history. The refusal names the rule, never the path
 or a value, and no approval card is armed, so a turn grant cannot cover it.
 
+A program named by a path is never treated as the bare name: `/tmp/x/ls` and
+`./ls` ask even though `ls` alone is free, and an allowlisted name must be
+resolved through `PATH`. The same rule applies to a turn grant, which keeps the
+path in its shape.
+
 `mkdir`, `touch`, `cp`, `mv`, `ln`, and `install` also run freely, but only
 when every path they name stays inside the project root. Destructive and
 ownership-changing programs (`rm`, `rmdir`, `shred`, `truncate`, `chmod`,

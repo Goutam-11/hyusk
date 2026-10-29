@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **339 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **340 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -100,7 +100,9 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   credential path (`.env*`, `.ssh`, `.gnupg`, `.aws`, `.kube`, `.netrc`,
   `.config/gh`, keyrings, the automation browser profile) is refused outright
   by `safety::secret_refusal` before any card is armed; `rm`, `rmdir`, `shred`,
-  `truncate`, `chmod`, `chown`, `chgrp`, `dd`, `mkfs`, `wipefs` always ask.
+  `truncate`, `chmod`, `chown`, `chgrp`, `dd`, `mkfs`, `wipefs` always ask; a
+  program named by a path (`./ls`, `/tmp/x/ls`) never inherits the bare name's
+  decision and asks too (S3).
 - Wake defaults: `WAKE_CLAP_ENABLED` and `WAKE_WORD_DENOISE` are off unless set;
   `.env.example` documents both.
 - Never print `.env` contents or API keys. Keys are keyring-first, then

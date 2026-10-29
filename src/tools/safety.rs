@@ -186,9 +186,11 @@ impl ToolName {
                            fmt, clippy); a read outside the root asks, and a credential path \
                            (environment files, SSH keys, GnuPG, AWS, Kubernetes, netrc, the \
                            GitHub CLI config, keyrings, the automation browser profile) is \
-                           refused outright rather than confirmed; chaining, pipes, \
-                           redirection, expansion, in-place writes, and unknown programs ask, \
-                           and a detached mode asks unless it launches an app",
+                           refused outright rather than confirmed; a program named by a \
+                           path (./ls, /tmp/x/ls) asks even when its bare name is allowlisted; \
+                           chaining, pipes, redirection, expansion, in-place writes, and \
+                           unknown programs ask, and a detached mode asks unless it launches an \
+                           app",
                 preview_keys: &["command", "mode"],
             },
             ToolName::Task => ToolPolicy {
@@ -244,8 +246,10 @@ pub fn approval_guidance() -> String {
 /// The key a turn-scoped "allow for this turn" grant applies to: the tool plus
 /// the shape of the call (A6).
 ///
-/// The shell shape is the program plus its first subcommand, so "git push" and
-/// "git status" are different shapes while two `rm` commands share one. Other
+/// The shell shape is the program as written plus its first subcommand, so
+/// "git push" and "git status" are different shapes while two `rm` commands
+/// share one. A program named by a path keeps the path in its shape, so
+/// approving `/tmp/x/ls` never covers `ls` or another path form (S3). Other
 /// tools use their `action`. `None` means the shape cannot be determined, and
 /// such a call is never covered by a grant.
 pub fn grant_key(name: &str, arguments: &str) -> Option<(String, String)> {
@@ -257,8 +261,9 @@ pub fn grant_key(name: &str, arguments: &str) -> Option<(String, String)> {
             if words.is_empty() {
                 return None;
             }
+            // The program as written: `/tmp/x/ls` and `ls` are different
+            // shapes, so approving one path form never covers another (S3).
             let program = words.remove(0);
-            let program = program.rsplit('/').next().unwrap_or(&program).to_string();
             match words.first() {
                 Some(subcommand) if !subcommand.starts_with('-') => {
                     format!("{program} {subcommand}")
@@ -1007,15 +1012,21 @@ fn shell_requires_approval(args: &Value) -> bool {
         return true;
     }
     let program = words.remove(0);
-    let program = program.rsplit('/').next().unwrap_or(&program);
+    // A program containing a path separator never inherits an allowlisted
+    // decision: `/tmp/x/ls` is not `ls`, and `./ls` is whatever sits in the
+    // project directory. Allowlisted names are resolved through `PATH`, so a
+    // relative or absolute path to a trusted binary asks too (S3).
+    if program.contains('/') {
+        return true;
+    }
     let rest = words;
     // Path checks are made against the project root and the working directory
     // once per decision; a root that cannot be canonicalised asks (S1, S2).
     let read_free = |arguments: &[String]| match project_and_working_directory() {
-        Some((root, cwd)) => read_arguments_are_free(program, arguments, &root, &cwd),
+        Some((root, cwd)) => read_arguments_are_free(&program, arguments, &root, &cwd),
         None => false,
     };
-    let safe = match program {
+    let safe = match program.as_str() {
         "pwd" | "whoami" | "date" | "uname" | "ps" | "which" | "type" => true,
         "rg" => {
             // `--pre` runs a command for every file, so it never runs free.
@@ -1112,7 +1123,7 @@ fn shell_requires_approval(args: &Value) -> bool {
         .unwrap_or("foreground");
     mode == "detached"
         && !matches!(
-            program,
+            program.as_str(),
             "firefox"
                 | "chromium"
                 | "chromium-browser"
@@ -1959,9 +1970,15 @@ mod tests {
             key("shell", r#"{"command":"rm -rf build"}"#),
             Some(("shell".into(), "rm".into()))
         );
+        // A path form is its own shape, so approving one never covers a bare
+        // allowlisted name or another path (S3).
         assert_eq!(
             key("shell", r#"{"command":"/usr/bin/rm -rf other"}"#),
-            Some(("shell".into(), "rm".into()))
+            Some(("shell".into(), "/usr/bin/rm".into()))
+        );
+        assert_eq!(
+            key("shell", r#"{"command":"./ls -la"}"#),
+            Some(("shell".into(), "./ls".into()))
         );
         assert_eq!(
             key("shell", r#"{"command":"cargo test --lib"}"#),
@@ -2105,6 +2122,40 @@ mod tests {
             approval_arguments("shell", r#"{"command":"ls"}"#),
             r#"{"command":"ls"}"#
         );
+    }
+
+    #[test]
+    fn programs_named_by_a_path_always_ask() {
+        // The classifier used to take the last path component, so any binary
+        // planted at such a path inherited the allowlisted name's decision.
+        // A path form asks now; the bare name is resolved through PATH (S3).
+        for command in [
+            "/tmp/x/ls",
+            "./ls",
+            "./ls -la",
+            "../bin/wc",
+            "/usr/bin/cat src/main.rs",
+            "/usr/bin/rg tool src",
+            "/bin/rm -rf build",
+            "~/scripts/ls",
+        ] {
+            assert!(
+                check("shell", &shell_call(command)),
+                "{command} must ask: a path form is not the allowlisted name"
+            );
+        }
+        for command in [
+            "ls",
+            "ls -la",
+            "cat src/main.rs",
+            "rg tool src",
+            "git status",
+        ] {
+            assert!(
+                !check("shell", &shell_call(command)),
+                "{command} must stay free: the bare name resolves through PATH"
+            );
+        }
     }
 
     #[test]

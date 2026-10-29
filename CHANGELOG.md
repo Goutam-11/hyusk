@@ -55,6 +55,12 @@
 
 ### Changed
 
+- `shell` no longer gives an allowlisted decision to a program named by a path.
+  The classifier used to take the last path component, so a binary at
+  `/tmp/x/ls` or `./ls` inherited `ls`'s free pass; such a call now asks, and an
+  allowlisted name must be resolved through `PATH`. A turn grant keeps the path
+  in its shape, so approving one path form never covers another. A credential
+  path is still refused outright rather than merely asked.
 - `shell` reads are confined to the project root, and credential paths are
   refused outright. File-reading programs (`cat`, `head`, `tail`, `wc`, `file`,
   `stat`, `ls`, `du`, `df`, `grep`, `rg`, `sed`, `find`, `sort`, `git show`,

@@ -145,7 +145,7 @@ refuses `--output` for `diff`.
 
 ## S3 — Reject programs containing a slash
 
-- Status: open · Phase 2 · Priority: medium
+- Status: done · 2026-10-29 · commit `S3PENDING` · Phase 2 · Priority: medium
 - Depends on: S1
 - Evidence: `src/tools/safety.rs:74-76`
 
@@ -160,15 +160,34 @@ acceptable friction.
 
 **Acceptance criteria**
 
-- [ ] `/tmp/x/ls`, `./ls`, and `../bin/wc` ask.
-- [ ] Bare `ls` is still free.
-- [ ] A test documents why a path form asks.
+- [x] `/tmp/x/ls`, `./ls`, and `../bin/wc` ask.
+- [x] Bare `ls` is still free.
+- [x] A test documents why a path form asks
+      (`programs_named_by_a_path_always_ask`, with the reason in its comment).
 
 **Tests**
 
-- [ ] Program-form table.
+- [x] Program-form table: eight path forms ask, five bare names stay free.
+- [x] `a_turn_grant_is_keyed_by_tool_and_shape` records that a path form is its
+      own grant shape.
 
-**Files.** `src/tools/safety.rs`.
+**Files.** `src/tools/safety.rs`, `docs/tools.md`, `AGENTS.md`,
+`CHANGELOG.md`.
+
+**Notes (2026-10-29, implemented).** `shell_requires_approval` returns "ask" as
+soon as the program contains `/`, before the allowlist match and before any
+path or mode handling, so no later arm can re-allow it. `grant_key` keeps the
+program as written instead of taking its basename, so approving `/tmp/x/ls`
+covers only that exact path form and never `ls` or another path.
+
+The denylist still resolves the basename when deciding whether a call is a read
+program, so `/tmp/x/cat ~/.ssh/id_ed25519` is refused rather than merely asked.
+That layering is deliberate: the refusal never runs the call, so it is safe to
+apply it to a path form that the classifier would otherwise ask about.
+
+Drift: the Evidence range (`safety.rs:74-76`) pointed at the `Decision` enum
+documentation; the basename strip lived in `shell_requires_approval`, and the
+new check sits where that strip was.
 
 ## S4 — Launch parity between `process` and `shell`
 
