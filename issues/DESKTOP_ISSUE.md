@@ -11,7 +11,7 @@ available from the `window` tool on both.
 
 ## D1 — Prompt for typing into a focused terminal
 
-- Status: done · 2026-10-29 · commit `D1PENDING` · Phase 2 · Priority: high
+- Status: done · 2026-10-29 · commit `1242402` · Phase 2 · Priority: high
 - Depends on: A8
 - Evidence: `src/tools/safety.rs:410-458`, `src/tools/window.rs`, `scripts/`
 
