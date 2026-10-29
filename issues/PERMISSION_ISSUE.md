@@ -576,7 +576,7 @@ Drift found while implementing:
 
 ## A9 — Fast-command lane uses the same policy
 
-- Status: done · 2026-10-29 · commit `A9PENDING` · Phase 2 · Priority: medium
+- Status: done · 2026-10-29 · commit `2ee83a6` · Phase 2 · Priority: medium
 - Depends on: A8
 - Evidence: `src/agent/runner.rs:438-571`
 
