@@ -39,6 +39,18 @@ as `UserInput`, so the text and `computer` tool paths remain available even
 when the voice models are missing.
 ```
 
+### Spoken confirmations
+
+While a confirmation is armed the next transcript decides it, so the grammar
+has to survive speech-to-text phrasing. The leading phrase classifies the
+reply: yes, yeah, yep, okay, ok, sure, go ahead, do it, please do, proceed, and
+confirm approve; no, nope, don't, do not, cancel, stop, and deny refuse. A
+denial anywhere in the utterance wins over a leading approval, so "yes, but not
+yet" and "yes, don't do that" do not approve, and a question ("is it done?",
+"what did you delete?") never approves. A refusal followed by an instruction
+("no, open Firefox") is a denial plus a new request. Everything else keeps the
+stored call armed rather than acting on an ambiguous reply.
+
 ## Wake-word detector
 
 `WakeWordDetector` uses CPAL to capture the same selected microphone as STT

@@ -55,6 +55,11 @@
 
 ### Changed
 
+- Spoken confirmations are classified by their leading phrase instead of nine
+  exact sentences, so "okay", "sure", "yeah", "do it", and "please do" approve
+  and "don't do that" denies. A denial anywhere in the utterance wins over a
+  leading approval, a question is never an approval, and a refusal followed by
+  an instruction is a denial plus a new request.
 - A confirmation now names the exact call. The gate renders a preview from the
   stored arguments - tool plus key arguments, one line, truncated at about 120
   characters with an ellipsis - stores it with the pending call, and both the

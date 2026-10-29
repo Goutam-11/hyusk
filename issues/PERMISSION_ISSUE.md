@@ -221,7 +221,7 @@ change, so only the text moved here.
 
 ## A4 — Confirmation grammar for voice
 
-- Status: open · Phase 1 · Priority: medium
+- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: medium
 - Depends on: —
 - Evidence: `src/agent/runner/reply.rs:122-142`
 
@@ -240,18 +240,46 @@ input" behaviour (A5) and Sonic's transfer of the decision (A7).
 
 **Acceptance criteria**
 
-- [ ] Affirmatives: yes, yeah, yep, okay, ok, sure, go ahead, do it, please do,
-      proceed, confirm.
-- [ ] Negatives: no, nope, don't, do not, cancel, stop, deny; including "don't
-      do that" and "no thanks".
-- [ ] "is it done?" and "what did you delete?" are not approvals.
-- [ ] Pure courtesy phrases do not approve when a question is attached.
+- [x] Affirmatives: yes, yeah, yep, okay, ok, sure, go ahead, do it, please do,
+      proceed, confirm - and the retired exact sentences still approve.
+- [x] Negatives: no, nope, don't, do not, cancel, stop, deny; including "don't
+      do that" and "no thanks". Apostrophes are removed before matching, so
+      both "don't" and "don’t" classify instead of normalising to "don t".
+- [x] "is it done?" and "what did you delete?" are not approvals, with or
+      without the question mark.
+- [x] Pure courtesy phrases do not approve when a question is attached: "okay"
+      approves, "okay, but what does it do?" does not.
 
 **Tests**
 
-- [ ] Table-driven cases in `reply.rs`, including the deny-and-instruct case.
+- [x] Table-driven cases in `reply.rs`, including the deny-and-instruct case
+      (`confirmation_grammar_accepts_documented_affirmatives`,
+      `confirmation_grammar_rejects_denials`,
+      `denial_wins_over_a_leading_approval`,
+      `questions_and_courtesy_are_never_approvals`,
+      `stopping_listening_is_a_denial_and_still_ends_the_session`).
+- [x] The pre-existing `confirmation_is_explicit_and_action_specific` and
+      `voice_session_stop_is_exact_not_part_of_a_task` still pass unchanged.
 
-**Files.** `src/agent/runner/reply.rs`, `src/agent/runner/sonic.rs`.
+**Files.** `src/agent/runner/reply.rs`, `docs/voice-and-ui.md`.
+
+**Notes (2026-10-29, implemented).** `confirms` now reads the leading phrase
+against a documented affirmative table, and `is_denial` does the same against a
+negation table; `normalized_decision_phrase` strips apostrophes before splitting
+so contractions match. A leading approval is still refused when any later token
+negates it ("yes, but not yet", "okay, wait") or when the transcript carries a
+question mark, because acting on an ambiguous reply is worse than re-asking.
+Each check is a separate case of one table-driven classifier rather than an
+exact-sentence match.
+
+`stop listening` now also reads as a denial; the runtime still ends the voice
+session before the turn runs, so the approval branch only sees it if the
+session is already finished. The Sonic loop uses the same shared grammar, so it
+improves too; A7 still owns moving the decision off the transcript there.
+
+Evidence drift: the old nine-sentence match and the seven-phrase denial match
+were at `reply.rs:122-142` when this was written; the tables now start at
+`reply.rs:123` and the classifiers at 224 and 240.
 
 ## A5 — Unrelated speech cancels the pending action and proceeds
 

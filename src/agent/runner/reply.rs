@@ -117,33 +117,242 @@ fn as_structured_reply(json: &str) -> Option<StructuredReply> {
         .filter(|reply| !reply.text.trim().is_empty())
 }
 
-/// Confirmation is intentionally narrow: a confirmation authorizes exactly
-/// one matching tool call, never a later or different action.
-pub(super) fn confirms(text: &str) -> bool {
-    matches!(
-        normalized_spoken_phrase(text).as_str(),
-        "confirm"
-            | "yes"
-            | "yes confirm"
-            | "yes please"
-            | "go ahead"
-            | "yes go ahead"
-            | "okay confirm"
-            | "okay confirm go ahead"
-            | "please proceed"
-    )
+/// Spoken approvals. Speech-to-text varies, so the grammar starts with the
+/// leading phrase instead of requiring one exact sentence; the table stays
+/// narrow because a confirmation authorizes exactly one stored tool call.
+const AFFIRMATIVES: &[&str] = &[
+    "yes",
+    "yeah",
+    "yep",
+    "yup",
+    "ok",
+    "okay",
+    "sure",
+    "certainly",
+    "absolutely",
+    "definitely",
+    "confirm",
+    "confirmed",
+    "proceed",
+    "go ahead",
+    "go for it",
+    "do it",
+    "do that",
+    "please do",
+    "please proceed",
+    "sounds good",
+    "of course",
+    "affirmative",
+    "approve",
+    "agreed",
+    "correct",
+    "fine",
+    "alright",
+    "all right",
+];
+
+/// Leading phrases that refuse the pending action.
+const NEGATIONS: &[&str] = &[
+    "no",
+    "nope",
+    "nah",
+    "nay",
+    "dont",
+    "do not",
+    "cancel",
+    "stop",
+    "deny",
+    "decline",
+    "negative",
+    "abort",
+    "never",
+    "skip",
+    "not now",
+    "leave it",
+    "forget it",
+    "no thanks",
+];
+
+/// A negation anywhere refuses the action: "yes, but not yet" is not an
+/// approval, so denial wins over a leading affirmative.
+const NEGATION_TOKENS: &[&str] = &[
+    "no", "not", "never", "dont", "wont", "cant", "cannot", "cancel", "stop", "wait", "later",
+    "instead", "deny", "nope", "nah", "without",
+];
+
+/// Lowercase, punctuation-free form for the confirmation grammar.
+///
+/// Apostrophes are removed before splitting, so "don't" becomes "dont" and is
+/// classified instead of being read as "don t". Other punctuation becomes a
+/// space, which also drops a trailing full stop or comma.
+fn normalized_decision_phrase(text: &str) -> String {
+    let mut cleaned = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character == '\'' || character == '’' {
+            continue;
+        }
+        if character.is_ascii_punctuation() {
+            cleaned.push(' ');
+        } else {
+            cleaned.extend(character.to_lowercase());
+        }
+    }
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn leads_with_phrase(normalized: &str, phrases: &[&str]) -> bool {
+    phrases.iter().any(|phrase| {
+        normalized == *phrase
+            || normalized
+                .strip_prefix(phrase)
+                .is_some_and(|rest| rest.starts_with(' '))
+    })
+}
+
+fn contains_negation(normalized: &str) -> bool {
+    normalized
+        .split_whitespace()
+        .any(|word| NEGATION_TOKENS.contains(&word))
+}
+
+/// A spoken approval.
+///
+/// The leading phrase decides, so "okay, go ahead" and "sure, please do"
+/// approve while "what did you delete?" cannot. A denial anywhere in the
+/// utterance wins, and a question is never an approval: both keep the stored
+/// call armed and the runtime re-asks instead of acting on an ambiguous reply.
+pub(super) fn confirms(text: &str) -> bool {
+    let normalized = normalized_decision_phrase(text);
+    if normalized.is_empty() {
+        return false;
+    }
+    if is_denial(text) || contains_negation(&normalized) || text.contains('?') {
+        return false;
+    }
+    leads_with_phrase(&normalized, AFFIRMATIVES)
+}
+
+/// A refusal of the pending action, decided by the leading phrase.
+///
+/// "don't do that", "no thanks", and "not now" deny; "no, open Firefox" is a
+/// denial followed by an instruction, which the caller handles as a denial and
+/// a new request.
 pub(super) fn is_denial(text: &str) -> bool {
-    matches!(
-        normalized_spoken_phrase(text).as_str(),
-        "no" | "no thanks" | "don t" | "do not" | "cancel" | "deny" | "stop"
-    )
+    leads_with_phrase(&normalized_decision_phrase(text), NEGATIONS)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_structured_reply, tool_call_preamble};
+    use super::{
+        confirms, is_denial, is_voice_session_stop, parse_structured_reply, tool_call_preamble,
+    };
+
+    /// The documented affirmative set, plus the exact sentences the old
+    /// grammar accepted, which must keep working.
+    #[test]
+    fn confirmation_grammar_accepts_documented_affirmatives() {
+        for phrase in [
+            "yes",
+            "yeah",
+            "yep",
+            "okay",
+            "ok",
+            "sure",
+            "go ahead",
+            "do it",
+            "please do",
+            "proceed",
+            "confirm",
+            // Real STT phrasing around those words.
+            "Yes.",
+            "OK!",
+            "okay, go ahead.",
+            "yeah, go ahead",
+            "sure, please do",
+            "yep, do it",
+            "of course",
+            "sounds good",
+            // The retired exact matches stay approving.
+            "yes confirm",
+            "yes please",
+            "yes go ahead",
+            "okay confirm",
+            "okay confirm go ahead",
+            "please proceed",
+        ] {
+            assert!(confirms(phrase), "should approve: {phrase}");
+        }
+    }
+
+    #[test]
+    fn confirmation_grammar_rejects_denials() {
+        for phrase in [
+            "no",
+            "nope",
+            "don't",
+            "do not",
+            "cancel",
+            "stop",
+            "deny",
+            "no thanks",
+            // The case that used to normalise to "don t" and slip through.
+            "don't do that",
+            "don’t do that",
+            "Don't do that.",
+            "not now",
+            "leave it",
+            "forget it",
+        ] {
+            assert!(is_denial(phrase), "should deny: {phrase}");
+            assert!(!confirms(phrase), "a denial must not approve: {phrase}");
+        }
+    }
+
+    #[test]
+    fn denial_wins_over_a_leading_approval() {
+        // A refusal later in the utterance still refuses.
+        for phrase in [
+            "yes, but not yet",
+            "yes, don't do that",
+            "sure, no thanks",
+            "okay, wait",
+            "yeah, not that one",
+        ] {
+            assert!(!confirms(phrase), "must not approve: {phrase}");
+        }
+        // A denial followed by an instruction is still a denial; the caller
+        // handles the instruction separately.
+        for phrase in ["no, open Firefox", "don't do that, just tell me"] {
+            assert!(is_denial(phrase), "should deny: {phrase}");
+            assert!(!confirms(phrase), "must not approve: {phrase}");
+        }
+    }
+
+    #[test]
+    fn questions_and_courtesy_are_never_approvals() {
+        for phrase in [
+            "is it done?",
+            "what did you delete?",
+            "sure?",
+            "okay, will it delete my files?",
+            "yes, is that safe?",
+        ] {
+            assert!(!confirms(phrase), "a question must not approve: {phrase}");
+        }
+        // A bare courtesy phrase approves, but not when a question rides along.
+        assert!(confirms("okay"));
+        assert!(!confirms("okay, but what does it do?"));
+        // A statement without a question mark is still not an approval.
+        assert!(!confirms("is it done"));
+        assert!(!confirms("what did you delete"));
+    }
+
+    #[test]
+    fn stopping_listening_is_a_denial_and_still_ends_the_session() {
+        assert!(is_voice_session_stop("stop listening"));
+        assert!(is_denial("stop listening"));
+        assert!(!confirms("stop listening"));
+    }
 
     #[test]
     fn preamble_drops_provider_control_tokens() {
