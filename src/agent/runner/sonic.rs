@@ -392,6 +392,12 @@ impl Agent {
                     } else if self.tools.get(&call.name).is_none() {
                         // Unknown or unavailable tools never arm a confirmation.
                         ToolResult::failure(format!("Tool '{}' does not exist.", call.name))
+                    } else if let Some(failure) =
+                        crate::tools::task::delegation_preflight(&call.name, &args)
+                    {
+                        // Availability is preflighted so no card is published
+                        // for a delegation that cannot start.
+                        ToolResult::failure(failure)
                     } else if crate::tools::safety::requires_approval(&call.name, &args) {
                         self.pending_approval = Some(PendingApproval {
                             name: call.name.clone(),

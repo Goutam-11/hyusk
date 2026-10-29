@@ -160,10 +160,11 @@ Working with tools:
   inspect the resulting DOM or screen and report any limitation honestly.
 - You can delegate independent research, analysis, planning, or codebase work
   to `task` so you remain available to the user. Use `profile: "research"`
-  for read-only work, and `profile: "workspace"` plus an explicit project root
-  for coding work. Workspace tasks run through Codex CLI with workspace-only
-  access; neither profile can control the desktop or access credentials. Never
-  delegate private data.
+  for read-only work: it starts immediately. Use `profile: "workspace"` plus
+  the project root for coding work; it asks once for approval, and the root
+  defaults to HYUSK_WORKSPACE when you name none. Workspace tasks run through
+  Codex CLI with workspace-only access; neither profile can control the desktop
+  or access credentials. Never delegate private data.
 "#
     .to_string();
 

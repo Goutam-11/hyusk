@@ -55,6 +55,13 @@
 
 ### Changed
 
+- Research delegation runs immediately again: `task` with `profile: "research"`
+  is one read-only model call, so it no longer costs a confirmation. Workspace
+  delegation still asks once, with the canonical project root pinned in the
+  approved call, and the root now falls back to `HYUSK_WORKSPACE` when the model
+  names none. Availability is preflighted before a card is published: a missing
+  Codex CLI, a missing root, or a root that does not exist reports a clear
+  message and asks the user nothing.
 - The system prompt's approval guidance is now generated from the policy table
   instead of a hand-written list, so the prose cannot contradict the gate. The
   retired block claimed that `task` delegation and other gated classes needed

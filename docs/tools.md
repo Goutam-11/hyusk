@@ -444,9 +444,14 @@ stays responsive.
 access, or credentials) or `workspace` (one explicitly approved project root
 through the installed Codex CLI in `workspace-write` mode).
 `timeout_seconds` is 30-3600; the defaults are three minutes for research and
-fifteen minutes for workspace. Starting a worker requires explicit user
-confirmation, at most two run at once, and completion wakes the main agent with
-a `SubtaskFinished` event rather than replacing the current turn.
+fifteen minutes for workspace. A research delegation is one read-only
+`client.chat` call, so it starts immediately; a workspace delegation asks once,
+with the canonical project root pinned in the approved arguments. The root is
+the call's `workspace` or, when it names none, `HYUSK_WORKSPACE`. A delegation
+that cannot start (no Codex CLI on `PATH`, no project root, or a root that does
+not exist) reports the reason and publishes no confirmation card. At most two
+run at once, and completion wakes the main agent with a `SubtaskFinished` event
+rather than replacing the current turn.
 
 ## Mobile
 

@@ -68,6 +68,117 @@ enum TaskProfile {
     Workspace,
 }
 
+/// The configured project root, from `HYUSK_WORKSPACE`.
+pub fn configured_root() -> Option<String> {
+    std::env::var("HYUSK_WORKSPACE")
+        .ok()
+        .map(|root| root.trim().to_string())
+        .filter(|root| !root.is_empty())
+}
+
+/// Resolve the project root a workspace delegation will use: the call's own
+/// `workspace` when it names one, otherwise the configured root. The result is
+/// canonical, so the approved call and the executed call name the same
+/// directory.
+pub fn canonical_workspace(
+    requested: Option<&str>,
+    default_root: Option<&str>,
+) -> Result<std::path::PathBuf> {
+    let candidate = requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            default_root
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        });
+    let Some(candidate) = candidate else {
+        anyhow::bail!("no project root: pass a workspace path or set HYUSK_WORKSPACE");
+    };
+    let path = std::path::PathBuf::from(candidate);
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("workspace {} does not exist", path.display()))?;
+    if !canonical.is_dir() {
+        anyhow::bail!("workspace {} is not a directory", canonical.display());
+    }
+    Ok(canonical)
+}
+
+/// Check that a workspace delegation can actually run before the runtime asks
+/// the user to approve it, so an approval card is never published for work that
+/// cannot start. `None` means there is nothing to report.
+pub fn delegation_preflight(name: &str, arguments: &str) -> Option<String> {
+    if name != "task" {
+        return None;
+    }
+    let Ok(input) = serde_json::from_str::<Value>(arguments) else {
+        return None;
+    };
+    workspace_preflight(&input, configured_root().as_deref(), codex_installed())
+}
+
+fn workspace_preflight(
+    input: &Value,
+    default_root: Option<&str>,
+    codex_ready: bool,
+) -> Option<String> {
+    if input.get("action").and_then(Value::as_str) != Some("delegate")
+        || input.get("profile").and_then(Value::as_str) != Some("workspace")
+    {
+        return None;
+    }
+    let workspace =
+        match canonical_workspace(input.get("workspace").and_then(Value::as_str), default_root) {
+            Ok(workspace) => workspace,
+            Err(error) => return Some(unavailable(&error.to_string())),
+        };
+    if !codex_ready {
+        return Some(unavailable(&format!(
+            "the Codex CLI (`codex`) is not on PATH, so {} cannot be edited",
+            workspace.display()
+        )));
+    }
+    None
+}
+
+fn unavailable(reason: &str) -> String {
+    format!(
+        "Workspace delegation is unavailable, so nothing ran and nothing was asked: {reason}. Tell the user what to fix, or use the research profile, which needs neither Codex nor a project root."
+    )
+}
+
+/// True when a `codex` executable is on PATH. Nothing is executed.
+fn codex_installed() -> bool {
+    codex_on_path(std::env::var_os("PATH").as_deref())
+}
+
+fn codex_on_path(path: Option<&std::ffi::OsStr>) -> bool {
+    let Some(path) = path else {
+        return false;
+    };
+    std::env::split_paths(path).any(|directory| {
+        ["codex", "codex.exe"].iter().any(|binary| {
+            let candidate = directory.join(binary);
+            candidate.is_file() && is_executable(&candidate)
+        })
+    })
+}
+
+#[cfg(unix)]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::metadata(path)
+        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &std::path::Path) -> bool {
+    std::fs::metadata(path).is_ok()
+}
+
 impl TaskTool {
     pub fn new(events: Sender<HyuskEvent>, active_model: SharedActiveModel) -> Self {
         Self {
@@ -258,16 +369,16 @@ impl Tool for TaskTool {
                 match profile {
                     TaskProfile::Research => client.chat(&model, &messages, &[]).await,
                     TaskProfile::Workspace => {
-                        let Some(workspace) = workspace else {
-                            return Err(anyhow::anyhow!(
-                                "workspace profile requires a workspace path"
-                            ));
-                        };
-                        let codex = match CodexClient::for_workspace(workspace) {
-                            Ok(client) => client,
-                            Err(error) => return Err(error),
-                        };
-                        codex.chat("default", &messages).await
+                        let requested = workspace
+                            .as_ref()
+                            .map(|path| path.to_string_lossy().into_owned());
+                        let resolved =
+                            canonical_workspace(requested.as_deref(), configured_root().as_deref())
+                                .and_then(CodexClient::for_workspace);
+                        match resolved {
+                            Ok(codex) => codex.chat("default", &messages).await,
+                            Err(error) => Err(error),
+                        }
                     }
                 }
             };
@@ -393,5 +504,112 @@ mod tests {
         let worker = tool.shutdown.child_token();
         drop(tool);
         assert!(worker.is_cancelled());
+    }
+}
+
+#[cfg(test)]
+mod preflight_tests {
+    use super::{codex_on_path, delegation_preflight, workspace_preflight};
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    fn scratch_dir(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "hyusk-preflight-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).expect("create scratch directory");
+        path
+    }
+
+    #[test]
+    fn research_delegation_is_never_blocked_by_availability() {
+        for arguments in [
+            json!({"action":"delegate","task":"summarise","profile":"research"}),
+            json!({"action":"delegate","task":"summarise"}),
+            json!({"action":"list"}),
+        ] {
+            assert_eq!(
+                delegation_preflight("task", &arguments.to_string()),
+                None,
+                "research and list need neither Codex nor a project root"
+            );
+            assert_eq!(workspace_preflight(&arguments, None, false), None);
+        }
+        assert_eq!(delegation_preflight("shell", "{}"), None);
+    }
+
+    #[test]
+    fn workspace_preflight_reports_a_missing_project_root() {
+        let input = json!({"action":"delegate","task":"fix","profile":"workspace"});
+        let message = workspace_preflight(&input, None, true).expect("missing root is reported");
+        assert!(message.contains("HYUSK_WORKSPACE"), "{message}");
+        assert!(message.contains("nothing was asked"), "{message}");
+    }
+
+    #[test]
+    fn workspace_preflight_reports_a_workspace_that_does_not_exist() {
+        let input = json!({
+            "action": "delegate",
+            "task": "fix",
+            "profile": "workspace",
+            "workspace": "/nonexistent/hyusk-preflight-probe"
+        });
+        let message = workspace_preflight(&input, None, true).expect("missing workspace");
+        assert!(message.contains("does not exist"), "{message}");
+    }
+
+    #[test]
+    fn workspace_preflight_reports_a_missing_codex_cli() {
+        let root = scratch_dir("root");
+        let input = json!({
+            "action": "delegate",
+            "task": "fix",
+            "profile": "workspace",
+            "workspace": root.to_string_lossy()
+        });
+        let message = workspace_preflight(&input, None, false).expect("missing Codex");
+        assert!(message.contains("Codex CLI"), "{message}");
+        // A ready root and a ready Codex means the delegation may arm.
+        assert_eq!(workspace_preflight(&input, None, true), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn codex_cli_discovery_looks_only_for_an_executable_on_path() {
+        let empty = scratch_dir("empty");
+        assert!(!codex_on_path(Some(empty.as_os_str())));
+        assert!(!codex_on_path(None));
+
+        let fake = scratch_dir("bin");
+        let binary = fake.join("codex");
+        std::fs::write(&binary, "#!/bin/sh\nexit 0\n").expect("write fake binary");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
+                .expect("mark fake binary executable");
+            assert!(codex_on_path(Some(fake.as_os_str())));
+        }
+
+        let _ = std::fs::remove_dir_all(&empty);
+        let _ = std::fs::remove_dir_all(&fake);
+    }
+
+    #[test]
+    fn workspace_delegation_uses_the_configured_root() {
+        let root = scratch_dir("home");
+        let input = json!({"action":"delegate","task":"fix","profile":"workspace"});
+        let configured = root.to_string_lossy().into_owned();
+        assert_eq!(workspace_preflight(&input, Some(&configured), true), None);
+        // The resolved root is canonical, so the pinned call is what runs.
+        let canonical = crate::tools::task::canonical_workspace(None, Some(&configured))
+            .expect("configured root resolves");
+        assert_eq!(canonical, root.canonicalize().unwrap());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

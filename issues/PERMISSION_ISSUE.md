@@ -83,8 +83,8 @@ the gate when the review was written; A8 moved it.
 
 ## A2 — Research delegation runs without approval
 
-- Status: open · Phase 1 · Priority: high
-- Depends on: A8
+- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
+- Depends on: A1
 - Evidence: `src/tools/safety.rs:49-54`, `src/tools/task.rs` (research worker)
 
 **Problem.** `task_requires_approval` returns true for every `delegate`,
@@ -102,17 +102,56 @@ sandbox or Codex integration.
 
 **Acceptance criteria**
 
-- [ ] `task` with `profile: "research"` runs immediately.
-- [ ] `task` with `profile: "workspace"` still asks once and pins the root.
-- [ ] Missing Codex or `HYUSK_WORKSPACE` returns a clear failure and no approval
-      card is published.
+- [x] `task` with `profile: "research"` runs immediately: the policy row allows
+      it, and `runner::tests::research_delegation_runs_without_an_approval_card`
+      drives a full turn with no pending approval.
+- [x] `task` with `profile: "workspace"` still asks once and pins the root.
+      `task_requires_approval` asks for every profile other than an explicit
+      research, so an unknown profile fails closed. `approval_arguments` stores
+      the canonical root, from the call or from `HYUSK_WORKSPACE`.
+- [x] Missing Codex or `HYUSK_WORKSPACE` returns a clear failure and no approval
+      card is published: `task::delegation_preflight` runs in the text and Sonic
+      paths before arming, and
+      `runner::tests::unavailable_workspace_delegation_reports_instead_of_asking`
+      covers the card-free path.
 
 **Tests**
 
-- [ ] Safety table cases for both profiles.
-- [ ] Task preflight failure path (bogus binary or missing workspace).
+- [x] Safety table cases for both profiles
+      (`research_delegation_is_free_and_workspace_delegation_asks_once`,
+      `workspace_delegation_pins_the_canonical_root`).
+- [x] Task preflight failure paths:
+      `workspace_preflight_reports_a_missing_project_root`,
+      `..._a_workspace_that_does_not_exist`, `..._a_missing_codex_cli`, and
+      `codex_cli_discovery_looks_only_for_an_executable_on_path`.
+- [x] `workspace_delegation_uses_the_configured_root` and
+      `research_delegation_is_never_blocked_by_availability`.
 
-**Files.** `src/tools/safety.rs`, `src/tools/task.rs`, `src/agent/runner.rs`.
+**Files.** `src/tools/safety.rs`, `src/tools/task.rs`, `src/agent/runner.rs`,
+`src/agent/runner/sonic.rs`, `src/agent/runner/prompts.rs`, `README.md`,
+`docs/tools.md`, `AGENTS.md`.
+
+**Notes (2026-10-29, implemented).** The gate now treats an absent profile as
+research (the tool's own default) and asks for anything else, so a new profile
+cannot slip through free. The project root resolves through one helper
+(`task::canonical_workspace`) used by the gate's pinning, the preflight, and the
+worker, so the approved root is the executed root.
+
+Decisions beyond the letter of the issue:
+
+- The root falls back to `HYUSK_WORKSPACE` when a workspace delegation names
+  none. Without that, the acceptance line about a missing `HYUSK_WORKSPACE`
+  could not be reached, and the model would have to reproduce the installer's
+  pinned path.
+- The preflight lives in `task.rs` and is called from `runner.rs` and
+  `sonic.rs`; it checks the `codex` executable on `PATH` and canonicalises the
+  root without running anything, so a card is only published for work that can
+  start.
+- Evidence drift: `safety.rs:49-54` was the old two-line `task` arm; A8 moved it
+  into the policy table.
+
+**Not done.** The manual voice check from A1 is still outstanding: it needs a
+live microphone, STT, and a provider.
 
 ## A3 — Approval shows the exact call
 

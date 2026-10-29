@@ -175,8 +175,9 @@ impl ToolName {
             },
             ToolName::Task => ToolPolicy {
                 decision: Decision::Classified(task_requires_approval),
-                guidance: "every delegate call asks, for both the research and workspace \
-                           profiles; list and cancel run freely",
+                guidance: "a research delegation runs immediately; a workspace \
+                           delegation asks once, with its project root pinned; list and \
+                           cancel run freely",
             },
             ToolName::Timer => ToolPolicy {
                 decision: Decision::Allow,
@@ -246,13 +247,17 @@ pub fn approval_arguments(name: &str, arguments: &str) -> String {
     let Ok(mut args) = serde_json::from_str::<Value>(arguments) else {
         return arguments.to_string();
     };
-    if args.get("action").and_then(Value::as_str) != Some("delegate") {
+    if args.get("action").and_then(Value::as_str) != Some("delegate")
+        || args.get("profile").and_then(Value::as_str) != Some("workspace")
+    {
         return arguments.to_string();
     }
-    let Some(workspace) = args.get("workspace").and_then(Value::as_str) else {
-        return arguments.to_string();
-    };
-    let Ok(canonical) = std::fs::canonicalize(workspace) else {
+    // Pin the root the delegation will actually use, whether the model named it
+    // or it came from HYUSK_WORKSPACE.
+    let Ok(canonical) = crate::tools::task::canonical_workspace(
+        args.get("workspace").and_then(Value::as_str),
+        crate::tools::task::configured_root().as_deref(),
+    ) else {
         return arguments.to_string();
     };
     args["workspace"] = Value::String(canonical.to_string_lossy().into_owned());
@@ -260,10 +265,17 @@ pub fn approval_arguments(name: &str, arguments: &str) -> String {
 }
 
 fn task_requires_approval(args: &Value) -> bool {
-    // Starting a worker is the documented safety boundary for both profiles.
-    // Research is read-only but still runs a second model; workspace can edit
-    // any project root the model names, so it must never start unconfirmed.
-    action(args) == "delegate"
+    if action(args) != "delegate" {
+        return false;
+    }
+    // Research is one read-only `client.chat` call: no tools, no filesystem
+    // access, no credentials, so it runs immediately. Workspace delegation
+    // starts Codex CLI against a project root and asks once. An absent profile
+    // is research (the tool's default); an unknown profile fails closed.
+    match args.get("profile") {
+        None => false,
+        Some(value) => value.as_str() != Some("research"),
+    }
 }
 
 fn memory_requires_approval(args: &Value) -> bool {
@@ -901,19 +913,33 @@ mod tests {
     }
 
     #[test]
-    fn task_delegation_requires_confirmation_and_pins_the_workspace_root() {
+    fn research_delegation_is_free_and_workspace_delegation_asks_once() {
+        // Research is one read-only model call: no tools, no filesystem.
+        assert!(!check(
+            "task",
+            r#"{"action":"delegate","task":"summarise","profile":"research"}"#
+        ));
+        // An absent profile is research, which is the tool's default.
+        assert!(!check(
+            "task",
+            r#"{"action":"delegate","task":"summarise"}"#
+        ));
+        // Workspace delegation starts Codex against a project root.
         assert!(check(
             "task",
             r#"{"action":"delegate","task":"fix the build","profile":"workspace","workspace":"src"}"#
         ));
-        assert!(check("task", r#"{"action":"delegate","task":"summarise"}"#));
+        // An unknown profile fails closed rather than being treated as research.
         assert!(check(
             "task",
-            r#"{"action":"delegate","task":"summarise","profile":"research"}"#
+            r#"{"action":"delegate","task":"fix","profile":"coding"}"#
         ));
         assert!(!check("task", r#"{"action":"list"}"#));
         assert!(!check("task", r#"{"action":"cancel","id":3}"#));
+    }
 
+    #[test]
+    fn workspace_delegation_pins_the_canonical_root() {
         let stored = approval_arguments(
             "task",
             r#"{"action":"delegate","task":"fix","profile":"workspace","workspace":"src/."}"#,
@@ -921,6 +947,14 @@ mod tests {
         let stored: Value = serde_json::from_str(&stored).unwrap();
         let canonical = std::fs::canonicalize("src").unwrap();
         assert_eq!(stored["workspace"], canonical.to_string_lossy().as_ref());
+        // Research keeps its arguments: no root to pin.
+        assert_eq!(
+            approval_arguments(
+                "task",
+                r#"{"action":"delegate","task":"summarise","profile":"research"}"#
+            ),
+            r#"{"action":"delegate","task":"summarise","profile":"research"}"#
+        );
         assert_eq!(
             approval_arguments("shell", r#"{"command":"ls"}"#),
             r#"{"command":"ls"}"#

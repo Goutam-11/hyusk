@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **294 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **303 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -81,8 +81,10 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
 
 - `src/tools/safety.rs::requires_approval` is the central gate, driven by the
   explicit per-tool table in the same file; unknown tools and unknown shapes
-  fail closed. `task` delegation (both profiles) and `mobile` invocations follow
-  the policy there.
+  fail closed. A workspace `task` delegation asks once with its canonical root
+  pinned and is preflighted before any card is published; a research delegation
+  is free because it is one read-only model call with no tools or filesystem
+  access (A2), so keep it that way. `mobile` invocations follow the policy there.
 - The model-facing `mobile` schema exposes only `list`/`invoke`. Pairing codes
   belong to the GNOME/Noctalia indicators (`hyusk-pairing.json`, `pair_phone`),
   never to a model tool result or session history.

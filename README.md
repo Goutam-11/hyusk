@@ -124,7 +124,7 @@ or times out, the wake event is ignored and the terminal input path still works.
 | `AWS_REGION` / `AWS_DEFAULT_REGION` | No* | Profile region | Region for Nova Sonic's signed Bedrock Runtime stream. |
 | `BEDROCK_SONIC_MODEL` | No | `amazon.nova-2-sonic-v1:0` | Bedrock Nova Sonic model ID. Uses AWS SDK credentials, not a Bedrock API key. |
 | `BRAVE_SEARCH_API_KEY` | No | DuckDuckGo fallback | Optional token for Brave's structured Search API. |
-| `HYUSK_WORKSPACE` | No | Current directory | Workspace root for Codex CLI coding mode. |
+| `HYUSK_WORKSPACE` | No | Current directory | Workspace root for Codex CLI coding mode and for a workspace `task` delegation that names no root. |
 | `MODEL_VISION` | No | `1` | Attach screenshots as image content for vision-capable models. Set `0` for text-only models, then use `ocr` instead. |
 | `ORB_STEAL_FOCUS` | No | `0` | Let the orb take keyboard focus while active. Default is off so portal keyboard input goes to the controlled app. |
 | `HYUSK_ORB` | No | auto | Set `0` to disable the orb, `1` to force it. By default the orb is skipped when the GNOME indicator extension is enabled. |
@@ -246,10 +246,14 @@ Delegates longer model or coding work while the main assistant stays
 responsive. The default `research` profile is read-only: no local tools, memory,
 desktop access, or credentials. The `workspace` profile gives an
 already-installed, signed-in Codex CLI one explicitly approved project root in
-`workspace-write` sandbox mode. Starting either profile requires explicit user
-confirmation. Use `list` and `cancel` to manage running jobs, and optionally set
-`timeout_seconds` between thirty seconds and one hour. Hyusk posts the report
-and announces completion when a worker finishes.
+`workspace-write` sandbox mode. A research delegation runs immediately; a
+workspace delegation asks once, with its project root pinned to the approved
+directory. The root is the call's `workspace` or, when it names none,
+`HYUSK_WORKSPACE`. When Codex or the root is unavailable the delegation fails
+with a clear message and no confirmation is shown. Use `list` and `cancel` to
+manage running jobs, and optionally set `timeout_seconds` between thirty seconds
+and one hour. Hyusk posts the report and announces completion when a worker
+finishes.
 
 ### `web_search`
 
@@ -491,8 +495,8 @@ lock the session, take screenshots, and save notes. Arbitrary shell text is not
 accepted as a workflow step. Dangerous operations continue to require the
 normal Hyusk confirmation path when invoked through the model. Background
 `task` delegation is not a workflow step either: it starts a second model or
-Codex worker and needs the assistant's one-shot confirmation, so ask the
-assistant directly instead of adding it to a workflow.
+Codex worker, and a workspace delegation needs the assistant's one-shot
+confirmation, so ask the assistant directly instead of adding it to a workflow.
 
 Each `steps` item is one command; a semicolon can also separate commands in a
 single item. The supported forms include `open <app-or-site>`, `launch

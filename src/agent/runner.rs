@@ -932,6 +932,10 @@ impl Agent {
 
                         let requires_approval =
                             crate::tools::safety::requires_approval(&name, &args_str);
+                        // A delegation that cannot start must never publish a
+                        // confirmation card: the user would approve a dead end.
+                        let unavailable =
+                            crate::tools::task::delegation_preflight(&name, &args_str);
                         let result = if approval_waiting {
                             ToolResult::failure(
                                 "Skipped because an earlier action in this batch is awaiting confirmation.",
@@ -943,6 +947,8 @@ impl Agent {
                             // existence first: asking the user to approve a call
                             // that cannot run would be a dead end.
                             ToolResult::failure(format!("Tool '{name}' does not exist."))
+                        } else if let Some(failure) = unavailable {
+                            ToolResult::failure(failure)
                         } else if requires_approval {
                             let index = self.messages.len();
                             self.pending_approval = Some(PendingApproval {
@@ -1620,6 +1626,114 @@ mod tests {
             .messages
             .iter()
             .any(|message| message.role == "tool" && message.text().contains("does not exist")));
+        Ok(())
+    }
+
+    fn task_delegate_call(arguments: &str) -> Value {
+        json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
+            {"id":"call-task","type":"function","function":{"name":"task","arguments":arguments}}
+        ]},"finish_reason":"tool_calls"}]})
+    }
+
+    fn final_reply() -> Value {
+        json!({"choices":[{"message":{"role":"assistant","content":"{\"text\":\"Understood.\",\"needs_reply\":false,\"reply_type\":\"none\"}"},"finish_reason":"stop"}]})
+    }
+
+    async fn agent_with_task_tool(
+        base: String,
+    ) -> (Agent, tokio::sync::mpsc::Receiver<crate::types::HyuskEvent>) {
+        use crate::{model::SharedActiveModel, tools::task::TaskTool};
+
+        let (events, receiver) = tokio::sync::mpsc::channel(8);
+        let mut tools = ToolRegistry::new();
+        tools.register(TaskTool::new(
+            events.clone(),
+            SharedActiveModel::new(
+                "openrouter",
+                "fixture",
+                OpenRouterClient::new("unused".into(), "http://127.0.0.1:1".into()),
+            ),
+        ));
+        let mut agent = Agent::new(
+            OpenRouterClient::new("local-test".into(), base),
+            "test-model".into(),
+            tools,
+        );
+        agent.messages = vec![Message::system("Test")];
+        (agent, receiver)
+    }
+
+    #[tokio::test]
+    async fn research_delegation_runs_without_an_approval_card() -> Result<()> {
+        let base = serve_tool_call_then_reply(
+            task_delegate_call(
+                r#"{"action":"delegate","task":"summarise the notes","profile":"research"}"#,
+            ),
+            final_reply(),
+        )
+        .await?;
+        let (mut agent, _events) = agent_with_task_tool(base).await;
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            agent.handle(
+                "research this".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            ),
+        )
+        .await??;
+
+        assert!(reply.is_some());
+        assert!(
+            !agent.awaiting_approval(),
+            "research delegation must not ask for confirmation"
+        );
+        assert!(
+            agent
+                .messages
+                .iter()
+                .any(|message| message.role == "tool" && message.text().contains("Delegated")),
+            "the research worker should have started"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unavailable_workspace_delegation_reports_instead_of_asking() -> Result<()> {
+        let base = serve_tool_call_then_reply(
+            task_delegate_call(
+                r#"{"action":"delegate","task":"fix the build","profile":"workspace","workspace":"/nonexistent/hyusk-workspace-probe"}"#,
+            ),
+            final_reply(),
+        )
+        .await?;
+        let (mut agent, _events) = agent_with_task_tool(base).await;
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            agent.handle(
+                "fix the build".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            ),
+        )
+        .await??;
+
+        assert!(reply.is_some());
+        assert!(
+            !agent.awaiting_approval(),
+            "an unavailable delegation must not publish a confirmation"
+        );
+        assert!(
+            agent.messages.iter().any(|message| message.role == "tool"
+                && message
+                    .text()
+                    .contains("Workspace delegation is unavailable")),
+            "the failure must reach the model"
+        );
         Ok(())
     }
 
