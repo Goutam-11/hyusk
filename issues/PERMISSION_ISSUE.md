@@ -16,7 +16,7 @@ swallows the next request.
 
 ## A1 — One source of truth for approval guidance
 
-- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit `b4b2725` · Phase 1 · Priority: high
 - Depends on: A8
 - Evidence: `src/agent/runner/prompts.rs:131-142`, `src/tools/safety.rs:8-24`
 
@@ -83,7 +83,7 @@ the gate when the review was written; A8 moved it.
 
 ## A2 — Research delegation runs without approval
 
-- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit `d31228a` · Phase 1 · Priority: high
 - Depends on: A1
 - Evidence: `src/tools/safety.rs:49-54`, `src/tools/task.rs` (research worker)
 
@@ -339,7 +339,7 @@ voice loop, which only needs the kind change.
 
 ## A8 — Explicit policy registry with exhaustive coverage
 
-- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit `38a4ce4` · Phase 1 · Priority: high
 - Depends on: —
 - Evidence: `src/tools/safety.rs:8-24`, `src/tools/registry.rs`
 
