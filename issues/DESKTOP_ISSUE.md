@@ -157,7 +157,7 @@ redesigning the policy. Evidence drift: `safety.rs:8-24` now points at the
 
 ## D3 — Capability registry for portal and AT-SPI
 
-- Status: done · 2026-10-29 · commit `D3PENDING` · Phase 2 · Priority: medium
+- Status: done · 2026-10-29 · commit `0df4d8e` · Phase 2 · Priority: medium
 - Depends on: —
 - Evidence: `src/tools/portal.rs:28-120`, `src/tools/gnome_doctor.rs:270-290`,
   `src/tools/computer.rs:1325-1390`
