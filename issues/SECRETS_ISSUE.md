@@ -66,7 +66,7 @@ is deliberately left to the user, as the decision records.
 
 ## X2 — Redact secret-shaped output
 
-- Status: done · 2026-10-29 · commit `X2PENDING` · Phase 2 · Priority: medium
+- Status: done · 2026-10-29 · commit `7af7130` · Phase 2 · Priority: medium
 - Depends on: S2
 - Evidence: `src/tools/shell.rs` (output path), `src/agent/runner/session.rs`
 
