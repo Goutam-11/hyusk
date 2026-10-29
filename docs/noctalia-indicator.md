@@ -62,7 +62,8 @@ from any tab.
 
 - **Agent** — **Listen**, **Stop**, and **Stop listening** while the microphone
   is open; the latest reply with **More**/**Less**, **Copy**, and **Dismiss**;
-  **Approve**/**Deny** while a confirmation is pending. A running timer shows
+  **Approve**, **Allow for this turn**, and **Deny** while a confirmation is
+  pending. A running timer shows
   its countdown here as big digits (`25:00`), ticking once a second — the same
   treatment the GNOME card gives it, including a `MM:SS` clock written in the
   reply itself.

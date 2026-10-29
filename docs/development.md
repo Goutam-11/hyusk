@@ -113,8 +113,8 @@ cargo clippy --all-targets
 cargo test --bin hyusk_agent
 ```
 
-`cargo test --all-targets` runs the full suite: 324 passing tests and 7
-ignored (the main binary alone: 303 passing, 6 ignored; shared model/stream
+`cargo test --all-targets` runs the full suite: 330 passing tests and 7
+ignored (the main binary alone: 309 passing, 6 ignored; shared model/stream
 tests are compiled into each binary). The ignored ones need a real session or
 network: the four portal smoke tests below, a live CDP browser test, a Whisper
 cancel/cache test, and the GTK workflow editor draft test. Coverage includes

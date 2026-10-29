@@ -40,7 +40,7 @@ use tools::accessibility::AccessibilityTool;
 
 use speech::{test_audio, SpeechToText};
 
-use types::{HyuskEvent, HyuskState};
+use types::{event::ApprovalScope, HyuskEvent, HyuskState};
 
 use crate::wake::detector::{WakeResume, WakeWordDetector};
 
@@ -231,8 +231,18 @@ fn control_schedule(control: &ExtensionControl) -> Option<ScheduleControl> {
 /// only actions that name a confirmation; everything else is not a decision.
 fn approval_decision(action: &str) -> Option<HyuskEvent> {
     match action {
-        "approve" => Some(HyuskEvent::ApprovalDecision { approved: true }),
-        "deny" => Some(HyuskEvent::ApprovalDecision { approved: false }),
+        "approve" => Some(HyuskEvent::ApprovalDecision {
+            approved: true,
+            scope: ApprovalScope::Once,
+        }),
+        "approve_turn" => Some(HyuskEvent::ApprovalDecision {
+            approved: true,
+            scope: ApprovalScope::Turn,
+        }),
+        "deny" => Some(HyuskEvent::ApprovalDecision {
+            approved: false,
+            scope: ApprovalScope::Once,
+        }),
         _ => None,
     }
 }
@@ -810,6 +820,8 @@ async fn main() -> Result<()> {
                                 let _ = link_agent_tx
                                     .send(HyuskEvent::ApprovalDecision {
                                         approved: value.approved,
+                                        // The phone link stays once-only.
+                                        scope: ApprovalScope::Once,
                                     })
                                     .await;
                             }
@@ -1090,7 +1102,7 @@ async fn main() -> Result<()> {
                     }
                 }
                 "dismiss_card" => status::dismiss(),
-                "approve" | "deny" => {
+                "approve" | "approve_turn" | "deny" => {
                     // A click is an approval decision, not a user message: a
                     // stale one must not start a turn or answer as the user.
                     if let Some(event) = approval_decision(action) {
@@ -1452,7 +1464,7 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod control_tests {
     use super::{approval_decision, control_schedule, control_workflow_name, ExtensionControl};
-    use crate::types::HyuskEvent;
+    use crate::types::{event::ApprovalScope, HyuskEvent};
 
     #[test]
     fn standalone_workflow_field_is_preferred() {
@@ -1487,11 +1499,17 @@ mod control_tests {
     fn approve_and_deny_map_to_an_approval_decision_not_a_user_message() {
         assert!(matches!(
             approval_decision("approve"),
-            Some(HyuskEvent::ApprovalDecision { approved: true })
+            Some(HyuskEvent::ApprovalDecision {
+                approved: true,
+                scope: ApprovalScope::Once
+            })
         ));
         assert!(matches!(
             approval_decision("deny"),
-            Some(HyuskEvent::ApprovalDecision { approved: false })
+            Some(HyuskEvent::ApprovalDecision {
+                approved: false,
+                scope: ApprovalScope::Once
+            })
         ));
         // A click is never a user message: that is what made a stale card
         // answer as if the user had spoken.
@@ -1501,6 +1519,20 @@ mod control_tests {
                 Some(HyuskEvent::UserInput(_))
             ));
         }
+        assert!(matches!(
+            approval_decision("approve_turn"),
+            Some(HyuskEvent::ApprovalDecision {
+                approved: true,
+                scope: ApprovalScope::Turn
+            })
+        ));
+        assert!(matches!(
+            approval_decision("approve"),
+            Some(HyuskEvent::ApprovalDecision {
+                scope: ApprovalScope::Once,
+                ..
+            })
+        ));
         assert!(approval_decision("dismiss_card").is_none());
         assert!(approval_decision("start_listening").is_none());
         assert!(approval_decision("").is_none());

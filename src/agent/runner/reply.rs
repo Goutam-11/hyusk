@@ -241,6 +241,37 @@ pub(super) fn is_denial(text: &str) -> bool {
     leads_with_phrase(&normalized_decision_phrase(text), NEGATIONS)
 }
 
+/// The spoken form that also allows the rest of the turn, and the phrase the
+/// runtime feeds the runner when the panel's "Allow for this turn" is clicked.
+pub(crate) const ALLOW_FOR_THIS_TURN: &str = "allow for this turn";
+
+/// Phrases that approve the stored call and grant the rest of the turn.
+const TURN_APPROVALS: &[&str] = &[
+    "allow for this turn",
+    "allow this turn",
+    "allow for the rest of the turn",
+    "for this turn",
+    "for the rest of the turn",
+    "for the rest of the task",
+    "rest of the task",
+    "all of it",
+];
+
+/// A spoken approval that covers the rest of the turn, such as "allow for this
+/// turn" or "yes, for the rest of the task".
+pub(super) fn confirms_turn(text: &str) -> bool {
+    let normalized = normalized_decision_phrase(text);
+    if normalized.is_empty() || is_denial(text) || text.contains('?') {
+        return false;
+    }
+    // "yes, for the rest of the task" approves the call and grants the turn.
+    leads_with_phrase(&normalized, TURN_APPROVALS)
+        || TURN_APPROVALS
+            .iter()
+            .any(|phrase| format!(" {normalized} ").contains(&format!(" {phrase} ")))
+            && confirms(text)
+}
+
 /// The instruction that follows a denial, when the utterance carries one.
 ///
 /// "no, open Firefox" becomes `Some("open Firefox")`; a bare refusal such as
@@ -313,8 +344,8 @@ fn leading_phrase_tokens(normalized: &str, phrases: &[&str]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        confirms, denial_instruction, is_denial, is_voice_session_stop, parse_structured_reply,
-        tool_call_preamble,
+        confirms, confirms_turn, denial_instruction, is_denial, is_voice_session_stop,
+        parse_structured_reply, tool_call_preamble,
     };
 
     /// The documented affirmative set, plus the exact sentences the old
@@ -415,6 +446,28 @@ mod tests {
         // A statement without a question mark is still not an approval.
         assert!(!confirms("is it done"));
         assert!(!confirms("what did you delete"));
+    }
+
+    #[test]
+    fn turn_approvals_cover_the_rest_of_the_turn() {
+        for phrase in [
+            "allow for this turn",
+            "Allow for this turn.",
+            "yes, for the rest of the task",
+            "okay, allow for this turn",
+            "do it for the rest of the task",
+        ] {
+            assert!(confirms_turn(phrase), "should grant the turn: {phrase}");
+        }
+        // A once-only approval is not a turn grant.
+        for phrase in ["yes", "confirm", "go ahead", "okay"] {
+            assert!(!confirms_turn(phrase), "must stay once-only: {phrase}");
+        }
+        // A refusal never grants, and a question is not an approval.
+        for phrase in ["no, for the rest of the task", "don't allow for this turn"] {
+            assert!(!confirms_turn(phrase), "a denial must not grant: {phrase}");
+        }
+        assert!(!confirms_turn("allow for this turn?"));
     }
 
     #[test]

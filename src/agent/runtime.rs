@@ -18,6 +18,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::types::event::ApprovalScope;
 use crate::{
     agent::Agent,
     speech::{SpeechToText, TextToSpeech},
@@ -222,8 +223,8 @@ pub async fn run_agent_task(
         let event = match event {
             // A panel decision is only meaningful while a confirmation is
             // armed. A stale click reports expiry and starts no turn.
-            HyuskEvent::ApprovalDecision { approved } => {
-                match apply_approval_decision(&agent, approved).await {
+            HyuskEvent::ApprovalDecision { approved, scope } => {
+                match apply_approval_decision(&agent, approved, scope).await {
                     Ok(input) => HyuskEvent::UserInput(input),
                     Err(reply) => {
                         println!("[Agent] Ignored a stale approval decision");
@@ -1187,14 +1188,22 @@ const STALE_APPROVAL_REPLY: &str =
 async fn apply_approval_decision(
     agent: &Arc<Mutex<Agent>>,
     approved: bool,
+    scope: ApprovalScope,
 ) -> std::result::Result<String, &'static str> {
+    // A turn grant rides the same decision path as the spoken form, so voice
+    // and panel cannot diverge.
+    let input = match (approved, scope) {
+        (true, ApprovalScope::Turn) => crate::agent::runner::ALLOW_FOR_THIS_TURN,
+        (true, ApprovalScope::Once) => "yes",
+        (false, _) => "no",
+    }
+    .to_string();
     match armed_approval(agent).await {
         // The lock stayed busy (a Sonic session holds it for the whole
         // interaction), so keep the pre-A7 forwarding rather than block the
         // event loop on it.
-        None => Ok(if approved { "yes" } else { "no" }.to_string()),
+        None | Some(true) => Ok(input),
         Some(false) => Err(STALE_APPROVAL_REPLY),
-        Some(true) => Ok(if approved { "yes" } else { "no" }.to_string()),
     }
 }
 
@@ -2549,7 +2558,7 @@ mod approval_decision_tests {
     use super::apply_approval_decision;
     use crate::{
         agent::runner::Agent, model::openrouter::OpenRouterClient, status::APPROVAL_CARD_KIND,
-        tools::ToolRegistry,
+        tools::ToolRegistry, types::event::ApprovalScope,
     };
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -2566,13 +2575,15 @@ mod approval_decision_tests {
     #[tokio::test]
     async fn a_decision_without_a_pending_approval_reports_expiry() {
         let agent = test_agent();
-        let reply = apply_approval_decision(&agent, true)
+        let reply = apply_approval_decision(&agent, true, ApprovalScope::Once)
             .await
             .expect_err("a stale approval must not start a turn");
         assert!(reply.contains("expired"), "{reply}");
         assert!(!agent.lock().await.awaiting_approval());
         // Nothing was armed, so approving twice is still stale.
-        assert!(apply_approval_decision(&agent, false).await.is_err());
+        assert!(apply_approval_decision(&agent, false, ApprovalScope::Once)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -2580,12 +2591,24 @@ mod approval_decision_tests {
         let agent = test_agent();
         agent.lock().await.arm_test_approval();
         assert_eq!(
-            apply_approval_decision(&agent, true).await.as_deref(),
+            apply_approval_decision(&agent, true, ApprovalScope::Once)
+                .await
+                .as_deref(),
             Ok("yes")
         );
         assert_eq!(
-            apply_approval_decision(&agent, false).await.as_deref(),
+            apply_approval_decision(&agent, false, ApprovalScope::Once)
+                .await
+                .as_deref(),
             Ok("no")
+        );
+        // "Allow for this turn" rides the spoken path, so the runner records the
+        // grant exactly as it does for the spoken form.
+        assert_eq!(
+            apply_approval_decision(&agent, true, ApprovalScope::Turn)
+                .await
+                .as_deref(),
+            Ok(crate::agent::runner::ALLOW_FOR_THIS_TURN)
         );
         // The decision does not itself consume the stored call.
         assert!(agent.lock().await.awaiting_approval());

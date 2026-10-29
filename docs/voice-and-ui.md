@@ -50,6 +50,12 @@ yet" and "yes, don't do that" do not approve, and a question ("is it done?",
 "what did you delete?") never approves. A refusal followed by an instruction
 ("no, open Firefox") is a denial and the instruction runs in the same turn.
 
+"Allow for this turn" (or "yes, for the rest of the task") approves the stored
+call and grants the rest of the turn: later calls with the same tool shape run
+without another card. The shape is the shell program plus its first subcommand,
+or the tool's action elsewhere; a different program asks again, a new turn asks
+again, and the grant is never persisted. The phone link stays once-only.
+
 Anything else drops the stored call instead of holding the conversation
 hostage: the placeholder records that the action was dropped because the user
 asked something else, one short spoken note says so, and the new request runs

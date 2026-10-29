@@ -531,9 +531,13 @@ The tool platform has guardrails but no sandbox:
   the same card kind, so the panels always show Approve and Deny; a panel click
   arrives as an approval decision that the runtime checks against the armed
   confirmation, and one that arrives after expiry says so instead of becoming a
-  user message or starting a turn. A confirmation that the user answers with an
-  unrelated request is dropped, not left armed, and the new request runs in the
-  same turn. A tool name the
+  user message or starting a turn. "Allow for this turn" records a grant keyed by
+  the tool and the shape of the call (the shell program plus its first
+  subcommand, or the tool's action), so later matching calls in the same turn run
+  without a card; the grant is cleared at turn start and turn end, is never
+  written to disk, and the phone link stays once-only. A confirmation that the
+  user answers with an unrelated request is dropped, not left armed, and the new
+  request runs in the same turn. A tool name the
   table does not know asks rather than runs, a new tool cannot compile without
   a decision, and `main.rs` walks the registry it builds so a tool registered
   without a row fails a test. The system prompt's approval guidance is rendered

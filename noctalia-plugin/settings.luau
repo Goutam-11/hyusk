@@ -580,6 +580,17 @@ local function agent_body()
         end,
       }),
       ui.button({
+        -- A6: allow this tool shape for the rest of the turn. The agent clears
+        -- the grant at turn start and turn end, so it never outlives the task.
+        text = "Allow for this turn",
+        variant = "ghost",
+        controlSize = "sm",
+        flexGrow = 1,
+        onClick = function()
+          send({ action = "approve_turn" })
+        end,
+      }),
+      ui.button({
         text = "Deny",
         variant = "ghost",
         controlSize = "sm",

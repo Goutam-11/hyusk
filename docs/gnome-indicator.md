@@ -39,7 +39,8 @@ app. The model picker sends a small control JSON file back to the running agent;
 it does not store API keys. Keys saved from the API keys submenu go to the login
 keyring via `secret-tool`, and the indicator restarts `hyusk.service` so the
 service registers the provider with the new key. A compact response card appears below the top bar near the pearl-white
-butterfly, with Approve/Deny, More, Copy, and Dismiss actions; it pauses its
+butterfly, with Approve, Allow for this turn, Deny, More, Copy, and Dismiss
+actions; it pauses its
 auto-dismiss while the pointer or keyboard focus is inside it. The wings stay
 recognizable across themes; runtime state is communicated by the colored aura,
 the motion, and the state color on the menu header and response card.

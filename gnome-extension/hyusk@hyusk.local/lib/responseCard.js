@@ -114,6 +114,9 @@ export class HyuskResponseCard extends St.BoxLayout {
 
         this._approvalActions = new St.BoxLayout({ x_expand: true, spacing: 6 });
         this._approvalActions.add_child(this._button('Approve', () => this._onControl('approve'), 'hyusk-key-primary'));
+        // A6: allow this tool shape for the rest of the turn. The agent clears
+        // the grant at turn start and turn end, so it never outlives the task.
+        this._approvalActions.add_child(this._button('Allow for this turn', () => this._onControl('approve_turn'), 'hyusk-key-ghost'));
         this._approvalActions.add_child(this._button('Deny', () => this._onControl('deny'), 'hyusk-key-ghost'));
         this._approvalActions.visible = false;
         this._column.add_child(this._approvalActions);

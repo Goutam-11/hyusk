@@ -1,5 +1,14 @@
 use super::HyuskState;
 
+/// How far a panel decision reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalScope {
+    /// The stored call only. The phone link is always this scope.
+    Once,
+    /// The stored call plus later calls with the same tool shape in this turn.
+    Turn,
+}
+
 #[derive(Debug, Clone)]
 pub enum HyuskEvent {
     // Wake system
@@ -115,6 +124,7 @@ pub enum HyuskEvent {
     /// message or starting a turn.
     ApprovalDecision {
         approved: bool,
+        scope: ApprovalScope,
     },
 
     ModelSelected {

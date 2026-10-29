@@ -237,6 +237,44 @@ pub fn approval_guidance() -> String {
     guidance
 }
 
+/// The key a turn-scoped "allow for this turn" grant applies to: the tool plus
+/// the shape of the call (A6).
+///
+/// The shell shape is the program plus its first subcommand, so "git push" and
+/// "git status" are different shapes while two `rm` commands share one. Other
+/// tools use their `action`. `None` means the shape cannot be determined, and
+/// such a call is never covered by a grant.
+pub fn grant_key(name: &str, arguments: &str) -> Option<(String, String)> {
+    let args = serde_json::from_str::<Value>(arguments).ok()?;
+    let shape = match name {
+        "shell" => {
+            let command = args.get("command").and_then(Value::as_str)?;
+            let mut words = simple_command_words(command)?;
+            if words.is_empty() {
+                return None;
+            }
+            let program = words.remove(0);
+            let program = program.rsplit('/').next().unwrap_or(&program).to_string();
+            match words.first() {
+                Some(subcommand) if !subcommand.starts_with('-') => {
+                    format!("{program} {subcommand}")
+                }
+                _ => program,
+            }
+        }
+        "task" => args
+            .get("profile")
+            .and_then(Value::as_str)
+            .unwrap_or("research")
+            .to_string(),
+        _ => action(&args).to_string(),
+    };
+    if shape.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), shape))
+}
+
 /// The longest approval preview, including the tool name and the ellipsis.
 pub const PREVIEW_LIMIT: usize = 120;
 
@@ -945,8 +983,8 @@ fn is_consequential_text(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        approval_arguments, pending_text, policy_for, preview, requires_approval as check,
-        Decision, ToolName, PREVIEW_LIMIT,
+        approval_arguments, grant_key, pending_text, policy_for, preview,
+        requires_approval as check, Decision, ToolName, PREVIEW_LIMIT,
     };
     use serde_json::Value;
 
@@ -1019,6 +1057,42 @@ mod tests {
         );
         assert_eq!(exact.chars().count(), PREVIEW_LIMIT);
         assert!(!exact.ends_with('…'));
+    }
+
+    #[test]
+    fn a_turn_grant_is_keyed_by_tool_and_shape() {
+        let key = |name: &str, arguments: &str| grant_key(name, arguments);
+        // The shell shape is the program plus its first subcommand.
+        assert_eq!(
+            key("shell", r#"{"command":"git push origin main"}"#),
+            Some(("shell".into(), "git push".into()))
+        );
+        assert_eq!(
+            key("shell", r#"{"command":"rm -rf build"}"#),
+            Some(("shell".into(), "rm".into()))
+        );
+        assert_eq!(
+            key("shell", r#"{"command":"/usr/bin/rm -rf other"}"#),
+            Some(("shell".into(), "rm".into()))
+        );
+        assert_eq!(
+            key("shell", r#"{"command":"cargo test --lib"}"#),
+            Some(("shell".into(), "cargo test".into()))
+        );
+        // Other tools use their action; task uses its profile.
+        assert_eq!(
+            key("window", r#"{"action":"close"}"#),
+            Some(("window".into(), "close".into()))
+        );
+        assert_eq!(
+            key("task", r#"{"action":"delegate","profile":"workspace"}"#),
+            Some(("task".into(), "workspace".into()))
+        );
+        // A shape that cannot be determined is never granted.
+        assert_eq!(key("shell", r#"{"command":"rm -rf x && echo done"}"#), None);
+        assert_eq!(key("shell", "{}"), None);
+        assert_eq!(key("shell", "not json"), None);
+        assert_eq!(key("computer", r#"{"action":""}"#), None);
     }
 
     #[test]

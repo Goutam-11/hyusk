@@ -361,7 +361,7 @@ sink in tests, but no live microphone/STT/provider session was run.
 
 ## A6 — Allow for this turn
 
-- Status: open · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
 - Depends on: A3, A7
 - Evidence: `src/agent/runner.rs:933-955`, `gnome-extension/hyusk@hyusk.local/lib/responseCard.js`,
   `noctalia-plugin/hyusk.luau`
@@ -382,22 +382,60 @@ Out: session-wide grants, a permissions config file, phone-link protocol change.
 
 **Acceptance criteria**
 
-- [ ] After "allow for this turn", a second matching shell call runs without a
-      card.
-- [ ] A different program still prompts.
-- [ ] The next turn prompts again.
-- [ ] Both panels expose the button and the same decision path.
-- [ ] A grant never survives a restart.
+- [x] After "allow for this turn", a second matching shell call runs without a
+      card
+      (`runner::tests::a_turn_grant_covers_matching_calls_and_expires_with_the_turn`
+      drives a real two-round turn).
+- [x] A different program still prompts
+      (`a_turn_grant_does_not_cover_a_different_program`).
+- [x] The next turn prompts again: the grant vector is cleared at turn start and
+      turn end, asserted in the same lifecycle test.
+- [x] Both panels expose the button and the same decision path: the GNOME card
+      and the Noctalia Agent tab send `approve_turn`, which `main.rs` maps to
+      `ApprovalDecision { approved: true, scope: Turn }`; the runtime turns that
+      into the same spoken phrase the microphone path uses.
+- [x] A grant never survives a restart: it is in-memory only, cleared at the
+      turn boundary, and never passed to `save_session`.
 
 **Tests**
 
-- [ ] Grant lifecycle unit tests.
-- [ ] Control mapping test in `main.rs`.
-- [ ] Manual panel check on GNOME and Noctalia.
+- [x] Grant lifecycle unit tests: the two-arm tests above,
+      `a_once_only_approval_grants_nothing`, and
+      `turn_grants_are_keyed_by_shape_and_cleared_by_the_turn_boundary`.
+- [x] Shape rules: `safety::tests::a_turn_grant_is_keyed_by_tool_and_shape`.
+- [x] Control mapping test in `main.rs`
+      (`approve_and_deny_map_to_an_approval_decision_not_a_user_message` now
+      covers `approve_turn` → `ApprovalScope::Turn`).
+- [x] Spoken grammar: `reply::tests::turn_approvals_cover_the_rest_of_the_turn`.
+- [ ] Manual panel check on GNOME and Noctalia: not run; it needs a live Shell
+      extension, the widget, and a desktop session.
 
-**Files.** `src/agent/runner.rs`, `src/types/event.rs`, `src/main.rs`,
-`src/agent/runtime.rs`, GNOME `responseCard.js`/`indicator.js`, Noctalia
-`hyusk.luau`, `docs/noctalia-indicator.md`, `docs/gnome-indicator.md`.
+**Files.** `src/agent/runner.rs`, `src/agent/runner/reply.rs`,
+`src/tools/safety.rs`, `src/types/event.rs`, `src/main.rs`,
+`src/agent/runtime.rs`, GNOME `responseCard.js`, Noctalia `settings.luau`,
+`docs/noctalia-indicator.md`, `docs/gnome-indicator.md`,
+`docs/voice-and-ui.md`, `docs/tools.md`.
+
+**Notes (2026-10-29, implemented).** The grant is a `Vec<(tool, shape)>` on the
+agent, keyed by `safety::grant_key`. The shell shape is the program plus its
+first subcommand ("git push", "rm"), program paths are normalised, other tools
+use their `action`, and `task` uses its profile. A call whose shape cannot be
+determined (unparseable arguments, chained shell) is never granted, and
+`grant_for_turn` also publishes a card naming what was allowed.
+
+`handle` is now the turn boundary: it clears the grants before the input is
+interpreted and after the turn returns, so a grant cannot leak into the next
+turn. The runner consults the grant in the tool loop, so a matching call skips
+the card without a second confirmation, and `runtime::apply_approval_decision`
+maps the panel's `Turn` scope onto the same phrase the voice path uses
+(`runner::ALLOW_FOR_THIS_TURN`), keeping one decision path for both.
+
+Drift found:
+
+- The issue lists Noctalia `hyusk.luau`; the panel's Approve/Deny buttons live
+  in `noctalia-plugin/settings.luau` (the bar widget has no approval controls).
+  The new button went there, and the bar widget needs no change.
+- The phone link keeps `ApprovalScope::Once` explicitly, as the decision says.
 
 ## A7 — One approval card kind; stale approve handling
 

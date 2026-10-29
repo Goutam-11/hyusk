@@ -25,7 +25,11 @@ mod sonic;
 mod stream;
 use prompts::{append_desktop_context, build_system_prompt, build_tool_guide, build_tool_specs};
 pub(crate) use reply::is_voice_session_stop;
-use reply::{confirms, denial_instruction, is_denial, parse_structured_reply, tool_call_preamble};
+pub(crate) use reply::ALLOW_FOR_THIS_TURN;
+use reply::{
+    confirms, confirms_turn, denial_instruction, is_denial, parse_structured_reply,
+    tool_call_preamble,
+};
 use session::{load_session, save_session, ActionJournalEntry};
 use stream::ReplyStream;
 
@@ -49,6 +53,9 @@ pub struct Agent {
     messages: Vec<Message>,
     vision: bool,
     pending_approval: Option<PendingApproval>,
+    /// Tool and shape pairs the user allowed for the rest of the current turn.
+    /// Cleared at turn start and turn end, and never written to a session.
+    turn_grants: Vec<(String, String)>,
     action_journal: Vec<ActionJournalEntry>,
     task_paused: bool,
     loaded_session_identity: Option<(String, String)>,
@@ -217,6 +224,7 @@ impl Agent {
             messages,
             vision,
             pending_approval: None,
+            turn_grants: Vec::new(),
             action_journal,
             task_paused,
             loaded_session_identity,
@@ -270,6 +278,41 @@ impl Agent {
 
     pub fn awaiting_approval(&self) -> bool {
         self.pending_approval.is_some()
+    }
+
+    /// Allow later calls with the same tool shape for the rest of this turn.
+    ///
+    /// The card names what was granted, and the grant is dropped when the turn
+    /// ends. A call whose shape cannot be determined is never granted.
+    fn grant_for_turn(&mut self, name: &str, arguments: &str) {
+        let Some((tool, shape)) = crate::tools::safety::grant_key(name, arguments) else {
+            return;
+        };
+        if !self
+            .turn_grants
+            .iter()
+            .any(|(granted_tool, granted_shape)| granted_tool == &tool && granted_shape == &shape)
+        {
+            self.turn_grants.push((tool, shape));
+        }
+        crate::status::card(
+            "response",
+            format!(
+                "Allowed for this turn: {}",
+                crate::tools::safety::preview(name, arguments)
+            ),
+            false,
+        );
+    }
+
+    /// True when a turn-scoped grant covers this call.
+    fn turn_granted(&self, name: &str, arguments: &str) -> bool {
+        let Some((tool, shape)) = crate::tools::safety::grant_key(name, arguments) else {
+            return false;
+        };
+        self.turn_grants
+            .iter()
+            .any(|(granted_tool, granted_shape)| granted_tool == &tool && granted_shape == &shape)
     }
 
     /// The exact call in the armed confirmation, as the card shows it.
@@ -714,6 +757,21 @@ impl Agent {
     /// speech after its structured envelope has been removed.
     pub async fn handle(
         &mut self,
+        user_input: String,
+        ui_tx: Option<&Sender<HyuskEvent>>,
+        cancel: &CancellationToken,
+        sentences: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
+    ) -> Result<Option<String>> {
+        // A grant lasts exactly one turn: drop the previous turn's before the
+        // new input is interpreted, and again once this turn is over.
+        self.turn_grants.clear();
+        let outcome = self.run_turn(user_input, ui_tx, cancel, sentences).await;
+        self.turn_grants.clear();
+        outcome
+    }
+
+    async fn run_turn(
+        &mut self,
         mut user_input: String,
         ui_tx: Option<&Sender<HyuskEvent>>,
         cancel: &CancellationToken,
@@ -752,9 +810,12 @@ impl Agent {
                         return Ok(Some(reply.to_string()));
                     }
                 }
-            } else if confirms(&user_input) && !cancel.is_cancelled() {
+            } else if (confirms(&user_input) || confirms_turn(&user_input))
+                && !cancel.is_cancelled()
+            {
                 // The confirmation authorizes this stored call directly. The model
                 // does not get another opportunity to substitute its arguments.
+                // "Allow for this turn" also covers the rest of this turn.
                 self.action_journal.push(ActionJournalEntry {
                     tool: pending.name.clone(),
                     arguments: pending.arguments.clone(),
@@ -781,6 +842,9 @@ impl Agent {
                 }
                 if let Some(message) = self.messages.get_mut(pending.result_index) {
                     *message = Message::tool_result(pending.call_id, result.as_agent_message());
+                }
+                if confirms_turn(&user_input) {
+                    self.grant_for_turn(&pending.name, &pending.arguments);
                 }
                 self.persist_session();
             } else if !cancel.is_cancelled() {
@@ -971,6 +1035,9 @@ impl Agent {
 
                         let requires_approval =
                             crate::tools::safety::requires_approval(&name, &args_str);
+                        // "Allow for this turn" covers later calls with the same
+                        // tool shape, so they run without another card.
+                        let granted = requires_approval && self.turn_granted(&name, &args_str);
                         // A delegation that cannot start must never publish a
                         // confirmation card: the user would approve a dead end.
                         let unavailable =
@@ -988,7 +1055,7 @@ impl Agent {
                             ToolResult::failure(format!("Tool '{name}' does not exist."))
                         } else if let Some(failure) = unavailable {
                             ToolResult::failure(failure)
-                        } else if requires_approval {
+                        } else if requires_approval && !granted {
                             let index = self.messages.len();
                             // The preview is derived from the stored arguments,
                             // so the card names exactly what approval will run.
@@ -1884,6 +1951,79 @@ mod tests {
         Ok(())
     }
 
+    /// Serve canned chat-completions bodies in order, repeating the last one.
+    /// Requests are recorded so a test can see what reached the model.
+    async fn serve_scripted(responses: Vec<Value>) -> Result<(String, RequestLog)> {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let log: RequestLog = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&log);
+        tokio::spawn(async move {
+            let mut index = 0usize;
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut bytes = Vec::new();
+                let mut body_start = None;
+                while bytes.len() < 1_000_000 {
+                    let mut chunk = [0; 8192];
+                    let Ok(read) = stream.read(&mut chunk).await else {
+                        break;
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk[..read]);
+                    if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&bytes[..index]).to_ascii_lowercase();
+                        let length: usize = header
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .unwrap_or("0")
+                            .trim()
+                            .parse()
+                            .unwrap_or(0);
+                        if bytes.len() >= index + 4 + length {
+                            body_start = Some(index + 4);
+                            break;
+                        }
+                    }
+                }
+                let Some(body_start) = body_start else {
+                    continue;
+                };
+                let request: Value =
+                    serde_json::from_slice(&bytes[body_start..]).unwrap_or(Value::Null);
+                recorded.lock().unwrap().push(request.clone());
+                let canned = responses
+                    .get(index.min(responses.len().saturating_sub(1)))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                index += 1;
+                let body = canned.to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        Ok((base, log))
+    }
+
+    /// A model reply that calls `shell` with `command`.
+    fn shell_call(id: &str, command: &str) -> Value {
+        json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
+            {"id":id,"type":"function","function":{"name":"shell","arguments":json!({"command": command}).to_string()}}
+        ]},"finish_reason":"tool_calls"}]})
+    }
+
     /// Arm a one-shot confirmation for a stored `shell` call, with the
     /// placeholder result the runner would have pushed.
     fn arm_shell_approval(agent: &mut Agent) -> usize {
@@ -2151,6 +2291,171 @@ mod tests {
         );
         assert_eq!(last_user_text(&requests), "open Firefox");
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_turn_grant_covers_matching_calls_and_expires_with_the_turn() -> Result<()> {
+        let (base, _requests) = serve_scripted(vec![
+            shell_call("call-a", "rm -rf build"),
+            final_reply(),
+            shell_call("call-b", "rm -rf other"),
+            final_reply(),
+            shell_call("call-c", "rm -rf third"),
+            final_reply(),
+        ])
+        .await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut agent = shell_agent(base, &executions);
+
+        // Turn 1: the first shell call is held.
+        agent
+            .handle(
+                "delete the build folder".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            )
+            .await?;
+        assert!(agent.awaiting_approval());
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+
+        // Turn 2: "allow for this turn" runs the stored call and covers the
+        // next call with the same shape.
+        agent
+            .handle(
+                "allow for this turn".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            )
+            .await?;
+        assert!(
+            !agent.awaiting_approval(),
+            "no second card for the same shape"
+        );
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            2,
+            "the approved call and the matching follow-up both ran"
+        );
+        assert!(
+            agent.turn_grants.is_empty(),
+            "the grant is dropped when the turn ends"
+        );
+
+        // Turn 3: the same shape asks again.
+        agent
+            .handle(
+                "delete the third folder".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            )
+            .await?;
+        assert!(
+            agent.awaiting_approval(),
+            "a new turn asks again for the same shape"
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_turn_grant_does_not_cover_a_different_program() -> Result<()> {
+        let (base, _requests) = serve_scripted(vec![
+            shell_call("call-a", "rm -rf build"),
+            final_reply(),
+            shell_call("call-b", "python3 deploy.py"),
+            final_reply(),
+        ])
+        .await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut agent = shell_agent(base, &executions);
+
+        agent
+            .handle(
+                "delete the build folder".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            )
+            .await?;
+        agent
+            .handle(
+                "allow for this turn".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            )
+            .await?;
+
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        assert!(
+            agent.awaiting_approval(),
+            "a different program still needs its own confirmation"
+        );
+        assert_eq!(
+            agent.pending_approval_preview(),
+            Some("shell command=python3 deploy.py")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_once_only_approval_grants_nothing() -> Result<()> {
+        let (base, _requests) = serve_scripted(vec![
+            shell_call("call-a", "rm -rf build"),
+            final_reply(),
+            shell_call("call-b", "rm -rf other"),
+            final_reply(),
+        ])
+        .await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut agent = shell_agent(base, &executions);
+
+        agent
+            .handle(
+                "delete the build folder".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            )
+            .await?;
+        agent
+            .handle("yes".into(), None, &CancellationToken::new(), None)
+            .await?;
+
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        assert!(
+            agent.awaiting_approval(),
+            "a once-only approval must not cover the next call"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn turn_grants_are_keyed_by_shape_and_cleared_by_the_turn_boundary() {
+        let mut tools = ToolRegistry::new();
+        tools.register(ShellStub(Arc::new(AtomicUsize::new(0))));
+        let mut agent = Agent::new(
+            OpenRouterClient::new("test-key".into(), "http://127.0.0.1".into()),
+            "test-model".into(),
+            tools,
+        );
+        agent.grant_for_turn("shell", r#"{"command":"git push origin main"}"#);
+        agent.grant_for_turn("shell", r#"{"command":"rm -rf build"}"#);
+        assert!(agent.turn_granted("shell", r#"{"command":"rm -rf other"}"#));
+        assert!(agent.turn_granted("shell", r#"{"command":"git push --force"}"#));
+        assert!(!agent.turn_granted("shell", r#"{"command":"cargo test"}"#));
+        assert!(!agent.turn_granted("shell", r#"{"command":"ls -la"}"#));
+        assert!(!agent.turn_granted("window", r#"{"action":"close"}"#));
+        // The same shape is not duplicated.
+        agent.grant_for_turn("shell", r#"{"command":"rm -rf again"}"#);
+        assert_eq!(agent.turn_grants.len(), 2);
+        // A call whose shape cannot be determined is never granted.
+        agent.grant_for_turn("shell", r#"{"command":"rm -rf x && echo done"}"#);
+        assert!(!agent.turn_granted("shell", r#"{"command":"rm -rf x && echo done"}"#));
+        assert_eq!(agent.turn_grants.len(), 2);
     }
 
     #[test]

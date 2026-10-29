@@ -55,6 +55,14 @@
 
 ### Changed
 
+- A confirmation can now be granted for the rest of the turn. "Allow for this
+  turn" — spoken as "allow for this turn" or "yes, for the rest of the task" —
+  and the new **Allow for this turn** button in the GNOME card and the Noctalia
+  Agent tab record a grant keyed by the tool and the call's shape (the shell
+  program plus its first subcommand). Later matching calls run without a card, a
+  different program or a new turn asks again, and the grant lives only in
+  memory: it is cleared at turn start and turn end and never written to a
+  session. The phone link stays once-only.
 - Every mode publishes the same approval card kind (`status::APPROVAL_CARD_KIND`,
   `approval`), so Approve/Deny now appear for Nova Sonic confirmations too; the
   Sonic paths previously used `confirmation`, which both panels ignore. Panel
