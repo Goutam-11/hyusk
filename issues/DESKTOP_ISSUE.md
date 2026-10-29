@@ -248,7 +248,7 @@ same functions but at different lines.
 
 ## D4 — Refine consequential click labels
 
-- Status: done · 2026-10-29 · commit `D4PENDING` · Phase 2 · Priority: medium
+- Status: done · 2026-10-29 · commit `d8f0d1d` · Phase 2 · Priority: medium
 - Depends on: A8
 - Evidence: `src/tools/safety.rs:573-608`
 
