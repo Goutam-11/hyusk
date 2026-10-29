@@ -3,8 +3,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-WORKSPACE_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
-BINARY="$WORKSPACE_DIR/target/release/hyusk-workflows"
+BINARY="$PROJECT_DIR/target/release/hyusk-workflows"
 BIN_DIR="${HOME}/.local/bin"
 APPLICATIONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"

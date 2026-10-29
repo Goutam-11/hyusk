@@ -133,7 +133,7 @@ voice-runtime cap remains independent of this inference budget.
 To verify the native abort path without recording or uploading audio, run:
 
 ```sh
-cargo test -p hyusk_agent --bin hyusk_agent \
+cargo test --bin hyusk_agent \
   speech::speech::tests::whisper_native_cancel_reuses_cached_context \
   -- --ignored --exact --nocapture
 ```

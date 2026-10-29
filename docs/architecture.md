@@ -141,8 +141,8 @@ The extracted modules are internal implementation details; callers still use
 readable. No mobile architecture or session migration is implied by these
 laptop changes.
 
-For changes across these boundaries, run `cargo test -p hyusk_agent
---all-targets`, `cargo fmt --all -- --check`, and the package's Clippy check.
+For changes across these boundaries, run `cargo test --all-targets`,
+`cargo fmt --all -- --check`, and the package's Clippy check.
 Live microphone, desktop, and provider checks remain necessary in addition to
 unit tests; a passing suite is not a guarantee of production readiness.
 

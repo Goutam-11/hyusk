@@ -5,11 +5,10 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-WORKSPACE_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
 UNIT_SOURCE="$PROJECT_DIR/systemd/hyusk.service.in"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 UNIT_PATH="$UNIT_DIR/hyusk.service"
-BINARY="$WORKSPACE_DIR/target/release/hyusk_agent"
+BINARY="$PROJECT_DIR/target/release/hyusk_agent"
 
 if [[ ! -f "$UNIT_SOURCE" ]]; then
   echo "Missing service template: $UNIT_SOURCE" >&2

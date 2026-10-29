@@ -1,7 +1,6 @@
-# Package metadata and shared dependency versions are declared here instead of
-# being inherited from the parent Hyusk workspace, so a fresh clone of this
-# repository builds and tests on its own in CI. The values match the ones that
-# workspace supplies while this directory is checked out inside it.
+# This crate is a standalone Cargo workspace: package metadata, dependency
+# versions, profiles, the lockfile, and target/ all live here, so a fresh
+# clone of this repository builds, tests, and installs on its own.
 [package]
 name = "hyusk_agent"
 version = "0.1.0"
@@ -22,6 +21,11 @@ path = "src/bin/hyusk-shell-agent.rs"
 [[bin]]
 name = "hyusk-workflows"
 path = "src/bin/hyusk-workflows.rs"
+
+# Standalone workspace root. The parent Hyusk workspace excludes this
+# directory, so builds, Cargo.lock, and target/ stay independent of it.
+[workspace]
+resolver = "2"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -63,3 +67,14 @@ libadwaita = { version = "0.9.2", features = ["v1_5"] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 enigo = "0.6.1"
+
+# Keep dependency code optimized in debug builds so ONNX wake-word feature
+# extraction stays fast enough for realtime detection. The crate itself stays
+# unoptimized for quick incremental compiles.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

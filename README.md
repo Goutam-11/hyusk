@@ -17,12 +17,11 @@ project. It combines an OpenRouter-compatible chat model, structured function
 calling, local process tools, an event-driven agent task, a small `eframe`
 status overlay, and optional voice components.
 
-This directory is a member of the parent Hyusk workspace. It is separate from
-the main `hyusk` CLI in `../crates/hyusk-cli`; see the workspace
-[`README.md`](../README.md) for the broader project. Package metadata and the
-shared dependency versions are declared in this crate's `Cargo.toml` rather
-than inherited from the workspace, so a fresh clone of this repository also
-builds and tests on its own.
+This directory is its own Cargo workspace. It is separate from the main
+`hyusk` CLI in the parent project, and its manifest declares the package
+metadata, dependency versions, build profiles, and `Cargo.lock` itself, so a
+fresh clone of this repository builds, tests, and installs on its own with
+`target/` here.
 
 <p align="center">
   <img src="assets/readme/infographic_hyusk_runtime-architecture_20260916_dark.svg" width="100%" alt="Hyusk request routing architecture">
@@ -734,28 +733,27 @@ hyusk_agent/
 
 ## Development commands
 
-From the workspace root:
+From this directory:
 
 ```bash
-cargo check -p hyusk_agent
-cargo test -p hyusk_agent
-cargo run -p hyusk_agent
+cargo check --all-targets
+cargo test --all-targets
+cargo run
 ```
 
-From this directory, omit `-p hyusk_agent`. `cargo check --all-targets` and
-`cargo fmt --all -- --check` currently pass. `cargo test -p hyusk_agent` runs
-the unit suite; a few portal and audio checks stay `#[ignore]`d because they
-need a real session (see [development](docs/development.md)).
+`cargo check --all-targets` and `cargo fmt --all -- --check` currently pass.
+`cargo test --all-targets` runs the unit suite; a few portal and audio checks
+stay `#[ignore]`d because they need a real session (see
+[development](docs/development.md)).
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs
 `cargo fmt --all -- --check`, `cargo clippy --all-targets`, and
 `cargo test --all-targets` on pushes to `main` and on pull requests.
 
-Inside the workspace, dependencies are compiled with optimizations even in
-debug builds (the workspace root's `[profile.dev.package."*"]`), so `cargo run`
-is fast enough for realtime wake-word inference. A standalone clone and CI use
-the default debug profile. Building the dependencies the first time after a
-profile change takes a few minutes.
+Dependencies are compiled with optimizations even in debug builds (this
+manifest's `[profile.dev.package."*"]`), so `cargo run` is fast enough for
+realtime wake-word inference. Building the dependencies the first time takes a
+few minutes.
 
 Wake-word diagnostics:
 

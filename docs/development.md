@@ -2,27 +2,23 @@
 
 ## Repository position
 
-This repository is checked out at `hyusk_agent`, a member of the parent Hyusk
-workspace declared by the `Cargo.toml` one directory above this repository,
-alongside the `hyusk` CLI in `../crates/hyusk-cli`.
+This repository is a standalone Cargo workspace. It used to be a member of the
+parent Hyusk workspace alongside the `hyusk` CLI in `../crates/hyusk-cli`; it
+now declares its own `[workspace]` and owns its `Cargo.lock` and `target/`, and
+the parent workspace excludes this directory.
 
-Package metadata (version, edition, authors, license, repository) and the
-`sqlx` and `tokio-tungstenite` requirements are declared in this crate's own
-[`Cargo.toml`](../Cargo.toml) instead of being inherited with
-`workspace = true`. That keeps a fresh clone building and testing on its own,
-which is what CI does. Keep the two manifests aligned when these values change.
+Package metadata (version, edition, authors, license, repository), dependency
+versions, and build profiles are declared in this crate's own
+[`Cargo.toml`](../Cargo.toml), so a fresh clone builds and tests on its own,
+which is what CI does.
 
-Use package-qualified commands from the workspace root:
+Run commands from this directory:
 
 ```bash
-cargo check -p hyusk_agent
-cargo test -p hyusk_agent
-cargo run -p hyusk_agent
+cargo check --all-targets
+cargo test --all-targets
+cargo run
 ```
-
-When the current directory is `hyusk_agent` — inside the workspace or in a
-standalone clone — the equivalent commands are `cargo check`, `cargo test`,
-and `cargo run`.
 
 ## Continuous integration
 
@@ -112,33 +108,35 @@ Run these before committing:
 
 ```bash
 cargo fmt --all -- --check
-cargo check -p hyusk_agent --all-targets
-cargo clippy -p hyusk_agent --all-targets
-cargo test -p hyusk_agent --bin hyusk_agent
+cargo check --all-targets
+cargo clippy --all-targets
+cargo test --bin hyusk_agent
 ```
 
-`cargo test -p hyusk_agent --all-targets` reports 278 passing tests and 7
-ignored (the main binary alone: 257 passing, 6 ignored). The ignored ones need a
-real session or network: the four portal smoke tests below, a live CDP browser
-test, a Whisper cancel/cache test, and the GTK workflow editor draft test. Coverage includes the computer tool and portal mapping, input and
-URL validation, browser CDP protocol handling, accessibility targeting, wake and
-clap detection, RNNoise denoising, the instant-command router, streaming
-sentence splitting, session repair and compaction, persistent memory, scheduling,
-and the one-shot `WakeResume` handshake.
+`cargo test --all-targets` runs the full suite: 282 passing tests and 7
+ignored (the main binary alone: 261 passing, 6 ignored; shared model/stream
+tests are compiled into each binary). The ignored ones need a real session or
+network: the four portal smoke tests below, a live CDP browser test, a Whisper
+cancel/cache test, and the GTK workflow editor draft test. Coverage includes
+the computer tool and portal mapping, input and URL validation, browser CDP
+protocol handling, accessibility targeting, wake and clap detection, RNNoise
+denoising, the instant-command router, streaming sentence splitting, session
+repair and compaction, persistent memory, scheduling, and the one-shot
+`WakeResume` handshake.
 
-`cargo clippy -p hyusk_agent --all-targets` currently reports three
-`result_large_err` warnings (large `anyhow::Error` in tool-result closures);
-there are no errors and no other warnings. Treat a new warning as a regression.
+`cargo clippy --all-targets` currently reports three
+`result_large_err` warnings on `LinkServerError` in `src/link/server.rs`; there
+are no errors and no other warnings. Treat a new warning as a regression.
 
 The ignored tests open real RemoteDesktop/Screenshot approval dialogs and move
 the pointer by one pixel. Run them manually when validating portal input or
 capture:
 
 ```bash
-cargo test -p hyusk_agent portal_relative_move_smoke -- --ignored --nocapture
-cargo test -p hyusk_agent portal_absolute_move_smoke -- --ignored --nocapture
-cargo test -p hyusk_agent portal_keyboard_smoke -- --ignored --nocapture
-cargo test -p hyusk_agent portal_screenshot_smoke -- --ignored --nocapture
+cargo test portal_relative_move_smoke -- --ignored --nocapture
+cargo test portal_absolute_move_smoke -- --ignored --nocapture
+cargo test portal_keyboard_smoke -- --ignored --nocapture
+cargo test portal_screenshot_smoke -- --ignored --nocapture
 ```
 
 `cargo fmt --all -- --check` is clean; keep it that way rather than mixing

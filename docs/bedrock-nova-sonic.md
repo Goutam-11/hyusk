@@ -112,8 +112,8 @@ AWS_PROFILE=<profile-name> AWS_REGION=<region> \
 Without a live AWS request, run the local Rust checks:
 
 ```bash
-cargo test -p hyusk_agent model::bedrock_sonic
-cargo check -p hyusk_agent
+cargo test model::bedrock_sonic
+cargo check
 ```
 
 If startup says Nova Sonic is unavailable, check the region/profile first. If
