@@ -40,9 +40,20 @@ a docs-only correction is acceptable.
 
 ---
 
-## D1 — API-key flow claims are false (P1)
+## D1 — API-key flow claims are false (P1) — resolved 2026-10-29
 
-**Files:** [`README.md`](../README.md#L158), [`README.md`](../README.md#L413-L415),
+**Status:** resolved docs-only. The three statements now describe each client:
+the GNOME menu writes the key with `secret-tool` and restarts
+`hyusk.service`; the Noctalia panel queues the key in `hyusk-control.json`, and
+the agent scrubs the file as soon as it reads the key, stores it in the
+keyring, and refreshes the catalog. The
+absolute "never stored in the runtime control file" wording is replaced by "not
+persisted", and the Noctalia handoff is described as transient. Two more files
+repeated the same claim and were corrected:
+[`docs/gnome-indicator.md`](../docs/gnome-indicator.md#L38-L41) (said "no
+service restart") and [`docs/tools.md`](../docs/tools.md#L528-L531).
+
+**Files:** [`README.md`](../README.md#L158), [`README.md`](../README.md#L411-L419),
 [`CHANGELOG.md`](../CHANGELOG.md) (Unreleased "Added"), [`docs/noctalia-indicator.md`](../docs/noctalia-indicator.md#L85-L90)
 
 **Claims:**
@@ -66,7 +77,7 @@ a docs-only correction is acceptable.
   documents the transient control-file handoff, so README/CHANGELOG contradict
   the project's own docs.
 
-**Fix (docs-only, recommended):** describe each client accurately. Examples:
+**Fix applied (docs-only):** each client is now described accurately. Examples:
 
 - GNOME: key goes to the login keyring and the service restarts.
 - Noctalia: key is queued in `hyusk-control.json`, scrubbed as soon as the
@@ -238,8 +249,8 @@ must stay, gate it with an approval and avoid returning the secret verbatim.
 - **README status table** ([`README.md:46`](../README.md#L46)): "uses
   `hey_hyusk.onnx` or `hey_livekit.onnx`" omits the auto-discovered
   `alexa`/`hey_jarvis`/`hey_mycroft`/`hey_rhasspy` classifiers.
-- **CHANGELOG "Added"** (Unreleased, key-management bullet) repeats the
-  "keys never enter … the runtime control file" claim — fix with D1.
+- **CHANGELOG "Added"** (Unreleased, key-management bullet) repeated the
+  "keys never enter … the runtime control file" claim — fixed with D1.
 - **`docs/development.md:5-L8`:** the historical reference to
   `../crates/hyusk-cli` is fine in the parent checkout but not in a standalone
   clone; optional reword to "the older `hyusk` CLI workspace".
@@ -261,6 +272,10 @@ must stay, gate it with an approval and avoid returning the secret verbatim.
 
 ## Resolved
 
+- **D1 (API-key flow)** was corrected on 2026-10-29 in `README.md`,
+  `CHANGELOG.md`, `docs/gnome-indicator.md`, and `docs/tools.md`: the GNOME
+  restart and the transient Noctalia control-file handoff are now stated per
+  client, and no claim says the key never touches the control file.
 - Test counts and clippy description in
   [`docs/development.md`](../docs/development.md#L116-L128) were corrected on
   2026-10-29 to the measured 282/7 and the real `LinkServerError` warnings.

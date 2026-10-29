@@ -111,6 +111,11 @@ markdown links.
 Working and verified: build/check/clippy/fmt, 282 unit tests, standalone
 workspace separation, installer paths, committed docs for the workspace change.
 
+Docs progress: D1 (API-key flow claims) resolved 2026-10-29 — `README.md`,
+`CHANGELOG.md`, `docs/gnome-indicator.md`, and `docs/tools.md` now describe the
+GNOME restart and the transient `hyusk-control.json` handoff accurately. D2,
+D3, D7 still need a code-vs-docs decision.
+
 Known open code issues (not fixed; details in the earlier audit / to be filed):
 
 - `browser` actions are not in the central approval classifier.
@@ -130,7 +135,8 @@ Known open code issues (not fixed; details in the earlier audit / to be filed):
 - Timer/scheduler accept unbounded durations (possible `Instant` overflow).
 - Mobile-link replay protection is per connection (sequence resets).
 - Documentation inaccuracies: see
-  [`DOCS_ISSUES.md`](../issues/DOCS_ISSUES.md) (D1–D8).
+  [`DOCS_ISSUES.md`](../issues/DOCS_ISSUES.md) (D2–D8 open; D1 resolved
+  2026-10-29).
 
 ## Working conventions for this repo
 

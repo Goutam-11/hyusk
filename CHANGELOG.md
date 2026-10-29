@@ -10,9 +10,12 @@
 - Model and credential management across OpenRouter, the OpenAI API, Amazon
   Bedrock Mantle, Nova Sonic, and Codex. Catalogs refresh at runtime, a saved
   key registers its provider immediately, and the selection persists in
-  `~/.config/hyusk/config.json`. Keys go to the login keyring
-  (`credentials.rs`) and never enter `commands.json`, the session snapshot, or
-  the runtime control file.
+  `~/.config/hyusk/config.json`. Keys are stored in the login keyring
+  (`credentials.rs`). The GNOME menu writes the key with `secret-tool` and
+  restarts `hyusk.service`; the Noctalia panel hands it over through
+  `hyusk-control.json`, which the agent scrubs as soon as it has read the key
+  and then stores and refreshes the catalog. Keys are not persisted in `commands.json` or the
+  session snapshot.
 - `hyusk-control.json` channel with monotonic revisions for the indicators:
   `set_model`, `set_api_key`, `refresh_models`, workflow/stop actions, and
   immediate scrubbing of any key payload the agent has consumed.

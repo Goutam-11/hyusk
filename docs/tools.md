@@ -525,8 +525,10 @@ The tool platform has guardrails but no sandbox:
   type, and read the clipboard or screen. It can trigger irreversible GUI
   actions.
 - Tool output and screenshots are sent back to the remote model provider.
-- API keys live in the login keyring and are never placed in `commands.json`,
-  the session snapshot, or the runtime control file.
+- API keys live in the login keyring and are not persisted in `commands.json`
+  or the session snapshot. The Noctalia panel hands a key to the agent through
+  `hyusk-control.json`, which the agent overwrites as soon as it has read the
+  key.
 
 Treat the configured model and provider as trusted code. Run this crate in a
 restricted OS account or container when experimenting with untrusted prompts,

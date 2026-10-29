@@ -155,7 +155,7 @@ or times out, the wake event is ignored and the terminal input path still works.
 | `PIPER_MODEL` | No | `models/en_US-lessac-medium.onnx` | Piper voice model used by Linux TTS. |
 | `PIPER_SPEAKER` | No | - | Speaker name or numeric ID for a multi-speaker Piper model. |
 
-*Configure at least one of OpenRouter, OpenAI API, Bedrock Mantle, or an AWS CLI profile with Nova Sonic access before starting Hyusk. API provider keys can also be saved from the GNOME **Settings → API keys** menu or the Noctalia gear panel; both write the login keyring and apply without a restart.
+*Configure at least one of OpenRouter, OpenAI API, Bedrock Mantle, or an AWS CLI profile with Nova Sonic access before starting Hyusk. API provider keys can also be saved from the GNOME **Settings → API keys** menu or the Noctalia gear panel. The GNOME menu stores the key in the login keyring with `secret-tool` and restarts `hyusk.service` so the new key is picked up. The Noctalia panel queues the key in the control file; the agent moves it to the keyring and reloads its catalog without a restart.
 
 The base URL must not include the trailing `/chat/completions` path.
 
@@ -410,9 +410,13 @@ provider's model to switch immediately and start a fresh conversation. The
 selection is stored in `$XDG_CONFIG_HOME/hyusk/config.json`; matching history
 is restored after restart. To add or replace an API key, use that provider's
 key entry in the indicator (GNOME menu **Settings → API keys**, or the Noctalia
-gear panel). The agent writes it to the login keyring, registers the provider,
-and reloads its catalog without restarting the service; the key is never stored
-in `commands.json`, the runtime control file, or the session snapshot.
+gear panel). In the GNOME menu the key is written to the login keyring and the
+user service is restarted, so the provider is registered on the next start. In
+the Noctalia panel the key is queued in `hyusk-control.json`; the agent stores
+it in the login keyring, registers the provider, and reloads its catalog without
+restarting the service, overwriting the control file as soon as it has read the
+key. In both cases the key is not persisted in `commands.json` or the session
+snapshot, and the control-file handoff exists only until the agent scrubs it.
 New background research tasks use the selected API provider and model; an
 already-running task keeps the model it started with. Codex workspace tasks
 remain on the local Codex CLI.

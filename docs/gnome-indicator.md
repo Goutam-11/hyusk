@@ -36,8 +36,9 @@ Model (model picker, **Refresh models**), Device (**Connect phone**, **Open
 automation browser**), and Settings (**API keys**). The quick-run submenu
 searches workflow names and voice triggers, while **Workflows** opens the editor
 app. The model picker sends a small control JSON file back to the running agent;
-it does not store API keys, which go to the login keyring from the API keys
-submenu and take effect immediately — no service restart. A compact response card appears below the top bar near the pearl-white
+it does not store API keys. Keys saved from the API keys submenu go to the login
+keyring via `secret-tool`, and the indicator restarts `hyusk.service` so the
+service registers the provider with the new key. A compact response card appears below the top bar near the pearl-white
 butterfly, with Approve/Deny, More, Copy, and Dismiss actions; it pauses its
 auto-dismiss while the pointer or keyboard focus is inside it. The wings stay
 recognizable across themes; runtime state is communicated by the colored aura,
