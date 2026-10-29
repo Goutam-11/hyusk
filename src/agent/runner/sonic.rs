@@ -414,7 +414,7 @@ impl Agent {
                         confirmation_resolved = false;
                         crate::status::awaiting_reply(true);
                         crate::status::card(
-                            "confirmation",
+                            crate::status::APPROVAL_CARD_KIND,
                             crate::tools::safety::pending_text(&preview),
                             true,
                         );
@@ -517,7 +517,7 @@ impl Agent {
                             self.persist_session();
                             crate::status::card(
                                 if self.pending_approval.is_some() {
-                                    "confirmation"
+                                    crate::status::APPROVAL_CARD_KIND
                                 } else {
                                     "response"
                                 },

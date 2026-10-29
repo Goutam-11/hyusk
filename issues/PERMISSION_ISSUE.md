@@ -401,7 +401,7 @@ Out: session-wide grants, a permissions config file, phone-link protocol change.
 
 ## A7 — One approval card kind; stale approve handling
 
-- Status: open · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
 - Depends on: —
 - Evidence: `src/agent/runner/sonic.rs:402-406`,
   `gnome-extension/hyusk@hyusk.local/lib/responseCard.js:199-203`,
@@ -422,19 +422,52 @@ voice loop, which only needs the kind change.
 
 **Acceptance criteria**
 
-- [ ] Every mode that publishes an approval uses the same kind.
-- [ ] Buttons appear in GNOME and Noctalia for text and Sonic approvals.
-- [ ] A click after expiry leaves the conversation untouched.
-- [ ] The user is told the confirmation expired.
+- [x] Every mode that publishes an approval uses the same kind:
+      `status::APPROVAL_CARD_KIND` is used by the text turn card, the Sonic
+      approval card, the Sonic post-turn card, and the Sonic listen-completion
+      card. The three Sonic sites previously published `confirmation`.
+- [x] Buttons appear in GNOME and Noctalia for text and Sonic approvals: both
+      panels already key on `approval`, so the kind fix is what restores them.
+      The manual panel check below is still outstanding.
+- [x] A click after expiry leaves the conversation untouched: a panel decision
+      is validated against the armed confirmation, and a stale one publishes an
+      expiry card and starts no turn.
+- [x] The user is told the confirmation expired: `STALE_APPROVAL_REPLY` reaches
+      both the card and the spoken response.
 
 **Tests**
 
-- [ ] Runtime event test for a decision without a pending approval.
-- [ ] Control mapping test.
-- [ ] Manual panel check.
+- [x] Runtime event test for a decision without a pending approval
+      (`runtime::approval_decision_tests::a_decision_without_a_pending_approval_reports_expiry`,
+      plus `an_armed_confirmation_accepts_the_decision_as_turn_input`).
+- [x] Control mapping test
+      (`control_tests::approve_and_deny_map_to_an_approval_decision_not_a_user_message`),
+      plus `the_approval_card_kind_matches_what_both_panels_expect`.
+- [ ] Manual panel check on GNOME and Noctalia: not run in this session; it
+      needs a live Shell extension, the Noctalia widget, and a desktop session.
 
-**Files.** `src/types/event.rs`, `src/agent/runtime.rs`, `src/main.rs`,
-`src/agent/runner/sonic.rs`, both panel sources.
+**Files.** `src/types/event.rs`, `src/status.rs`, `src/agent/runtime.rs`,
+`src/main.rs`, `src/agent/runner/sonic.rs`, both panel sources.
+
+**Notes (2026-10-29, implemented).** `HyuskEvent::ApprovalDecision { approved }`
+replaces the "yes"/"no" `UserInput` conversion in the control-file consumer and
+in the phone-link path, so a click can no longer be mistaken for speech. The
+runtime validates the decision with a short bounded wait for the agent lock,
+because the lock is held for a whole turn: if it stays busy (a Nova Sonic
+session holds it for the whole interaction) the decision falls back to the
+pre-A7 forwarding, which A7's scope leaves to the Sonic loop.
+
+`scope` is not in the event yet: the only scope today is once-only, and A6
+introduces the turn-scoped grant that needs it. Adding an unused field now would
+have been dead weight.
+
+The expiry notice is now a `response` card rather than an `approval` card, so
+the panels stop offering Approve/Deny for a decision that no longer exists.
+
+Evidence drift: the Sonic card moved from `sonic.rs:402-406` to 410-420, the
+control mapping from `main.rs:1044-1053` to 1093-1100, and the panel checks are
+unchanged at `responseCard.js:199` and `hyusk.luau:112` (now with a comment
+naming the shared tag).
 
 ## A8 — Explicit policy registry with exhaustive coverage
 

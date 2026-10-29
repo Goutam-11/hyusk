@@ -196,6 +196,9 @@ export class HyuskResponseCard extends St.BoxLayout {
         }
 
         this._text = String(latest.text ?? '');
+        // Every mode publishes this one tag while a tool confirmation is armed
+        // (`status::APPROVAL_CARD_KIND` in src/status.rs); Approve/Deny only
+        // appear for it, so no mode may invent its own kind.
         const approval = latest.kind === 'approval';
         this._persistent = Boolean(latest.persistent) || approval;
         this._title.text = approval ? 'Approval needed' :

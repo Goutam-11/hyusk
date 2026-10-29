@@ -109,6 +109,14 @@ pub enum HyuskEvent {
     /// deadline without an answer.
     ApprovalExpired,
 
+    /// A panel decision for the armed confirmation: GNOME Approve/Deny,
+    /// Noctalia, or the phone link. It applies only while a confirmation is
+    /// armed, so a stale click reports expiry instead of becoming a user
+    /// message or starting a turn.
+    ApprovalDecision {
+        approved: bool,
+    },
+
     ModelSelected {
         provider: String,
         model: String,

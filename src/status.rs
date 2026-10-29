@@ -89,6 +89,12 @@ pub fn model(provider: &str, model: &str) {
         save(&mut s);
     }
 }
+/// The card kind every mode publishes while a tool confirmation is armed.
+///
+/// The GNOME response card and the Noctalia tooltip show Approve/Deny for this
+/// kind only, so a mode that invents another tag silently loses the buttons.
+pub const APPROVAL_CARD_KIND: &str = "approval";
+
 pub fn card(kind: &str, text: impl Into<String>, persistent: bool) {
     if let Ok(mut s) = store().lock() {
         s.latest = Some(Card {

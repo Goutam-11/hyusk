@@ -527,9 +527,13 @@ The tool platform has guardrails but no sandbox:
   prompt, and an unanswered request expires instead of running. The card and the
   tool result both name the exact call - the tool plus its key arguments, on one
   line and truncated past about 120 characters with an ellipsis - so the user
-  approves the command, not the model's description of it. A confirmation that
-  the user answers with an unrelated request is dropped, not left armed, and
-  the new request runs in the same turn. A tool name the
+  approves the command, not the model's description of it. Every mode publishes
+  the same card kind, so the panels always show Approve and Deny; a panel click
+  arrives as an approval decision that the runtime checks against the armed
+  confirmation, and one that arrives after expiry says so instead of becoming a
+  user message or starting a turn. A confirmation that the user answers with an
+  unrelated request is dropped, not left armed, and the new request runs in the
+  same turn. A tool name the
   table does not know asks rather than runs, a new tool cannot compile without
   a decision, and `main.rs` walks the registry it builds so a tool registered
   without a row fails a test. The system prompt's approval guidance is rendered

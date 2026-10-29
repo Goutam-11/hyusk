@@ -220,6 +220,19 @@ pub async fn run_agent_task(
         // queued newer input could cancel this capture while the old result
         // waits in the channel.
         let event = match event {
+            // A panel decision is only meaningful while a confirmation is
+            // armed. A stale click reports expiry and starts no turn.
+            HyuskEvent::ApprovalDecision { approved } => {
+                match apply_approval_decision(&agent, approved).await {
+                    Ok(input) => HyuskEvent::UserInput(input),
+                    Err(reply) => {
+                        println!("[Agent] Ignored a stale approval decision");
+                        crate::status::card("response", reply, false);
+                        let _ = ui_tx.try_send(HyuskEvent::Response(reply.to_string()));
+                        continue;
+                    }
+                }
+            }
             HyuskEvent::VoiceTranscript { id, text } => {
                 let Some(event) = normalize_voice_transcript(id, text, &listen) else {
                     continue;
@@ -511,7 +524,11 @@ pub async fn run_agent_task(
                 } else if let Some(text) = text {
                     crate::status::awaiting_reply(waiting);
                     crate::status::card(
-                        if waiting { "confirmation" } else { "response" },
+                        if waiting {
+                            crate::status::APPROVAL_CARD_KIND
+                        } else {
+                            "response"
+                        },
                         &text,
                         waiting,
                     );
@@ -862,7 +879,9 @@ pub async fn run_agent_task(
                     continue;
                 };
                 println!("[Agent] Pending confirmation expired");
-                crate::status::card("approval", &message, false);
+                // A response card, not an approval card: the decision is gone,
+                // so the panels must not keep offering Approve and Deny.
+                crate::status::card("response", &message, false);
                 let _ = ui_tx.try_send(HyuskEvent::Response(message));
                 release_next_scheduled_input(
                     &mut scheduled_inputs,
@@ -1156,6 +1175,43 @@ async fn approval_expiry(agent: &Arc<Mutex<Agent>>) {
 /// A scheduled prompt is not an answer to a confirmation. While one is armed
 /// the prompt waits instead of being consumed as a yes/no reply. A locked agent
 /// means a turn is running, which defers the input either way.
+/// The reply for a panel decision that has nothing left to decide.
+const STALE_APPROVAL_REPLY: &str =
+    "That confirmation expired, so I did not perform the action. Please ask again if you still want it.";
+
+/// Apply a panel decision to the armed confirmation.
+///
+/// `Ok(input)` is the turn input that answers the stored call ("yes" or "no");
+/// `Err(reply)` means no confirmation is armed, so the click is stale and must
+/// not start a turn.
+async fn apply_approval_decision(
+    agent: &Arc<Mutex<Agent>>,
+    approved: bool,
+) -> std::result::Result<String, &'static str> {
+    match armed_approval(agent).await {
+        // The lock stayed busy (a Sonic session holds it for the whole
+        // interaction), so keep the pre-A7 forwarding rather than block the
+        // event loop on it.
+        None => Ok(if approved { "yes" } else { "no" }.to_string()),
+        Some(false) => Err(STALE_APPROVAL_REPLY),
+        Some(true) => Ok(if approved { "yes" } else { "no" }.to_string()),
+    }
+}
+
+/// Whether a confirmation is armed, without blocking the event loop.
+///
+/// The agent lock is held for a whole turn, so wait briefly for it and give up
+/// with `None` instead of stalling every other event.
+async fn armed_approval(agent: &Arc<Mutex<Agent>>) -> Option<bool> {
+    for _ in 0..20 {
+        if let Ok(agent) = agent.try_lock() {
+            return Some(agent.awaiting_approval());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    None
+}
+
 fn approval_blocks_scheduled_input(agent: &Arc<Mutex<Agent>>) -> bool {
     agent
         .try_lock()
@@ -1581,7 +1637,7 @@ async fn run_turn(
     };
     crate::status::card(
         if requires_approval {
-            "approval"
+            crate::status::APPROVAL_CARD_KIND
         } else {
             "response"
         },
@@ -2485,5 +2541,60 @@ mod tests {
             }
         ));
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+}
+
+#[cfg(test)]
+mod approval_decision_tests {
+    use super::apply_approval_decision;
+    use crate::{
+        agent::runner::Agent, model::openrouter::OpenRouterClient, status::APPROVAL_CARD_KIND,
+        tools::ToolRegistry,
+    };
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn test_agent() -> Arc<Mutex<Agent>> {
+        let agent = Agent::new(
+            OpenRouterClient::new("test-key".into(), "http://127.0.0.1".into()),
+            "test-model".into(),
+            ToolRegistry::new(),
+        );
+        Arc::new(Mutex::new(agent))
+    }
+
+    #[tokio::test]
+    async fn a_decision_without_a_pending_approval_reports_expiry() {
+        let agent = test_agent();
+        let reply = apply_approval_decision(&agent, true)
+            .await
+            .expect_err("a stale approval must not start a turn");
+        assert!(reply.contains("expired"), "{reply}");
+        assert!(!agent.lock().await.awaiting_approval());
+        // Nothing was armed, so approving twice is still stale.
+        assert!(apply_approval_decision(&agent, false).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_armed_confirmation_accepts_the_decision_as_turn_input() {
+        let agent = test_agent();
+        agent.lock().await.arm_test_approval();
+        assert_eq!(
+            apply_approval_decision(&agent, true).await.as_deref(),
+            Ok("yes")
+        );
+        assert_eq!(
+            apply_approval_decision(&agent, false).await.as_deref(),
+            Ok("no")
+        );
+        // The decision does not itself consume the stored call.
+        assert!(agent.lock().await.awaiting_approval());
+    }
+
+    #[test]
+    fn the_approval_card_kind_matches_what_both_panels_expect() {
+        // `gnome-extension/hyusk@hyusk.local/lib/responseCard.js` and
+        // `noctalia-plugin/hyusk.luau` show Approve/Deny for this exact tag.
+        assert_eq!(APPROVAL_CARD_KIND, "approval");
     }
 }

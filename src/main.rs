@@ -227,6 +227,16 @@ fn control_schedule(control: &ExtensionControl) -> Option<ScheduleControl> {
     (parsed.delay_seconds > 0).then_some(parsed)
 }
 
+/// The runtime event a panel decision produces. `approve` and `deny` are the
+/// only actions that name a confirmation; everything else is not a decision.
+fn approval_decision(action: &str) -> Option<HyuskEvent> {
+    match action {
+        "approve" => Some(HyuskEvent::ApprovalDecision { approved: true }),
+        "deny" => Some(HyuskEvent::ApprovalDecision { approved: false }),
+        _ => None,
+    }
+}
+
 fn control_workflow_name(control: &ExtensionControl) -> Option<&str> {
     control
         .workflow
@@ -794,9 +804,13 @@ async fn main() -> Result<()> {
                     while let Some(command) = command_rx.recv().await {
                         match command {
                             link::LinkCommand::Approval(value) => {
-                                let answer = if value.approved { "yes" } else { "no" };
+                                // The phone sends the same decision as a panel;
+                                // the runtime validates it against the armed
+                                // confirmation and never turns it into a message.
                                 let _ = link_agent_tx
-                                    .send(HyuskEvent::UserInput(answer.to_string()))
+                                    .send(HyuskEvent::ApprovalDecision {
+                                        approved: value.approved,
+                                    })
                                     .await;
                             }
                             link::LinkCommand::Invoke(value) => {
@@ -1004,7 +1018,8 @@ async fn main() -> Result<()> {
                 continue;
             }
             seen = control.revision;
-            match control.action.as_str() {
+            let action = control.action.as_str();
+            match action {
                 "start_listening" => {
                     let _ = control_tx.send(HyuskEvent::WakeWordDetected).await;
                 }
@@ -1075,15 +1090,12 @@ async fn main() -> Result<()> {
                     }
                 }
                 "dismiss_card" => status::dismiss(),
-                "approve" => {
-                    let _ = control_tx
-                        .send(HyuskEvent::UserInput("yes".to_string()))
-                        .await;
-                }
-                "deny" => {
-                    let _ = control_tx
-                        .send(HyuskEvent::UserInput("no".to_string()))
-                        .await;
+                "approve" | "deny" => {
+                    // A click is an approval decision, not a user message: a
+                    // stale one must not start a turn or answer as the user.
+                    if let Some(event) = approval_decision(action) {
+                        let _ = control_tx.send(event).await;
+                    }
                 }
                 "stop_listening" => {
                     let _ = control_tx.send(HyuskEvent::StopListening).await;
@@ -1439,7 +1451,8 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod control_tests {
-    use super::{control_schedule, control_workflow_name, ExtensionControl};
+    use super::{approval_decision, control_schedule, control_workflow_name, ExtensionControl};
+    use crate::types::HyuskEvent;
 
     #[test]
     fn standalone_workflow_field_is_preferred() {
@@ -1468,6 +1481,29 @@ mod control_tests {
         .expect("valid empty workflow control payload");
 
         assert_eq!(control_workflow_name(&control), None);
+    }
+
+    #[test]
+    fn approve_and_deny_map_to_an_approval_decision_not_a_user_message() {
+        assert!(matches!(
+            approval_decision("approve"),
+            Some(HyuskEvent::ApprovalDecision { approved: true })
+        ));
+        assert!(matches!(
+            approval_decision("deny"),
+            Some(HyuskEvent::ApprovalDecision { approved: false })
+        ));
+        // A click is never a user message: that is what made a stale card
+        // answer as if the user had spoken.
+        for action in ["approve", "deny"] {
+            assert!(!matches!(
+                approval_decision(action),
+                Some(HyuskEvent::UserInput(_))
+            ));
+        }
+        assert!(approval_decision("dismiss_card").is_none());
+        assert!(approval_decision("start_listening").is_none());
+        assert!(approval_decision("").is_none());
     }
 
     #[test]

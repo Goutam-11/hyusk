@@ -109,6 +109,9 @@ end
 
 -- The card kind is the agent's own tag ("approval", "error", "response", …), so
 -- a confirmation waiting for a yes/no is surfaced without guessing from text.
+-- "approval" is the single tag every mode publishes while a tool confirmation is
+-- armed (`status::APPROVAL_CARD_KIND` in src/status.rs); the buttons are hidden
+-- for any other tag on purpose.
 local function is_approval(status)
   local card = status.latest
   return type(card) == "table" and card.kind == "approval"

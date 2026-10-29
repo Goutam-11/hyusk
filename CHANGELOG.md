@@ -55,6 +55,14 @@
 
 ### Changed
 
+- Every mode publishes the same approval card kind (`status::APPROVAL_CARD_KIND`,
+  `approval`), so Approve/Deny now appear for Nova Sonic confirmations too; the
+  Sonic paths previously used `confirmation`, which both panels ignore. Panel
+  decisions arrive as an `ApprovalDecision` event instead of the words
+  "yes"/"no": the runtime validates them against the armed confirmation, and a
+  click after expiry says so and leaves the conversation untouched. The expiry
+  notice is now a response card, so no dead Approve/Deny buttons stay on
+  screen.
 - A pending confirmation no longer hijacks the conversation. Unrelated speech
   drops the stored call - the placeholder says it was dropped because the user
   asked something else, one short spoken note says so, and the new request runs
