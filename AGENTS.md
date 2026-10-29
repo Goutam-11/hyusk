@@ -124,10 +124,36 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
 - Timer/scheduler accept unbounded durations (possible `Instant` overflow).
 - Mobile-link replay protection is per connection (sequence resets).
 
-## Session memory
+## Memory and session notes
 
-- Repo knowledge lives here (`AGENTS.md`).
-- One log per work session: `memory/SESSION-YYYY-MM-DD.md`, recording intent,
-  changes, decisions, verification, and follow-ups.
-- `memory/DSH_SESSION_NOTES.md` holds only harness/workspace facts (search
-  engine availability, sandbox quirks, test isolation).
+Three layers:
+
+1. **Repo knowledge — this file.** Architecture, commands, invariants,
+   conventions.
+2. **Session logs — `memory/SESSION-YYYY-MM-DD.md`.** Intent, changes,
+   decisions, verification, follow-ups.
+3. **Harness notes — `memory/DSH_SESSION_NOTES.md`.** Search-engine
+   availability, sandbox quirks, test isolation.
+
+### Long-term memory (Obsidian plugin)
+
+The DSH memory tools read and write an Obsidian vault at
+`~/personal-projects/Shadow/Shadow/DeepSeek Memory`, with a project bank for
+this repository (`hyusk-agent-423347`). Run `memory_status` to confirm the
+vault and that the Obsidian CLI is reachable.
+
+- `memory_recall` before asking about preferences, prior decisions, or "what
+  changed last time" — check memory before re-deriving it.
+- `memory_read` a note in full before acting on it. A note records what was
+  decided or said then, not live truth; verify claims against the code and say
+  so when the two disagree.
+- `memory_save` when the user states a durable preference, corrects a mistake,
+  records a decision, or a fact will still matter in a later session. One
+  self-contained fact per note; no secrets or transient task state.
+- Scopes: `global` for facts that hold across every project (for example
+  search-engine availability and fallbacks, image sources); `project` for
+  hyusk-specific knowledge (repo guide, safety invariants, documentation audit
+  outcome).
+- `memory_forget` removes a note, to the Obsidian trash by default.
+- Do not store credentials, API keys, or anything the repository already
+  states.
