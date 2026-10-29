@@ -141,10 +141,12 @@ is a sink, not the source, and is covered by its own round-trip test.
 
 ## X3 — Private runtime files
 
-- Status: open · Phase 3 · Priority: medium
+- Status: done · 2026-10-29 · commit `X3PENDING` · Phase 3 · Priority: medium
 - Depends on: —
-- Evidence: `src/speech/speech.rs:256`, `src/tools/computer.rs:386-397`,
-  `src/model/codex.rs:67-68`
+- Evidence: `src/speech/speech.rs:251-257` (`next_piper_output_path`),
+  `src/tools/computer.rs:380-455` (`screenshot_path` and
+  `cleanup_screenshots`), `src/model/codex.rs:62-70` (the temporary
+  `--output-last-message` file)
 
 **Problem.** TTS WAV files, screenshots, and Codex output land in the shared
 temporary directory with predictable names and default modes. Another local
@@ -161,17 +163,66 @@ rest.
 
 **Acceptance criteria**
 
-- [ ] New files live under the private directory with `0600`.
-- [ ] Directory mode is `0700`.
-- [ ] Cleanup works in the new location.
-- [ ] A test asserts mode and path.
+- [x] New files live under the private directory with `0600`.
+- [x] Directory mode is `0700`.
+- [x] Cleanup works in the new location.
+- [x] A test asserts mode and path.
 
 **Tests**
 
-- [ ] Helper unit tests with a temporary `XDG_RUNTIME_DIR`.
+- [x] Helper unit tests with a temporary runtime directory
+      (`paths::tests`: `runtime_directory_is_a_private_child_of_the_runtime_base`,
+      `private_files_are_owner_only_and_unique`,
+      `restrict_file_tightens_a_world_readable_file`,
+      `generated_paths_keep_their_prefix_and_extension`), plus the call-site
+      tests `speech::speech::tests::piper_output_paths_are_unique_and_owner_only`,
+      `tools::computer::tests::screenshot_placeholders_are_owner_only_and_private`,
+      `tools::computer::tests::cleanup_keeps_the_newest_screenshots_and_drops_expired_ones`,
+      and `model::codex::tests::temporary_output_is_owner_only_and_removed_on_drop`.
 
-**Files.** `src/speech/speech.rs`, `src/tools/computer.rs`,
-`src/model/codex.rs`, a shared `paths` helper.
+**Files.** `src/paths.rs` (new), `src/main.rs` (`mod paths`),
+`src/speech/speech.rs`, `src/tools/computer.rs`, `src/model/codex.rs`,
+`docs/tools.md`, `docs/architecture.md`, `AGENTS.md`, `CHANGELOG.md`.
+
+**Notes (2026-10-29, implemented).** `src/paths.rs` is the single helper.
+`runtime_dir` returns `$XDG_RUNTIME_DIR/hyusk`, creating it with `0700` and
+tightening a wider mode on every call; `private_dir` returns it, or the shared
+temporary directory when the variable is unset or the directory cannot be
+created. `private_file(prefix, extension)` creates a unique empty file with
+`0600` there (`create_new`, so a name collision can never truncate an existing
+file) and falls back to the temporary directory with the same owner-only mode.
+`private_file_or_path` is the best-effort form for the two callers that cannot
+report an error, and `restrict_file` re-applies `0600` to a file an external
+program replaced.
+
+The three sinks now use it: `next_piper_output_path` (Piper writes its WAV
+there, and `TemporaryAudioFile` still removes it on drop), `screenshot_path`
+(the placeholder is created `0600` before the backend writes to it, and
+`capture_screenshot` re-applies `0600` after a backend succeeds because the
+portal copy and a GNOME Shell write can replace the file with the default
+mode), and the Codex `--output-last-message` file. A failed capture removes its
+own empty placeholder instead of leaving it for retention.
+
+`cleanup_screenshots` keeps the existing retention and cap policy in
+`cleanup_screenshots_in(directory, retention, max_files)`; it runs on the
+private directory and, when that differs, on the shared temporary directory, so
+screenshots written by an earlier version are still removed. The indicator files
+(`hyusk-state`, `hyusk-status.json`, `hyusk-control.json`,
+`hyusk-pairing.json`) deliberately stay directly in `$XDG_RUNTIME_DIR`: the GNOME
+and Noctalia panels read that protocol, and moving it would break them.
+
+Drift: the Evidence range `computer.rs:386-397` mixed the end of
+`screenshot_path` (then 380-390) with the start of `cleanup_screenshots` (then
+396-455); `codex.rs:67-68` is the start of a construction that spans 62-70
+(`stamp`/`sequence` were only there for the name). Both are recorded with the
+ranges above. `speech.rs:256` was exact. The other `temp_dir` uses in the tree
+are test scratch directories (`memory.rs`, `scheduler.rs`, `safety.rs`,
+`gnome_doctor.rs`, `link/auth.rs`, `task.rs`) and stay as they are.
+
+Verification: fail-before-fix probes are recorded in the session log — pointing
+`private_file` at the shared temporary directory failed the piper, screenshot,
+and Codex path assertions; dropping `mode(0o600)` failed the mode assertions;
+dropping `restrict_file` failed the tightening test.
 
 ## X4 — Leakage audit of logs, status, and memory
 

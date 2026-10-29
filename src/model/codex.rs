@@ -2,19 +2,12 @@
 //!
 //! Hyusk never reads Codex credential/configuration files. The CLI handles its
 //! own sign-in and is constrained to the configured workspace.
-use std::{
-    path::PathBuf,
-    process::Stdio,
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{path::PathBuf, process::Stdio};
 
 use anyhow::{bail, Context, Result};
 use tokio::process::Command;
 
 use crate::types::Message;
-
-static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 struct TemporaryOutput(PathBuf);
 
@@ -59,15 +52,12 @@ impl CodexClient {
             .map(|message| format!("{}: {}", message.role, message.text()))
             .collect::<Vec<_>>()
             .join("\n\n");
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let sequence = OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let output = TemporaryOutput(std::env::temp_dir().join(format!(
-            "hyusk-codex-{}-{stamp}-{sequence}.txt",
-            std::process::id()
-        )));
+        // Owner-only (0600) under the private runtime directory: the last
+        // message can quote workspace content, so it must not be world-readable.
+        let output = TemporaryOutput(
+            crate::paths::private_file("hyusk-codex-", "txt")
+                .context("Failed to create a private Codex output file")?,
+        );
         let mut command = Command::new("codex");
         command
             .args([
@@ -118,13 +108,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn temporary_output_is_removed_on_drop() {
-        let path = std::env::temp_dir().join(format!(
-            "hyusk-codex-output-test-{}-{}.txt",
-            std::process::id(),
-            OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::write(&path, "temporary report").expect("create temporary report");
+    fn temporary_output_is_owner_only_and_removed_on_drop() {
+        let path = crate::paths::private_file("hyusk-codex-output-test-", "txt")
+            .expect("create private report");
+        std::fs::write(&path, "temporary report").expect("write temporary report");
+
+        assert_eq!(
+            path.parent(),
+            Some(crate::paths::private_dir().as_path()),
+            "{}",
+            path.display()
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .expect("report exists")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
         let guard = TemporaryOutput(path.clone());
         assert!(path.exists());
         drop(guard);

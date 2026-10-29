@@ -90,6 +90,7 @@ for the microphone at the same time.
 | `apps.rs` | Installed-application discovery for the workflow editor and aliases. |
 | `credentials.rs` | Login-keyring lookup and storage for provider keys. |
 | `link/` | Opt-in TLS WebSocket server, pairing auth, and phone command channel. |
+| `paths.rs` | Private per-user runtime directory: owner-only directories and files for generated audio, screenshots, and model output. |
 | `status.rs` | Publishes `hyusk-status.json` for the GNOME and Noctalia indicators. |
 | `model/openrouter.rs` | Sends OpenAI-compatible HTTP requests, handles model catalogs and retry policy. |
 | `model/openrouter/protocol.rs` | Validates message roles, tool-call arguments, IDs, and complete result batches. |

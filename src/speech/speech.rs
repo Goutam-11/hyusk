@@ -249,11 +249,9 @@ fn default_piper_model_path() -> String {
 }
 
 fn next_piper_output_path() -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
-    let sequence = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("hyusk_tts_{}_{}.wav", std::process::id(), sequence))
+    // Created owner-only (0600) under the private runtime directory, so another
+    // local account can neither read nor guess the generated speech.
+    crate::paths::private_file_or_path("hyusk_tts_", "wav")
 }
 
 struct TemporaryAudioFile(std::path::PathBuf);
@@ -1984,8 +1982,38 @@ mod tests {
     }
 
     #[test]
-    fn piper_output_path_is_unique_per_speech_call() {
-        assert_ne!(next_piper_output_path(), next_piper_output_path());
+    fn piper_output_paths_are_unique_and_owner_only() {
+        let first = next_piper_output_path();
+        let second = next_piper_output_path();
+
+        assert_ne!(first, second);
+        assert_eq!(
+            first.parent(),
+            Some(crate::paths::private_dir().as_path()),
+            "{}",
+            first.display()
+        );
+
+        let name = first
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("utf-8 file name");
+        assert!(name.starts_with("hyusk_tts_"), "{name}");
+        assert!(name.ends_with(".wav"), "{name}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&first)
+                .expect("speech file exists")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        let _ = std::fs::remove_file(&first);
+        let _ = std::fs::remove_file(&second);
     }
 
     fn push_vad_frames(vad: &mut SpeechOnsetDetector, level: f32, count: usize) -> usize {

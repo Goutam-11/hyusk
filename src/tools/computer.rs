@@ -378,28 +378,18 @@ fn enigo_status() -> String {
 }
 
 fn screenshot_path() -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-
-    env::temp_dir().join(format!(
-        "{SCREENSHOT_PREFIX}{}-{nanos}.png",
-        std::process::id()
-    ))
+    // Owner-only (0600) under the private runtime directory: a screenshot can
+    // contain private windows, so another local account must not read it.
+    crate::paths::private_file_or_path(SCREENSHOT_PREFIX, "png")
 }
 
-/// Remove old temporary screenshots.
+/// Remove old screenshots from the directory they are written to.
 ///
 /// Files older than `HYUSK_SCREENSHOT_RETENTION_SECS` are deleted, and the
-/// number of retained files is capped at `HYUSK_SCREENSHOT_MAX_FILES`.
+/// number of retained files is capped at `HYUSK_SCREENSHOT_MAX_FILES`. The
+/// shared temporary directory is swept too, so screenshots written there by an
+/// earlier version are removed instead of accumulating.
 pub fn cleanup_screenshots() {
-    let directory = env::temp_dir();
-
-    let Ok(entries) = std::fs::read_dir(&directory) else {
-        return;
-    };
-
     let retention = Duration::from_secs(
         env::var("HYUSK_SCREENSHOT_RETENTION_SECS")
             .ok()
@@ -411,6 +401,21 @@ pub fn cleanup_screenshots() {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(DEFAULT_SCREENSHOT_MAX_FILES);
+
+    let directory = crate::paths::private_dir();
+    cleanup_screenshots_in(&directory, retention, max_files);
+
+    let legacy = env::temp_dir();
+    if legacy != directory {
+        cleanup_screenshots_in(&legacy, retention, max_files);
+    }
+}
+
+/// Retention and cap policy for one directory.
+fn cleanup_screenshots_in(directory: &Path, retention: Duration, max_files: usize) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
 
     let now = SystemTime::now();
     let mut retained = Vec::new();
@@ -481,6 +486,9 @@ async fn capture_screenshot(
 
         match result {
             Ok(()) if path.exists() => {
+                // A backend may replace the file we created, which would drop
+                // its mode, so the owner-only mode is applied to the result.
+                crate::paths::restrict_file(&path);
                 crate::tools::capabilities::record_screenshot(
                     crate::tools::capabilities::Capability::Granted,
                     *backend,
@@ -488,11 +496,18 @@ async fn capture_screenshot(
                 return Ok((path, backend));
             }
 
-            Ok(()) => errors.push(format!(
-                "{backend}: command reported success but no file was created"
-            )),
+            Ok(()) => {
+                let _ = std::fs::remove_file(&path);
+                errors.push(format!(
+                    "{backend}: command reported success but no file was created"
+                ));
+            }
 
-            Err(error) => errors.push(format!("{backend}: {error}")),
+            Err(error) => {
+                // The empty placeholder belongs to us; it is not a screenshot.
+                let _ = std::fs::remove_file(&path);
+                errors.push(format!("{backend}: {error}"));
+            }
         }
     }
 
@@ -2762,6 +2777,91 @@ mod tests {
 
         assert_eq!(ocr_screen_coordinates(17, 23, Some(region)), (137, 68));
         assert_eq!(ocr_screen_coordinates(17, 23, None), (17, 23));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn screenshot_placeholders_are_owner_only_and_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = screenshot_path();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("utf-8 file name");
+
+        assert!(name.starts_with(SCREENSHOT_PREFIX), "{name}");
+        assert!(name.ends_with(".png"), "{name}");
+        assert_eq!(
+            path.parent(),
+            Some(crate::paths::private_dir().as_path()),
+            "{}",
+            path.display()
+        );
+        assert!(path.exists(), "the placeholder is created with mode 0600");
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("placeholder exists")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn cleanup_keeps_the_newest_screenshots_and_drops_expired_ones() {
+        let directory = std::env::temp_dir().join(format!(
+            "hyusk-screenshot-cleanup-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).expect("create scratch directory");
+
+        let write = |name: &str| {
+            let path = directory.join(name);
+            std::fs::write(&path, "png").expect("write screenshot placeholder");
+            path
+        };
+        let age = |path: &Path, seconds: u64| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .and_then(|file| {
+                    file.set_times(
+                        std::fs::FileTimes::new()
+                            .set_modified(SystemTime::now() - Duration::from_secs(seconds)),
+                    )
+                })
+                .expect("age screenshot placeholder");
+        };
+
+        let expired = write(&format!("{SCREENSHOT_PREFIX}expired-1.png"));
+        let oldest = write(&format!("{SCREENSHOT_PREFIX}oldest-2.png"));
+        let newest = write(&format!("{SCREENSHOT_PREFIX}newest-3.png"));
+        let unrelated = write("notes.txt");
+        age(&expired, 3_600);
+        age(&oldest, 60);
+
+        cleanup_screenshots_in(&directory, Duration::from_secs(900), 1);
+
+        assert!(!expired.exists(), "an aged screenshot is removed");
+        assert!(
+            !oldest.exists(),
+            "the oldest screenshot above the cap is removed"
+        );
+        assert!(newest.exists(), "the newest screenshot is retained");
+        assert!(
+            unrelated.exists(),
+            "files without the prefix are left alone"
+        );
+
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]

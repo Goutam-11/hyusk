@@ -3,6 +3,7 @@ mod apps;
 mod credentials;
 mod link;
 mod model;
+mod paths;
 mod settings;
 mod speech;
 mod status;

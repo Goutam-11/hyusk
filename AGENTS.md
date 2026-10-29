@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **364 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **370 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -135,6 +135,11 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   assigned to secret-shaped names with `[redacted]`/`[redacted private key]` and
   appends one count note. It is bounded and over-redacts rather than leaking;
   never remove the pass to "clean up" output.
+- Generated files (X3): TTS audio, screenshots, and Codex output are created
+  owner-only through `paths::private_file` under `$XDG_RUNTIME_DIR/hyusk` (mode
+  `0700`, files mode `0600`, unique names); the shared temporary directory is a
+  fallback only, and a backend that replaces a file is followed by
+  `paths::restrict_file`. Do not hand-build a path into the temporary directory.
 - Wake defaults: `WAKE_CLAP_ENABLED` and `WAKE_WORD_DENOISE` are off unless set;
   `.env.example` documents both.
 - Never print `.env` contents or API keys. Keys are keyring-first, then

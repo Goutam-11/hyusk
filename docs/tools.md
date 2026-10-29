@@ -108,9 +108,15 @@ list of application names as the session reports them.
 | `wait` | none | Optional `milliseconds`, default 1000, maximum 30000. |
 
 Coordinates are global screen pixels with the origin at the top-left.
-Temporary screenshot files are cleaned automatically: files older than
+Screenshots are written with mode `0600` into the private runtime directory
+(`$XDG_RUNTIME_DIR/hyusk`, mode `0700`; see `src/paths.rs`), which falls back to
+the system temporary directory only when the runtime directory is unavailable.
+A screenshot can show private windows, so another local account must not be able
+to read it. Screenshot files are cleaned automatically: files older than
 `HYUSK_SCREENSHOT_RETENTION_SECS` (default 900) are deleted, and at most
-`HYUSK_SCREENSHOT_MAX_FILES` (default 30) are retained.
+`HYUSK_SCREENSHOT_MAX_FILES` (default 30) are retained. The shared temporary
+directory is swept too, so screenshots written there by an earlier version do
+not accumulate.
 
 When `MODEL_VISION=1`, the `screenshot` action emits an internal marker that
 the agent runner converts into a multimodal user message with a
@@ -643,6 +649,11 @@ The tool platform has guardrails but no sandbox:
   edited. The raw value never reaches the session file or the provider request.
   The pass is deliberately bounded: an unrecognised secret shape can still
   pass, and over-redaction is preferred to leaking a value.
+- Files Hyusk generates are owner-only. TTS audio, screenshots, and Codex output
+  are created with mode `0600` and unique names by `src/paths.rs` under
+  `$XDG_RUNTIME_DIR/hyusk` (mode `0700`); the shared temporary directory is used
+  only when the runtime directory is unavailable, and files created there keep
+  the owner-only mode.
 - Tool output and screenshots are sent back to the remote model provider.
 - API keys live in the login keyring and are not persisted in `commands.json`
   or the session snapshot. The Noctalia panel hands a key to the agent through

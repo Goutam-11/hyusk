@@ -55,6 +55,16 @@
 
 ### Changed
 
+- Files Hyusk generates are now private. TTS audio, screenshots, and Codex
+  output are created with mode `0600` and unique names under
+  `$XDG_RUNTIME_DIR/hyusk` (directory mode `0700`) through a new `src/paths.rs`
+  helper, instead of the shared temporary directory with the default mode and
+  a guessable name. The temporary directory is used only when the runtime
+  directory is unavailable, and even there the files are owner-only. Screenshot
+  retention and the file cap keep working in the new location and also sweep
+  the temporary directory, so screenshots written there by an earlier version
+  are removed; a capture backend that replaces the file has the owner-only mode
+  re-applied to the result.
 - Tool output is redacted before it becomes a tool result. A bounded pass
   replaces private-key blocks, common credential token prefixes (OpenRouter,
   OpenAI, GitHub, Slack, AWS, Google, Hugging Face, GitLab, npm, PyPI, JWTs),
