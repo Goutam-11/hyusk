@@ -78,9 +78,10 @@ Keep the synchronous path for shutdown and tests.
 
 ## L3 — Streaming idle timeout
 
-- Status: open · Phase 3 · Priority: medium
+- Status: done · 2026-10-30 · commit `L3PENDING` · Phase 3 · Priority: medium
 - Depends on: —
-- Evidence: `src/model/openrouter.rs:85-86`
+- Evidence: `src/model/openrouter.rs:84-88` (was 85-86: the client builder's
+  `connect_timeout` and `timeout`)
 
 **Problem.** The client sets a 150-second total request timeout, which also
 caps streams. A long answer that keeps producing tokens is cut mid-reply; the
@@ -92,18 +93,55 @@ connect timeout and retry rules.
 
 **Acceptance criteria**
 
-- [ ] A stream longer than 150 seconds succeeds while chunks keep arriving.
-- [ ] A stalled stream fails after the idle window.
-- [ ] The total cap is configurable and documented in `.env.example`.
-- [ ] The partial-speech rule is unchanged.
+- [x] A stream longer than 150 seconds succeeds while chunks keep arriving.
+- [x] A stalled stream fails after the idle window.
+- [x] The total cap is configurable and documented in `.env.example`.
+- [x] The partial-speech rule is unchanged.
 
 **Tests**
 
-- [ ] Local stream fixture with slow chunks.
-- [ ] Stalled fixture.
+- [x] Local stream fixture with slow chunks
+      (`model::openrouter::stream::tests::slow_chunks_keep_a_reply_alive_past_the_idle_window`,
+      `model::openrouter::stream_timeout_tests::streamed_reply_succeeds_while_chunks_arrive_within_the_idle_window`).
+- [x] Stalled fixture
+      (`model::openrouter::stream::tests::stalled_stream_fails_after_the_idle_window`),
+      plus the ceiling cases `total_limit_ends_a_stream_that_keeps_sending` and
+      `capped_stream_fails_even_while_chunks_keep_arriving` and the policy table
+      `stream_limits_use_defaults_and_treat_zero_total_as_unlimited`.
 
 **Files.** `src/model/openrouter.rs`, `src/model/openrouter/stream.rs`,
-`.env.example`, `docs/development.md`.
+`.env.example`, `README.md`, `docs/development.md`, `CHANGELOG.md`.
+
+**Notes (2026-10-30, implemented).** The client no longer carries a total
+timeout: it keeps `connect_timeout(15s)` and nothing else. Every non-streaming
+request (`list_models`, `send_once`) sets `REQUEST_TIMEOUT` (150 s) per request,
+so only streams changed behaviour. A streamed request now has two bounds, held
+in `stream::StreamLimits` and applied inside `parse_sse_stream`:
+`HYUSK_STREAM_IDLE_TIMEOUT_SECS` (default 45, clamped to 3600) fails the reply
+with `Model stream stalled: no data arrived for 45s` when no chunk arrives, and
+`HYUSK_STREAM_TOTAL_TIMEOUT_SECS` (default 600, clamped to 86400, `0` disables)
+ends a reply that has streamed for that long with
+`Model stream exceeded the 600s total limit`. The wait for the next chunk is
+`min(idle, remaining total)`, so the reply ends on whichever bound is reached
+first, and a total of `0` leaves the idle window as the only bound.
+
+Connecting and waiting for response headers stays bounded by the 150-second
+request timeout through `open_stream`; an overrun becomes a network error, so
+the existing retry loop treats it exactly like a connect failure. The retry
+rules, the `[DONE]`/finish-reason completion rule, the 4 MiB stream cap, and the
+runner's partial-speech rule (a stream that fails after part of the reply was
+spoken is reported, never replayed as a plain request) are unchanged.
+
+Drift: the Evidence line `openrouter.rs:85-86` pointed at the two builder calls,
+which is exact for the pre-change file; after the change the builder is at
+92-97 and the policy lives in `src/model/openrouter/stream.rs:15-63`.
+
+Limits of the test fixtures: the slow-chunk and stall windows are scaled down
+(tens of milliseconds) so the suite stays fast, and the absence of the old
+150-second body cap is verified by construction — the client builder has no
+total timeout — rather than by waiting 150 seconds. The client-level tests
+inject `StreamLimits` through the client's own field, which is how the wiring
+from env to the parser is covered.
 
 ## L4 — Clamp timer and scheduler durations
 

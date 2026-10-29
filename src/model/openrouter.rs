@@ -14,11 +14,17 @@ mod protocol;
 mod stream;
 
 use protocol::{validate_assistant_message, validate_conversation};
-use stream::parse_sse_stream;
+use stream::{parse_sse_stream, StreamLimits};
 
 const MAX_RETRIES: u32 = 3;
 const BASE_BACKOFF: Duration = Duration::from_millis(500);
 const MAX_BACKOFF: Duration = Duration::from_secs(8);
+
+/// Ceiling on connecting and receiving response headers. A streamed reply is
+/// bounded by its own idle and total limits instead, because a long answer that
+/// keeps producing tokens must not be cut mid-reply.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(150);
 
 #[derive(Debug, Serialize)]
 struct ChatRequest {
@@ -76,18 +82,22 @@ pub struct OpenRouterClient {
     client: Client,
     api_key: String,
     base_url: String,
+    stream_limits: StreamLimits,
 }
 
 impl OpenRouterClient {
     pub fn new(api_key: String, base_url: String) -> Self {
         Self {
             client: Client::builder()
-                .connect_timeout(Duration::from_secs(15))
-                .timeout(Duration::from_secs(150))
+                .connect_timeout(CONNECT_TIMEOUT)
+                // No client-wide total timeout: it would also cap a streamed
+                // reply. Non-streaming requests set their own per-request
+                // timeout, and streams use the idle/total limits below.
                 .build()
                 .unwrap_or_else(|_| Client::new()),
             api_key,
             base_url,
+            stream_limits: StreamLimits::from_env(),
         }
     }
 
@@ -97,6 +107,7 @@ impl OpenRouterClient {
         let response = self
             .client
             .get(format!("{}/models", self.base_url))
+            .timeout(REQUEST_TIMEOUT)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
             .await
@@ -214,6 +225,7 @@ impl OpenRouterClient {
         let response = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
+            .timeout(REQUEST_TIMEOUT)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(request)
             .send()
@@ -308,24 +320,16 @@ impl OpenRouterClient {
         let mut attempt = 0;
         let response = loop {
             attempt += 1;
-            let result = self
-                .client
-                .post(format!("{}/chat/completions", self.base_url))
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .json(&request)
-                .send()
-                .await;
+            // Connecting and receiving response headers stays bounded by the
+            // request timeout; the body is then governed by the stream limits.
+            let result = tokio::time::timeout(REQUEST_TIMEOUT, self.open_stream(&request)).await;
             let error = match result {
-                Ok(response) if response.status().is_success() => break response,
-                Ok(response) => HttpError {
-                    status: Some(response.status()),
-                    retry_after: parse_retry_after(response.headers()),
-                    body: truncate(&response.text().await.unwrap_or_default(), 240),
-                },
-                Err(error) => HttpError {
+                Ok(Ok(response)) => break response,
+                Ok(Err(error)) => error,
+                Err(_) => HttpError {
                     status: None,
                     retry_after: None,
-                    body: error.to_string(),
+                    body: format!("no response headers after {}s", REQUEST_TIMEOUT.as_secs()),
                 },
             };
             if attempt > MAX_RETRIES
@@ -343,7 +347,40 @@ impl OpenRouterClient {
             sleep(delay).await;
         };
 
-        parse_sse_stream(response, on_delta).await
+        parse_sse_stream(response, on_delta, self.stream_limits).await
+    }
+
+    /// Send the streaming request and return a success response, or the error
+    /// the retry loop classifies. Bounded by the caller so a provider that
+    /// accepts the connection and never answers cannot hold a turn open.
+    async fn open_stream(
+        &self,
+        request: &ChatRequest,
+    ) -> std::result::Result<reqwest::Response, HttpError> {
+        match self
+            .client
+            .post(format!("{}/chat/completions", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(request)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => Ok(response),
+            Ok(response) => {
+                let status = response.status();
+                let retry_after = parse_retry_after(response.headers());
+                Err(HttpError {
+                    status: Some(status),
+                    retry_after,
+                    body: truncate(&response.text().await.unwrap_or_default(), 240),
+                })
+            }
+            Err(error) => Err(HttpError {
+                status: None,
+                retry_after: None,
+                body: error.to_string(),
+            }),
+        }
     }
 }
 
@@ -481,5 +518,95 @@ mod stream_fallback_tests {
         assert!(!rejects_streaming(&anyhow!(
             "Model stream provider error: streaming not supported"
         )));
+    }
+}
+
+#[cfg(test)]
+mod stream_timeout_tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Serve one chunked SSE reply with a gap between chunks, then let the
+    /// client read it under `limits`. The server is aborted afterwards, so a
+    /// capped or stalled stream does not wait for the remaining chunks.
+    async fn stream_with_limits(
+        limits: StreamLimits,
+        chunk_gap: Duration,
+        chunks: usize,
+    ) -> (Result<Message>, Vec<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fixture server");
+        let address = listener.local_addr().expect("fixture address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept fixture");
+            let mut request = [0u8; 2048];
+            let _ = socket.read(&mut request).await;
+
+            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                        Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+            if socket.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+
+            for _ in 0..chunks {
+                tokio::time::sleep(chunk_gap).await;
+                let piece = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"tok \"}}]}\n\n";
+                let frame = format!("{:x}\r\n{piece}\r\n", piece.len());
+                if socket.write_all(frame.as_bytes()).await.is_err() {
+                    return;
+                }
+                let _ = socket.flush().await;
+            }
+
+            let done = "data: [DONE]\n\n";
+            let frame = format!("{:x}\r\n{done}\r\n0\r\n\r\n", done.len());
+            let _ = socket.write_all(frame.as_bytes()).await;
+        });
+
+        let mut client = OpenRouterClient::new("local-test".into(), format!("http://{address}"));
+        client.stream_limits = limits;
+
+        let messages = vec![Message::user("hello")];
+        let mut deltas = Vec::new();
+        let result = client
+            .chat_stream("test/model", &messages, &[], &mut |delta| {
+                deltas.push(delta.to_string())
+            })
+            .await;
+
+        server.abort();
+        let _ = server.await;
+        (result, deltas)
+    }
+
+    #[tokio::test]
+    async fn capped_stream_fails_even_while_chunks_keep_arriving() {
+        let limits = StreamLimits {
+            idle: Duration::from_secs(5),
+            total: Some(Duration::from_millis(150)),
+        };
+        let (result, deltas) = stream_with_limits(limits, Duration::from_millis(40), 20).await;
+        let error = result.expect_err("a stream past the total limit fails");
+
+        assert!(error.to_string().contains("total limit"), "{error}");
+        assert!(
+            !deltas.is_empty(),
+            "tokens had arrived before the ceiling was reached"
+        );
+    }
+
+    #[tokio::test]
+    async fn streamed_reply_succeeds_while_chunks_arrive_within_the_idle_window() {
+        let limits = StreamLimits {
+            idle: Duration::from_millis(500),
+            total: Some(Duration::from_secs(10)),
+        };
+        let (result, deltas) = stream_with_limits(limits, Duration::from_millis(40), 6).await;
+        let message = result.expect("a slow but live stream succeeds");
+
+        assert_eq!(deltas.len(), 6);
+        assert_eq!(message.text(), "tok ".repeat(6));
     }
 }

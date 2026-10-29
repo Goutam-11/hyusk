@@ -119,6 +119,8 @@ or times out, the wake event is ignored and the terminal input path still works.
 | --- | --- | --- | --- |
 | `OPENROUTER_API_KEY` | No* | - | OpenRouter bearer token. |
 | `OPENROUTER_MODEL` | No | `openai/gpt-4o-mini` | Model identifier sent to the provider. |
+| `HYUSK_STREAM_IDLE_TIMEOUT_SECS` | No | `45` | Fail a streamed reply when no data arrives for this long. A reply that keeps producing tokens is never cut for length. |
+| `HYUSK_STREAM_TOTAL_TIMEOUT_SECS` | No | `600` | Ceiling on one streamed reply; `0` disables it and leaves the idle window as the only bound. |
 | `OPENROUTER_BASE_URL` | No | `https://openrouter.ai/api/v1` | Base URL; `/chat/completions` is appended. |
 | `OPENAI_API_KEY` | No | - | Separate OpenAI API credential; API usage is billed separately from a ChatGPT subscription. |
 | `BEDROCK_API_KEY` | No | - | Amazon Bedrock API key for the OpenAI-compatible Mantle endpoint. `AWS_BEARER_TOKEN_BEDROCK` and `AWS_API_KEY` are also accepted. |

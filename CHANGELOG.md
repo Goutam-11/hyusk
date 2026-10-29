@@ -55,6 +55,20 @@
 
 ### Changed
 
+- Streamed replies are no longer cut by the whole-request timeout. The client
+  carried a single 150-second limit that also capped the response body, so a
+  long answer that kept producing tokens was truncated mid-reply and the turn
+  reported a failed stream after part of it had been spoken. A stream is now
+  bounded by an idle window (`HYUSK_STREAM_IDLE_TIMEOUT_SECS`, default 45
+  seconds without data) and a configurable whole-reply ceiling
+  (`HYUSK_STREAM_TOTAL_TIMEOUT_SECS`, default 600; `0` disables it). A provider
+  that stops sending fails with `Model stream stalled` instead of holding the
+  turn open, and a reply past the ceiling fails with the total-limit message.
+  Connecting and waiting for response headers, and every non-streaming request,
+  keep the 150-second request timeout, and the retry rules are unchanged. A
+  stream that fails after part of the reply was spoken is still reported rather
+  than replayed as a plain request. Both variables are documented in
+  `.env.example`, `README.md`, and `docs/development.md`.
 - Files Hyusk generates are now private. TTS audio, screenshots, and Codex
   output are created with mode `0600` and unique names under
   `$XDG_RUNTIME_DIR/hyusk` (directory mode `0700`) through a new `src/paths.rs`

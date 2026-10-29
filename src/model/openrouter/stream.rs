@@ -7,20 +7,82 @@ use crate::types::{
 };
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
+use std::time::Duration;
+use tokio::time::Instant;
 
 // A broken endpoint must not grow Hyusk's memory indefinitely while streaming
 // unterminated events or enormous tool arguments. This includes wire framing.
 const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
 
+/// A streamed reply may take as long as it keeps producing tokens, so the
+/// limit is on silence between chunks rather than on the whole response.
+const DEFAULT_IDLE_SECS: u64 = 45;
+/// Whole-reply ceiling, well above a long spoken answer. `0` disables it and
+/// leaves the idle window as the only bound.
+const DEFAULT_TOTAL_SECS: u64 = 600;
+const MAX_IDLE_SECS: u64 = 3_600;
+const MAX_TOTAL_SECS: u64 = 86_400;
+
+/// Timing policy for one streamed reply.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct StreamLimits {
+    /// Fail when no data arrives for this long.
+    pub idle: Duration,
+    /// Fail once the reply has been streaming for this long; `None` disables
+    /// the ceiling.
+    pub total: Option<Duration>,
+}
+
+impl StreamLimits {
+    pub(super) fn from_env() -> Self {
+        Self::from_values(
+            env_seconds("HYUSK_STREAM_IDLE_TIMEOUT_SECS"),
+            env_seconds("HYUSK_STREAM_TOTAL_TIMEOUT_SECS"),
+        )
+    }
+
+    /// Testable half of [`Self::from_env`]: unset values fall back to the
+    /// defaults, `0` disables the total ceiling, and both are clamped.
+    fn from_values(idle_secs: Option<u64>, total_secs: Option<u64>) -> Self {
+        let idle = idle_secs
+            .filter(|seconds| *seconds > 0)
+            .map(|seconds| seconds.min(MAX_IDLE_SECS))
+            .unwrap_or(DEFAULT_IDLE_SECS);
+        let total = total_secs
+            .map(|seconds| seconds.min(MAX_TOTAL_SECS))
+            .unwrap_or(DEFAULT_TOTAL_SECS);
+
+        Self {
+            idle: Duration::from_secs(idle),
+            total: (total > 0).then(|| Duration::from_secs(total)),
+        }
+    }
+}
+
+fn env_seconds(name: &str) -> Option<u64> {
+    std::env::var(name).ok()?.trim().parse::<u64>().ok()
+}
+
+fn describe(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds > 0 {
+        format!("{seconds}s")
+    } else {
+        format!("{}ms", duration.as_millis())
+    }
+}
+
 pub(super) async fn parse_sse_stream<F>(
     response: reqwest::Response,
     on_delta: &mut F,
+    limits: StreamLimits,
 ) -> Result<Message>
 where
     F: FnMut(&str),
 {
     use futures_util::StreamExt;
 
+    let deadline = limits.total.map(|total| Instant::now() + total);
     let mut stream = response.bytes_stream();
     let mut buffer = Vec::new();
     let mut content = String::new();
@@ -31,8 +93,40 @@ where
     let mut received_bytes = 0usize;
     let mut refusal = String::new();
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("Model stream error")?;
+    loop {
+        // Wait for the next chunk, bounded by the idle window and by whatever
+        // remains of the whole-reply ceiling, whichever ends first.
+        let (wait, capped_by_total) = match deadline {
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(anyhow!(
+                        "Model stream exceeded the {} total limit",
+                        describe(limits.total.unwrap_or_default())
+                    ));
+                }
+                (remaining.min(limits.idle), remaining <= limits.idle)
+            }
+            None => (limits.idle, false),
+        };
+
+        let chunk = match tokio::time::timeout(wait, stream.next()).await {
+            Ok(Some(chunk)) => chunk.context("Model stream error")?,
+            Ok(None) => break,
+            Err(_) if capped_by_total => {
+                return Err(anyhow!(
+                    "Model stream exceeded the {} total limit",
+                    describe(limits.total.unwrap_or_default())
+                ))
+            }
+            Err(_) => {
+                return Err(anyhow!(
+                    "Model stream stalled: no data arrived for {}",
+                    describe(limits.idle)
+                ))
+            }
+        };
+
         received_bytes = received_bytes.saturating_add(chunk.len());
         if received_bytes > MAX_STREAM_BYTES {
             return Err(anyhow!("Model stream exceeded the 4 MiB response limit"));
@@ -234,30 +328,76 @@ fn pop_sse_line(buffer: &mut Vec<u8>, eof: bool) -> Result<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_sse_stream, pop_sse_line, MAX_STREAM_BYTES};
+    use super::{parse_sse_stream, pop_sse_line, StreamLimits, MAX_STREAM_BYTES};
     use crate::types::Message;
     use anyhow::Result;
+    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    fn generous_limits() -> StreamLimits {
+        StreamLimits {
+            idle: Duration::from_secs(5),
+            total: Some(Duration::from_secs(30)),
+        }
+    }
+
     async fn parse_events(events: String) -> Result<Message> {
+        parse_pieces(
+            vec![(Duration::ZERO, events)],
+            generous_limits(),
+            &mut |_| {},
+        )
+        .await
+    }
+
+    /// Serve one request as a chunked SSE response, writing each piece after
+    /// its delay. A piece that never arrives inside the idle window is the
+    /// stalled-stream fixture. The server is aborted once the client finishes,
+    /// so a test that ends the stream early does not wait for the rest.
+    async fn parse_pieces<F>(
+        pieces: Vec<(Duration, String)>,
+        limits: StreamLimits,
+        on_delta: &mut F,
+    ) -> Result<Message>
+    where
+        F: FnMut(&str),
+    {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = [0u8; 2048];
             let _ = socket.read(&mut request).await;
-            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{events}", events.len());
-            // Oversize tests may close the receiver before the write finishes.
-            let _ = socket.write_all(response.as_bytes()).await;
+
+            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                        Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+            if socket.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+
+            for (delay, piece) in pieces {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                let frame = format!("{:x}\r\n{piece}\r\n", piece.len());
+                if socket.write_all(frame.as_bytes()).await.is_err() {
+                    return;
+                }
+                let _ = socket.flush().await;
+            }
+
+            let _ = socket.write_all(b"0\r\n\r\n").await;
         });
+
         let response = reqwest::Client::builder()
             .no_proxy()
             .build()?
             .get(format!("http://{address}"))
             .send()
             .await?;
-        let result = parse_sse_stream(response, &mut |_| {}).await;
-        server.await?;
+        let result = parse_sse_stream(response, &mut *on_delta, limits).await;
+        server.abort();
+        let _ = server.await;
         result
     }
 
@@ -301,6 +441,111 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("response limit"));
+    }
+
+    #[tokio::test]
+    async fn slow_chunks_keep_a_reply_alive_past_the_idle_window() {
+        // Scaled-down version of the real case: a reply that keeps producing
+        // tokens is never cut, however long the gaps are compared with the old
+        // whole-request timeout.
+        let mut pieces = Vec::new();
+        let mut expected = String::new();
+        for index in 0..8 {
+            let token = format!("t{index} ");
+            expected.push_str(&token);
+            pieces.push((
+                if index == 0 {
+                    Duration::ZERO
+                } else {
+                    Duration::from_millis(40)
+                },
+                format!(
+                    "data: {{\"choices\":[{{\"delta\":{{\"role\":\"assistant\",\"content\":\"{token}\"}}}}]}}\n\n"
+                ),
+            ));
+        }
+        pieces.push((Duration::ZERO, "data: [DONE]\n\n".to_string()));
+
+        let limits = StreamLimits {
+            idle: Duration::from_millis(500),
+            total: Some(Duration::from_secs(30)),
+        };
+        let mut deltas = Vec::new();
+        let message = parse_pieces(pieces, limits, &mut |delta| deltas.push(delta.to_string()))
+            .await
+            .expect("a live stream succeeds");
+
+        assert_eq!(message.text(), expected);
+        assert_eq!(deltas.concat(), expected);
+    }
+
+    #[tokio::test]
+    async fn stalled_stream_fails_after_the_idle_window() {
+        let pieces = vec![
+            (
+                Duration::ZERO,
+                "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Half\"}}]}\n\n"
+                    .to_string(),
+            ),
+            // Never delivered: the client gives up first.
+            (Duration::from_millis(600), "data: [DONE]\n\n".to_string()),
+        ];
+        let limits = StreamLimits {
+            idle: Duration::from_millis(120),
+            total: Some(Duration::from_secs(30)),
+        };
+
+        let started = std::time::Instant::now();
+        let error = parse_pieces(pieces, limits, &mut |_| {})
+            .await
+            .expect_err("a stalled stream fails");
+
+        assert!(error.to_string().contains("stalled"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the idle window ends the stream, not the server delay"
+        );
+    }
+
+    #[tokio::test]
+    async fn total_limit_ends_a_stream_that_keeps_sending() {
+        let mut pieces = Vec::new();
+        for _ in 0..20 {
+            pieces.push((
+                Duration::from_millis(40),
+                "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"x\"}}]}\n\n"
+                    .to_string(),
+            ));
+        }
+        let limits = StreamLimits {
+            idle: Duration::from_secs(5),
+            total: Some(Duration::from_millis(150)),
+        };
+
+        let error = parse_pieces(pieces, limits, &mut |_| {})
+            .await
+            .expect_err("a stream past the total limit fails");
+
+        assert!(error.to_string().contains("total limit"), "{error}");
+    }
+
+    #[test]
+    fn stream_limits_use_defaults_and_treat_zero_total_as_unlimited() {
+        let defaults = StreamLimits::from_values(None, None);
+        assert_eq!(defaults.idle, Duration::from_secs(45));
+        assert_eq!(defaults.total, Some(Duration::from_secs(600)));
+
+        let unlimited = StreamLimits::from_values(Some(0), Some(0));
+        assert_eq!(
+            unlimited.idle,
+            Duration::from_secs(45),
+            "an idle window of zero is not usable"
+        );
+        assert_eq!(unlimited.total, None, "zero disables the total ceiling");
+
+        let clamped = StreamLimits::from_values(Some(99_999), Some(999_999));
+        assert_eq!(clamped.idle, Duration::from_secs(3_600));
+        assert_eq!(clamped.total, Some(Duration::from_secs(86_400)));
     }
 
     #[test]

@@ -101,6 +101,15 @@ values loaded from the file. Keep the mode at `0600`: it usually holds a live
 provider key, `scripts/install-autostart.sh` tightens a wider mode, and
 `gnome_doctor` reports `needs_attention` while other accounts can read it.
 
+Streamed replies are bounded by an idle window rather than by total length, so a
+long answer that keeps producing tokens is never cut mid-reply.
+`HYUSK_STREAM_IDLE_TIMEOUT_SECS` (default 45) fails the reply when no chunk
+arrives for that long, and `HYUSK_STREAM_TOTAL_TIMEOUT_SECS` (default 600; `0`
+disables it) caps one streamed reply. Waiting for response headers and every
+non-streaming request still use the 150-second request timeout, and the retry
+rules are unchanged. A stream that fails after part of the reply was spoken is
+reported as a failed stream and never replayed as a plain request.
+
 Model files are runtime assets and `models/` is ignored by Git. Keep trained
 wake models, Whisper files, Piper voices, and downloaded negative datasets out
 of normal commits.
@@ -116,8 +125,8 @@ cargo clippy --all-targets
 cargo test --bin hyusk_agent
 ```
 
-`cargo test --all-targets` runs the full suite: 370 passing tests and 7
-ignored (the main binary alone: 349 passing, 6 ignored; shared model/stream
+`cargo test --all-targets` runs the full suite: 382 passing tests and 7
+ignored (the main binary alone: 355 passing, 6 ignored; shared model/stream
 tests are compiled into each binary). The ignored ones need a real session or
 network: the four portal smoke tests below, a live CDP browser test, a Whisper
 cancel/cache test, and the GTK workflow editor draft test. Coverage includes
