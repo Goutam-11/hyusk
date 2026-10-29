@@ -72,7 +72,7 @@ classifier; the arm now lives in the `match program` inside
 
 ## S2 — Read confinement and secret denylist
 
-- Status: open · Phase 2 · Priority: high
+- Status: done · 2026-10-29 · commit `PENDING` · Phase 2 · Priority: high
 - Depends on: S1
 - Evidence: `src/tools/safety.rs:78-79`, `AGENTS.md` known issues
 
@@ -92,20 +92,56 @@ elsewhere.
 
 **Acceptance criteria**
 
-- [ ] `cat src/main.rs` and `rg "tool" src` are free.
-- [ ] `cat ../other-project/file` asks.
-- [ ] `cat .env`, `cat ~/.ssh/id_ed25519`, `rg token ~/.config/gh` are refused
+- [x] `cat src/main.rs` and `rg "tool" src` are free.
+- [x] `cat ../other-project/file` asks.
+- [x] `cat .env`, `cat ~/.ssh/id_ed25519`, `rg token ~/.config/gh` are refused
       with a policy message that does not echo a secret.
-- [ ] `find / -name '*.pem'` is refused or asks before output.
-- [ ] The denylist covers `.env*`, `.ssh`, `.gnupg`, `.aws`, `.kube`, `.netrc`,
+- [x] `find / -name '*.pem'` is refused or asks before output.
+- [x] The denylist covers `.env*`, `.ssh`, `.gnupg`, `.aws`, `.kube`, `.netrc`,
       `.config/gh`, keyrings, and the managed browser profile directory.
 
 **Tests**
 
-- [ ] Denylist and outside-root tables in a temp fixture.
-- [ ] A path-traversal case (`..`) is resolved before the check.
+- [x] Denylist and outside-root tables in a temp fixture
+      (`reads_are_free_only_inside_the_root`,
+      `secret_paths_are_refused_without_echoing_them`,
+      `repository_reads_stay_free_and_escapes_ask`).
+- [x] A path-traversal case (`..`) is resolved before the check, including a
+      symlink out of the root.
+- [x] End-to-end: `agent::runner::tests::
+      credential_read_is_refused_instead_of_armed` and
+      `agent::runtime::tests::
+      workflow_refuses_a_credential_read_before_holding_it_for_approval`.
 
-**Files.** `src/tools/safety.rs`, possibly a small `paths.rs` helper.
+**Files.** `src/tools/safety.rs`, `src/agent/runner.rs`,
+`src/agent/runner/sonic.rs`, `src/agent/runtime.rs`, `docs/tools.md`,
+`AGENTS.md`, `CHANGELOG.md`.
+
+**Notes (2026-10-29, implemented).** `READ_PROGRAMS` lists the file-reading
+programs. `read_command_paths` extracts their operands: `grep` and `rg` skip the
+pattern (every positional is a path once `-e`/`--file` names one), `sed` skips
+its script unless `-e`/`--expression` is used, `git` reports the operands after
+`--` plus the path half of a `REV:path` object name, and the remaining programs
+treat every non-option token and every `--option=value` as a path candidate.
+`read_arguments_are_free` then requires every candidate to resolve inside the
+root through S1's `path_inside_root`, so `~` is expanded and `..` and symlinks
+are resolved before the comparison; a path that cannot be resolved asks.
+
+`SECRET_PATH_RULES` is the compiled denylist table: one row per credential
+location, with a label and a matcher, so a new location is a row rather than a
+classifier change. `secret_refusal` renders the one refusal sentence from the
+matched label and never includes the path or a value. The refusal is checked
+before the approval gate in the text runner, the Nova Sonic loop, and workflow
+steps, so a refused read neither arms a card nor runs and a turn grant cannot
+cover it. The gate itself also asks for those calls, so a caller that skipped
+the check fails closed with a prompt rather than a leak. A search pattern is not
+a path, which keeps `rg -n '\.env' src` free.
+
+Drift: the Evidence range (`safety.rs:78-79`) pointed at the policy `name()`
+accessor; the classifier is `shell_requires_approval` and the read helper block
+now sits just above the file-operation constants. Adjacent gap found and left
+for a follow-up issue: `git log --output=…` writes a file, and the git arm only
+refuses `--output` for `diff`.
 
 ## S3 — Reject programs containing a slash
 

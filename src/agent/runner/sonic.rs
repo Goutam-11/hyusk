@@ -398,6 +398,12 @@ impl Agent {
                         // Availability is preflighted so no card is published
                         // for a delegation that cannot start.
                         ToolResult::failure(failure)
+                    } else if let Some(refusal) =
+                        crate::tools::safety::secret_refusal(&call.name, &args)
+                    {
+                        // A credential read is refused outright; no card is
+                        // published (S2).
+                        ToolResult::failure(refusal)
                     } else if crate::tools::safety::requires_approval(&call.name, &args) {
                         // Preview the stored arguments, so the card and the
                         // tool result name exactly what approval will run.

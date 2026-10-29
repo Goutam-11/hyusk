@@ -1348,6 +1348,11 @@ async fn execute_workflow_actions(
         }
         let name = action.tool_name();
         let input = action.tool_input();
+        // A credential read is refused outright, before the approval check, so
+        // a workflow step cannot even be held for confirmation (S2).
+        if let Some(refusal) = crate::tools::safety::secret_refusal(name, &input) {
+            return Err(format!("step {} {refusal}", completed + 1));
+        }
         if crate::tools::safety::requires_approval(name, &input) {
             return Err(format!(
                 "step {} ({name}) requires user approval; workflows cannot confirm it, so run it from the assistant instead",
@@ -2359,6 +2364,30 @@ mod tests {
         let error = result.unwrap_err();
         assert!(error.contains("requires user approval"));
         assert!(error.contains("(shell)"));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn workflow_refuses_a_credential_read_before_holding_it_for_approval() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(CountingTool(calls.clone(), false));
+        let action = Action::Remember {
+            text: "ordinary note".into(),
+        };
+        let protected = Action::Shell {
+            command: "cat .env".into(),
+        };
+
+        let result =
+            execute_workflow_actions(&[action, protected], &tools, &CancellationToken::new()).await;
+
+        let error = result.unwrap_err();
+        assert!(error.contains("secret denylist"), "{error}");
+        assert!(
+            !error.contains(".env"),
+            "the refusal must not echo the path: {error}"
+        );
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 

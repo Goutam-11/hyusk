@@ -179,12 +179,16 @@ impl ToolName {
             },
             ToolName::Shell => ToolPolicy {
                 decision: Decision::Classified(shell_requires_approval),
-                guidance: "one simple read-only command runs freely (pwd, ls, cat, head, \
-                           tail, rg, sed -n, find without -delete or -exec, git status, \
-                           diff, log, rev-parse, show or branch --list, sort, cargo test, \
-                           check, build, fmt, clippy); chaining, pipes, redirection, \
-                           expansion, in-place writes, and unknown programs ask, and a \
-                           detached mode asks unless it launches an app",
+                guidance: "one simple read-only command runs freely only while every path it \
+                           names stays inside the project root (pwd, ls, cat, head, tail, rg, \
+                           sed -n, find without -delete or -exec, git status, diff, log, \
+                           rev-parse, show or branch --list, sort, cargo test, check, build, \
+                           fmt, clippy); a read outside the root asks, and a credential path \
+                           (environment files, SSH keys, GnuPG, AWS, Kubernetes, netrc, the \
+                           GitHub CLI config, keyrings, the automation browser profile) is \
+                           refused outright rather than confirmed; chaining, pipes, \
+                           redirection, expansion, in-place writes, and unknown programs ask, \
+                           and a detached mode asks unless it launches an app",
                 preview_keys: &["command", "mode"],
             },
             ToolName::Task => ToolPolicy {
@@ -527,6 +531,289 @@ fn path_inside_root(
     resolve_for_root_check(&absolute).starts_with(root)
 }
 
+/// Programs whose output is file content or file metadata. They are free only
+/// while every path they name stays inside the project root, and the secret
+/// denylist refuses known credential locations outright (S2).
+const READ_PROGRAMS: &[&str] = &[
+    "cat", "head", "tail", "wc", "file", "stat", "ls", "du", "df", "grep", "rg", "sed", "find",
+    "sort", "uniq", "cut", "tr",
+];
+
+/// One denylist rule. The label is what a refusal names; it never includes the
+/// path that matched, so the message cannot echo a credential location.
+struct SecretRule {
+    label: &'static str,
+    matches: fn(&std::path::Path) -> bool,
+}
+
+fn path_component_text(path: &std::path::Path) -> Vec<String> {
+    use std::path::Component;
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn has_component(parts: &[String], name: &str) -> bool {
+    parts.iter().any(|part| part == name)
+}
+
+fn matches_environment_file(path: &std::path::Path) -> bool {
+    path_component_text(path)
+        .iter()
+        .any(|part| part.starts_with(".env"))
+}
+
+fn matches_ssh_key(path: &std::path::Path) -> bool {
+    let parts = path_component_text(path);
+    has_component(&parts, ".ssh")
+        || parts.last().is_some_and(|name| {
+            matches!(
+                name.as_str(),
+                "id_rsa" | "id_dsa" | "id_ecdsa" | "id_ed25519" | "id_rsa_sk" | "id_ed25519_sk"
+            )
+        })
+}
+
+fn matches_gnupg_home(path: &std::path::Path) -> bool {
+    has_component(&path_component_text(path), ".gnupg")
+}
+
+fn matches_aws_credentials(path: &std::path::Path) -> bool {
+    has_component(&path_component_text(path), ".aws")
+}
+
+fn matches_kube_config(path: &std::path::Path) -> bool {
+    has_component(&path_component_text(path), ".kube")
+}
+
+fn matches_netrc(path: &std::path::Path) -> bool {
+    let parts = path_component_text(path);
+    has_component(&parts, ".netrc") || has_component(&parts, "_netrc")
+}
+
+fn matches_github_config(path: &std::path::Path) -> bool {
+    path_component_text(path)
+        .windows(2)
+        .any(|pair| pair == [".config", "gh"])
+}
+
+fn matches_keyring(path: &std::path::Path) -> bool {
+    let parts = path_component_text(path);
+    has_component(&parts, "keyrings")
+        || parts.last().is_some_and(|name| {
+            [".keyring", ".keychain", ".kdbx"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+        })
+}
+
+fn matches_browser_profile(path: &std::path::Path) -> bool {
+    let parts = path_component_text(path);
+    has_component(&parts, "hyusk-browser-control-profile")
+        || has_component(&parts, "browser-control-profile")
+}
+
+/// The secret denylist: compiled once as a table so a new credential location
+/// is one row, not a change to the classifier (S2). Each rule matches a path as
+/// written, so `~` and relative forms are covered without touching `HOME`.
+const SECRET_PATH_RULES: &[SecretRule] = &[
+    SecretRule {
+        label: "environment files",
+        matches: matches_environment_file,
+    },
+    SecretRule {
+        label: "SSH keys",
+        matches: matches_ssh_key,
+    },
+    SecretRule {
+        label: "GnuPG home",
+        matches: matches_gnupg_home,
+    },
+    SecretRule {
+        label: "AWS credentials",
+        matches: matches_aws_credentials,
+    },
+    SecretRule {
+        label: "Kubernetes config",
+        matches: matches_kube_config,
+    },
+    SecretRule {
+        label: "netrc credentials",
+        matches: matches_netrc,
+    },
+    SecretRule {
+        label: "GitHub CLI config",
+        matches: matches_github_config,
+    },
+    SecretRule {
+        label: "keyrings",
+        matches: matches_keyring,
+    },
+    SecretRule {
+        label: "automation browser profile",
+        matches: matches_browser_profile,
+    },
+];
+
+/// The denylist rule an argument names, if any. A `REV:path` form is checked
+/// too, because `git show HEAD:.env` reads a credential from history.
+fn secret_rule_for_argument(argument: &str) -> Option<&'static str> {
+    let matches = |candidate: &str| {
+        SECRET_PATH_RULES
+            .iter()
+            .find(|rule| (rule.matches)(std::path::Path::new(candidate)))
+            .map(|rule| rule.label)
+    };
+    matches(argument).or_else(|| {
+        argument
+            .split_once(':')
+            .and_then(|(_, path)| (!path.is_empty()).then_some(path))
+            .and_then(matches)
+    })
+}
+
+/// How many leading positionals a program spends on a pattern, a script, or
+/// another non-path argument before its file operands begin.
+fn read_program_skips(program: &str, explicit_pattern: bool) -> usize {
+    if !explicit_pattern && matches!(program, "grep" | "rg" | "sed") {
+        1
+    } else {
+        0
+    }
+}
+
+/// True when the arguments name a pattern or script explicitly, so no leading
+/// positional is a pattern.
+fn has_explicit_pattern(arguments: &[String]) -> bool {
+    arguments.iter().any(|argument| {
+        matches!(
+            argument.as_str(),
+            "-e" | "--regexp" | "-f" | "--file" | "--expression"
+        ) || argument.starts_with("--regexp=")
+            || argument.starts_with("--file=")
+            || argument.starts_with("--expression=")
+            || (argument.starts_with("-e") && argument.len() > 2)
+    })
+}
+
+/// Every path argument a read command names, or `None` when its shape cannot be
+/// classified (which asks). Option values are path candidates too, so a path
+/// cannot hide behind `--option=value`.
+fn read_command_paths(program: &str, arguments: &[String]) -> Option<Vec<String>> {
+    if program == "git" {
+        return Some(git_read_paths(arguments));
+    }
+    let mut positionals = Vec::new();
+    let mut option_values = Vec::new();
+    let mut options_ended = false;
+    for argument in arguments {
+        if !options_ended && argument == "--" {
+            options_ended = true;
+            continue;
+        }
+        if !options_ended && argument.starts_with('-') && argument.len() > 1 {
+            if let Some((_, value)) = argument.split_once('=') {
+                option_values.push(value.to_string());
+            }
+            continue;
+        }
+        positionals.push(argument.clone());
+    }
+    let skip = read_program_skips(program, has_explicit_pattern(arguments));
+    let mut paths: Vec<String> = positionals.into_iter().skip(skip).collect();
+    paths.extend(option_values);
+    Some(paths)
+}
+
+/// The paths a read-only git subcommand names: everything after `--`, plus the
+/// path half of a `REV:path` object name.
+fn git_read_paths(arguments: &[String]) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut after_separator = false;
+    for argument in arguments.iter().skip(1) {
+        if after_separator {
+            paths.push(argument.clone());
+            continue;
+        }
+        if argument == "--" {
+            after_separator = true;
+            continue;
+        }
+        if let Some((revision, path)) = argument.split_once(':') {
+            if !revision.is_empty() && !path.is_empty() {
+                paths.push(path.to_string());
+            }
+        }
+    }
+    paths
+}
+
+/// True when every path a read command names stays inside the project root.
+fn read_arguments_are_free(
+    program: &str,
+    arguments: &[String],
+    root: &std::path::Path,
+    working_directory: &std::path::Path,
+) -> bool {
+    let Some(paths) = read_command_paths(program, arguments) else {
+        return false;
+    };
+    paths
+        .iter()
+        .all(|path| path_inside_root(path, root, working_directory))
+}
+
+/// The project root and working directory a decision is made against.
+fn project_and_working_directory() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    Some((
+        project_root(std::path::Path::new("."))?,
+        std::env::current_dir().ok()?.canonicalize().ok()?,
+    ))
+}
+
+/// The refusal for a shell call that names a credential path, or `None` when the
+/// call names none. A refused read never runs and never asks: the message names
+/// the denylist rule, not the path or any value, so the policy cannot leak what
+/// it refused (S2).
+pub fn secret_refusal(name: &str, arguments: &str) -> Option<String> {
+    if name != "shell" {
+        return None;
+    }
+    let args: Value = serde_json::from_str(arguments).ok()?;
+    let command = args.get("command").and_then(Value::as_str)?;
+    let label = command_secret_rule(command)?;
+    Some(format!(
+        "Refused by the secret denylist (rule: {label}). Hyusk does not read credential \
+         files or their folders; ask the user to open it themselves."
+    ))
+}
+
+/// The denylist rule a simple read command names, if any.
+fn command_secret_rule(command: &str) -> Option<&'static str> {
+    let mut words = simple_command_words(command)?;
+    if words.is_empty() {
+        return None;
+    }
+    let program = words.remove(0);
+    let program = program.rsplit('/').next().unwrap_or(&program).to_string();
+    if !READ_PROGRAMS.contains(&program.as_str()) && program != "git" {
+        return None;
+    }
+    let candidates = read_command_paths(&program, &words).unwrap_or_else(|| {
+        words
+            .iter()
+            .filter(|word| !word.starts_with('-'))
+            .cloned()
+            .collect()
+    });
+    candidates
+        .iter()
+        .find_map(|candidate| secret_rule_for_argument(candidate))
+}
+
 /// Programs that write files: free only when every path stays in the project.
 const PROJECT_FILE_OPERATIONS: &[&str] = &["mkdir", "touch", "cp", "mv", "ln", "install"];
 
@@ -705,6 +992,10 @@ fn shell_requires_approval(args: &Value) -> bool {
     let Some(command) = args.get("command").and_then(Value::as_str) else {
         return true;
     };
+    // A credential path is refused outright rather than confirmed (S2).
+    if command_secret_rule(command).is_some() {
+        return true;
+    }
     // Parse a single simple command. Quotes are allowed for ordinary search
     // terms and paths; shell expansion, escapes, chaining, pipes and redirects
     // remain approval-gated. This avoids a prompt for common read-only commands
@@ -718,31 +1009,42 @@ fn shell_requires_approval(args: &Value) -> bool {
     let program = words.remove(0);
     let program = program.rsplit('/').next().unwrap_or(&program);
     let rest = words;
+    // Path checks are made against the project root and the working directory
+    // once per decision; a root that cannot be canonicalised asks (S1, S2).
+    let read_free = |arguments: &[String]| match project_and_working_directory() {
+        Some((root, cwd)) => read_arguments_are_free(program, arguments, &root, &cwd),
+        None => false,
+    };
     let safe = match program {
-        "pwd" | "whoami" | "date" | "uname" | "ls" | "cat" | "head" | "tail" | "wc" | "file"
-        | "stat" | "ps" | "df" | "du" | "grep" | "which" | "type" | "uniq" | "cut" | "tr" => true,
-        "rg" => !rest.iter().any(|arg| {
-            matches!(arg.as_str(), "--pre" | "--pre-glob")
-                || arg.starts_with("--pre=")
-                || arg.starts_with("--pre-glob=")
-        }),
-        "sed" => !sed_requires_approval(&rest),
-        "find" => !rest.iter().any(|arg| {
-            matches!(
-                arg.as_str(),
-                "-delete"
-                    | "-exec"
-                    | "-execdir"
-                    | "-ok"
-                    | "-okdir"
-                    | "-fprint"
-                    | "-fprint0"
-                    | "-fprintf"
-                    | "-fls"
-            )
-        }),
+        "pwd" | "whoami" | "date" | "uname" | "ps" | "which" | "type" => true,
+        "rg" => {
+            // `--pre` runs a command for every file, so it never runs free.
+            !rest.iter().any(|arg| {
+                matches!(arg.as_str(), "--pre" | "--pre-glob")
+                    || arg.starts_with("--pre=")
+                    || arg.starts_with("--pre-glob=")
+            }) && read_free(&rest)
+        }
+        "sed" => !sed_requires_approval(&rest) && read_free(&rest),
+        "find" => {
+            !rest.iter().any(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "-delete"
+                        | "-exec"
+                        | "-execdir"
+                        | "-ok"
+                        | "-okdir"
+                        | "-fprint"
+                        | "-fprint0"
+                        | "-fprintf"
+                        | "-fls"
+                )
+            }) && read_free(&rest)
+        }
         "git" => {
-            rest.first()
+            let read_only = rest
+                .first()
                 .is_some_and(|sub| matches!(sub.as_str(), "status" | "log" | "rev-parse" | "show"))
                 || (rest.first().is_some_and(|sub| sub == "diff")
                     && !rest.iter().any(|arg| {
@@ -760,16 +1062,24 @@ fn shell_requires_approval(args: &Value) -> bool {
                                 | "-r"
                                 | "--show-current"
                         )
-                    }))
+                    }));
+            read_only && read_free(&rest)
         }
-        "sort" => !rest.iter().any(|arg| {
-            long_option_abbreviation(arg, "output")
-                || long_option_abbreviation(arg, "compress-program")
-                || (arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains('o'))
-        }),
-        "cargo" => rest.first().is_some_and(|sub| {
-            matches!(sub.as_str(), "test" | "check" | "build" | "fmt" | "clippy")
-        }),
+        "sort" => {
+            !rest.iter().any(|arg| {
+                long_option_abbreviation(arg, "output")
+                    || long_option_abbreviation(arg, "compress-program")
+                    || (arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains('o'))
+            }) && read_free(&rest)
+        }
+        "cargo" => {
+            rest.first().is_some_and(|sub| {
+                matches!(sub.as_str(), "test" | "check" | "build" | "fmt" | "clippy")
+            }) && read_free(&rest)
+        }
+        // Other read-only programs are free only while every path they name
+        // stays inside the project root (S2).
+        program if READ_PROGRAMS.contains(&program) => read_free(&rest),
         // File operations are free only when every path they name stays inside
         // the project root (S1).
         program if PROJECT_FILE_OPERATIONS.contains(&program) => {
@@ -1272,7 +1582,7 @@ fn is_consequential_text(text: &str) -> bool {
 mod tests {
     use super::{
         approval_arguments, grant_key, pending_text, policy_for, preview,
-        requires_approval as check, Decision, ToolName, PREVIEW_LIMIT,
+        requires_approval as check, secret_refusal, Decision, ToolName, PREVIEW_LIMIT,
     };
     use serde_json::Value;
 
@@ -1297,6 +1607,21 @@ mod tests {
             .map(|argument| (*argument).to_string())
             .collect::<Vec<_>>();
         super::project_file_operation_is_free(program, &arguments, root, root)
+    }
+
+    /// A read command's decision against an explicit root, so no test mutates
+    /// the environment another test thread shares.
+    fn read_is_free(program: &str, arguments: &[&str], root: &std::path::Path) -> bool {
+        let arguments = arguments
+            .iter()
+            .map(|argument| (*argument).to_string())
+            .collect::<Vec<_>>();
+        super::read_arguments_are_free(program, &arguments, root, root)
+    }
+
+    /// The command an approval check would see for one shell call.
+    fn shell_call(command: &str) -> String {
+        serde_json::json!({ "command": command }).to_string()
     }
 
     #[test]
@@ -1347,6 +1672,167 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reads_are_free_only_inside_the_root() {
+        let root = project_fixture("read-root");
+        for (program, arguments) in [
+            ("cat", vec!["a.txt"]),
+            ("cat", vec!["sub"]),
+            ("head", vec!["-n", "5", "a.txt"]),
+            ("tail", vec!["a.txt"]),
+            ("wc", vec!["-l", "a.txt"]),
+            ("file", vec!["a.txt"]),
+            ("stat", vec!["a.txt"]),
+            ("ls", vec!["-la"]),
+            ("du", vec!["-sh", "."]),
+            ("grep", vec!["-rn", "hello", "sub"]),
+            ("rg", vec!["-n", "tool", "sub"]),
+            ("find", vec!["sub", "-name", "*.rs"]),
+            ("sed", vec!["-n", "1,20p", "a.txt"]),
+            ("sort", vec!["a.txt"]),
+            ("cut", vec!["-d:", "-f1", "a.txt"]),
+            ("git", vec!["show", "HEAD:a.txt"]),
+            ("git", vec!["log", "-p", "--", "a.txt"]),
+            ("cargo", vec!["test", "--lib"]),
+            // A relative path that leaves and returns stays inside the root.
+            ("cat", vec!["sub/../a.txt"]),
+            ("cat", vec!["./sub/./a.txt"]),
+            // No path operand reads stdin or the working directory.
+            ("cat", vec![]),
+            ("ls", vec![]),
+        ] {
+            assert!(
+                read_is_free(program, &arguments, &root),
+                "{program} {arguments:?} should read freely inside the root"
+            );
+        }
+
+        for (program, arguments) in [
+            ("cat", vec!["../escaped.txt"]),
+            ("cat", vec!["/etc/passwd"]),
+            ("head", vec!["-n", "5", "../escaped.txt"]),
+            ("tail", vec!["/var/log/syslog"]),
+            ("rg", vec!["token", ".."]),
+            ("grep", vec!["-rn", "token", "/etc"]),
+            ("find", vec!["/", "-name", "*.pem"]),
+            ("ls", vec!["/"]),
+            ("sed", vec!["-n", "1p", "../escaped.txt"]),
+            ("sort", vec!["../escaped.txt"]),
+            ("git", vec!["log", "-p", "--", "../escaped.txt"]),
+            // `..` is resolved before the check, including after a real
+            // directory inside the root.
+            ("cat", vec!["sub/../../escaped.txt"]),
+        ] {
+            assert!(
+                !read_is_free(program, &arguments, &root),
+                "{program} {arguments:?} should ask outside the root"
+            );
+        }
+
+        // A symlink inside the root that points outside it is resolved first.
+        let outside = root.parent().unwrap().join(format!(
+            "hyusk-s2-outside-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::write(&outside, "secret").expect("outside file");
+        let link = root.join("link.txt");
+        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
+        assert!(
+            !read_is_free("cat", &["link.txt"], &root),
+            "a symlink out of the root must ask"
+        );
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn secret_paths_are_refused_without_echoing_them() {
+        for (command, private) in [
+            ("cat .env", ".env"),
+            ("cat .env.local", ".env.local"),
+            ("cat ~/.ssh/id_ed25519", "id_ed25519"),
+            ("ls ~/.ssh", ".ssh"),
+            ("rg token ~/.config/gh", ".config/gh"),
+            ("cat ~/.gnupg/pubring.kbx", ".gnupg"),
+            ("cat ~/.aws/credentials", ".aws"),
+            ("cat ~/.kube/config", ".kube"),
+            ("cat ~/.netrc", ".netrc"),
+            (
+                "head ~/.local/share/keyrings/login.keyring",
+                "login.keyring",
+            ),
+            (
+                "cat ~/.local/share/hyusk/browser-control-profile/Cookies",
+                "browser-control-profile",
+            ),
+            // A blob read from history names a credential just as plainly.
+            ("git show HEAD:.env", ".env"),
+        ] {
+            let input = shell_call(command);
+            let message = secret_refusal("shell", &input).expect(command);
+            assert!(
+                message.contains("secret denylist") && message.contains("rule:"),
+                "the refusal must name the rule: {message}"
+            );
+            assert!(
+                !message.contains(private),
+                "the refusal must not echo {private}: {message}"
+            );
+            assert!(
+                check("shell", &input),
+                "a refused read still fails closed in the gate: {command}"
+            );
+        }
+
+        // Ordinary reads, including a search for the text ".env", are not
+        // refused: the pattern is not a path.
+        for command in [
+            "cat src/main.rs",
+            r#"rg "tool" src"#,
+            r#"rg -n '\.env' src"#,
+            "git status --short",
+            "git log -p",
+            "find src -name '*.rs'",
+        ] {
+            assert!(
+                secret_refusal("shell", &shell_call(command)).is_none(),
+                "{command} should not be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn repository_reads_stay_free_and_escapes_ask() {
+        // The acceptance cases, run against this checkout as the project root.
+        for command in [
+            "cat src/main.rs",
+            r#"rg "tool" src"#,
+            "head -n 5 Cargo.toml",
+            "find src -name '*.rs'",
+            "sed -n '1,20p' src/tools/safety.rs",
+            "git status --short",
+            "cargo test --lib",
+        ] {
+            assert!(
+                !check("shell", &shell_call(command)),
+                "unexpected approval for: {command}"
+            );
+        }
+        assert!(
+            check("shell", &shell_call("cat ../other-project/file")),
+            "a read outside the project root must ask"
+        );
+        assert!(
+            check("shell", &shell_call("find / -name '*.pem'")),
+            "a whole-filesystem search must ask before any output"
+        );
     }
 
     #[test]

@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **334 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **339 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -93,6 +93,14 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
 - Workflows execute deterministic `Action` steps from `src/agent/commands.rs`;
   there is no task-delegation step. Approval-gated steps stop the workflow and
   point the user at the assistant.
+- `shell` (S1, S2): read-only programs run free only while every path they
+  name stays inside the project root (`HYUSK_WORKSPACE`, else the working
+  directory; `~` expanded, `..` resolved, unknown options ask); file operations
+  (`mkdir`/`touch`/`cp`/`mv`/`ln`/`install`) run free only inside that root; a
+  credential path (`.env*`, `.ssh`, `.gnupg`, `.aws`, `.kube`, `.netrc`,
+  `.config/gh`, keyrings, the automation browser profile) is refused outright
+  by `safety::secret_refusal` before any card is armed; `rm`, `rmdir`, `shred`,
+  `truncate`, `chmod`, `chown`, `chgrp`, `dd`, `mkfs`, `wipefs` always ask.
 - Wake defaults: `WAKE_CLAP_ENABLED` and `WAKE_WORD_DENOISE` are off unless set;
   `.env.example` documents both.
 - Never print `.env` contents or API keys. Keys are keyring-first, then

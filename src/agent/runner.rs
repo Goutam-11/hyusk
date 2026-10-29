@@ -1055,6 +1055,13 @@ impl Agent {
                             ToolResult::failure(format!("Tool '{name}' does not exist."))
                         } else if let Some(failure) = unavailable {
                             ToolResult::failure(failure)
+                        } else if let Some(refusal) =
+                            crate::tools::safety::secret_refusal(&name, &args_str)
+                        {
+                            // A credential read is refused outright: it never
+                            // arms a card, so neither an approval nor a turn
+                            // grant can run it (S2).
+                            ToolResult::failure(refusal)
                         } else if requires_approval && !granted {
                             let index = self.messages.len();
                             // The preview is derived from the stored arguments,
@@ -1838,6 +1845,64 @@ mod tests {
                 .text()
                 .contains("Pending confirmation for: shell command=rm -rf build"),
             "{}",
+            result.text()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn credential_read_is_refused_instead_of_armed() -> Result<()> {
+        let (base, _requests) = serve_tool_call_then_reply(
+            json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
+                {"id":"call-shell","type":"function","function":{"name":"shell","arguments":"{\"command\":\"cat .env\"}"}}
+            ]},"finish_reason":"tool_calls"}]}),
+            final_reply(),
+        )
+        .await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(ShellStub(Arc::clone(&executions)));
+        let mut agent = Agent::new(
+            OpenRouterClient::new("local-test".into(), base),
+            "test-model".into(),
+            tools,
+        );
+        agent.messages = vec![Message::system("Test")];
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            agent.handle(
+                "show me the .env file".into(),
+                None,
+                &CancellationToken::new(),
+                None,
+            ),
+        )
+        .await??;
+
+        assert!(reply.is_some());
+        assert!(
+            !agent.awaiting_approval(),
+            "a refused credential read must not arm a confirmation"
+        );
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            0,
+            "a refused read must not run"
+        );
+        let result = agent
+            .messages
+            .iter()
+            .find(|message| message.role == "tool")
+            .expect("a tool result");
+        assert!(
+            result.text().contains("secret denylist"),
+            "{}",
+            result.text()
+        );
+        assert!(
+            !result.text().contains(".env"),
+            "the refusal must not echo the path: {}",
             result.text()
         );
         Ok(())

@@ -55,6 +55,17 @@
 
 ### Changed
 
+- `shell` reads are confined to the project root, and credential paths are
+  refused outright. File-reading programs (`cat`, `head`, `tail`, `wc`, `file`,
+  `stat`, `ls`, `du`, `df`, `grep`, `rg`, `sed`, `find`, `sort`, `git show`,
+  `git log`, `cargo test`/`check`/`build`/`fmt`/`clippy`) run freely only while
+  every path they name stays inside the project root; a read outside it asks,
+  `~` is expanded and `..` resolved before the check, and a path that names
+  `.env*`, `.ssh`, `.gnupg`, `.aws`, `.kube`, `.netrc`, `.config/gh`, a keyring,
+  or the managed automation browser profile is refused before any card is
+  armed. The refusal names the denylist rule, never the path, and a
+  `git show REV:.env` blob read is refused the same way. A search pattern is
+  not treated as a path, so searching for the text `.env` still works.
 - Routine project file work no longer prompts: `mkdir`, `touch`, `cp`, `mv`,
   `ln`, and `install` run without approval when every path they name stays
   inside the project root (`HYUSK_WORKSPACE`, else the working directory). `~`

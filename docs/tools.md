@@ -343,12 +343,22 @@ It executes arbitrary commands as the current user.
 
 The approval classifier parses one simple command. A short list of read-only
 programs (`pwd`, `ls`, `cat`, `rg`, `sed -n`, `git status`, `cargo test`, and
-others) runs freely. `mkdir`, `touch`, `cp`, `mv`, `ln`, and `install` also run
-freely, but only when every path they name stays inside the project root -
-`HYUSK_WORKSPACE` when set, otherwise the process working directory. `~` is
-expanded for that check, `..` is resolved, and an unknown option asks rather
-than being guessed at. Destructive and ownership-changing programs (`rm`,
-`rmdir`, `shred`, `truncate`, `chmod`, `chown`) always ask, whatever the paths.
+others) runs freely only while every path they name stays inside the project
+root - the same root the file operations use, `HYUSK_WORKSPACE` when set,
+otherwise the process working directory. A read outside that root asks. `~` is
+expanded for the check, `..` is resolved, a search pattern is not treated as a
+path, and an unknown option asks rather than being guessed at.
+
+A path on the secret denylist is refused outright rather than confirmed:
+`.env*`, `.ssh`, `.gnupg`, `.aws`, `.kube`, `.netrc`, `.config/gh`, keyrings,
+and the managed automation browser profile, including the `git show REV:.env`
+form that reads a blob from history. The refusal names the rule, never the path
+or a value, and no approval card is armed, so a turn grant cannot cover it.
+
+`mkdir`, `touch`, `cp`, `mv`, `ln`, and `install` also run freely, but only
+when every path they name stays inside the project root. Destructive and
+ownership-changing programs (`rm`, `rmdir`, `shred`, `truncate`, `chmod`,
+`chown`) always ask, whatever the paths.
 
 ## Process
 
@@ -553,6 +563,8 @@ The tool platform has guardrails but no sandbox:
   a decision, and `main.rs` walks the registry it builds so a tool registered
   without a row fails a test. The system prompt's approval guidance is rendered
   from the same table.
+- Read-only `shell` programs are confined to the project root, and a credential
+  path on the denylist is refused outright, before any card is armed.
 - Foreground `shell` commands are bounded at 120 s with truncated output; a
   turn is cancellable and tool loops stop after configured rounds/time.
 - None of that confines an approved action: `shell` can still read, modify, or
