@@ -9,7 +9,7 @@ but they explain why some controls feel unresponsive.
 
 ## L1 — Split the agent mutex
 
-- Status: done · 2026-10-30 · commit `L1PENDING` · Phase 3 · Priority: high
+- Status: done · 2026-10-30 · commit `5e14377` · Phase 3 · Priority: high
 - Depends on: —
 - Evidence: `src/agent/runtime.rs:897-925` (the `StopRequested` arm),
   `src/agent/runtime.rs:956-1015` (`ModelSelected` and `ApiKeySaved`),
