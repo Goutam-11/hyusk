@@ -361,7 +361,7 @@ sink in tests, but no live microphone/STT/provider session was run.
 
 ## A6 — Allow for this turn
 
-- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit `d6b4cab` · Phase 1 · Priority: high
 - Depends on: A3, A7
 - Evidence: `src/agent/runner.rs:933-955`, `gnome-extension/hyusk@hyusk.local/lib/responseCard.js`,
   `noctalia-plugin/hyusk.luau`
