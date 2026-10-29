@@ -145,7 +145,7 @@ refuses `--output` for `diff`.
 
 ## S3 — Reject programs containing a slash
 
-- Status: done · 2026-10-29 · commit `S3PENDING` · Phase 2 · Priority: medium
+- Status: done · 2026-10-29 · commit `1cc38bb` · Phase 2 · Priority: medium
 - Depends on: S1
 - Evidence: `src/tools/safety.rs:74-76`
 
