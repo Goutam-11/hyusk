@@ -21,8 +21,18 @@ for file in plugin.toml hyusk.luau settings.luau; do
   fi
 done
 
+# The panel's Device tab runs these two; the plugin directory is the only place
+# it can look for them, exactly as the GNOME indicator finds them beside itself.
+for script in scripts/setup-mobile-link.sh scripts/start-browser-control.sh; do
+  if [[ ! -f "$script" ]]; then
+    echo "Companion script is missing: $script" >&2
+    exit 1
+  fi
+done
+
 mkdir -p "$PLUGIN_DIR"
 cp "$SOURCE_DIR/plugin.toml" "$SOURCE_DIR/hyusk.luau" "$SOURCE_DIR/settings.luau" "$PLUGIN_DIR/"
+cp scripts/setup-mobile-link.sh scripts/start-browser-control.sh "$PLUGIN_DIR/"
 echo "Installed $PLUGIN_ID to $PLUGIN_DIR"
 
 if ! command -v noctalia >/dev/null 2>&1; then
@@ -41,7 +51,9 @@ echo
 echo "Add the widget to the bar once: Settings → Bar → Bar Widgets → Hyusk,"
 echo "or run 'noctalia msg settings-open bar' to open that tab."
 echo
-echo "Left-click the state glyph to start listening or stop the agent,"
-echo "click the gear for the model picker and API key form, and right-click"
-echo "to dismiss the card. A keybind can drive it too:"
+echo "Left-click the state glyph to start listening or stop the agent, and"
+echo "right-click to dismiss the card. The gear opens the Hyusk panel, whose"
+echo "tabs hold the transport keys, the reply card with approve/deny, the model"
+echo "picker, workflow quick-run, and phone pairing. A keybind can drive the"
+echo "widget too:"
 echo "  noctalia msg plugin $PLUGIN_ID:hyusk all start_listening"

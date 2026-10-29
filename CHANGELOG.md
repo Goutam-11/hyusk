@@ -41,6 +41,12 @@
 
 ### Changed
 
+- The Noctalia widget names the state and a running timer's countdown on the
+  bar, and its panel carries the GNOME indicator's menu as Agent, Models,
+  Workflows, and Device tabs (transport keys, reply card with approve/deny,
+  workflow quick-run, phone pairing, automation browser), with the API key form
+  pinned below them. The installer also copies the two companion scripts the
+  Device tab runs.
 - API keys are resolved keyring-first and then from the environment, so saving
   a key applies without restarting the user service.
 - The GNOME indicator is split into `lib/` modules with a searchable model
