@@ -210,7 +210,6 @@ impl ToolPolicy {
 /// cannot drift from the gate: one line per tool, in the order of
 /// [`ToolName::ALL`]. The system prompt embeds this text instead of a
 /// hand-written list (A1).
-#[allow(dead_code)] // read by the generated prompt guidance in A1
 pub fn approval_guidance() -> String {
     let mut guidance = String::new();
     for tool in ToolName::ALL {

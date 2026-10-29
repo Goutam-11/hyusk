@@ -55,6 +55,12 @@
 
 ### Changed
 
+- The system prompt's approval guidance is now generated from the policy table
+  instead of a hand-written list, so the prose cannot contradict the gate. The
+  retired block claimed that `task` delegation and other gated classes needed
+  no confirmation and told the model to ask the user before destructive
+  actions; the prompt now says the runtime is the only component that asks, so
+  the model calls a guarded tool once and repeats the runtime's pending action.
 - The approval gate is now one explicit policy table (`tools/safety.rs`) with a
   row per registered tool: an allow decision or a classifier over the call's
   arguments, plus the guidance the system prompt renders. A tool name the table

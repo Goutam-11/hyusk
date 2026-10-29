@@ -123,7 +123,9 @@ for the microphone at the same time.
 
 - **Wrong tool choice or unnecessary questions:** inspect `runner/prompts.rs`
   and the actual tool result first. `tools/safety.rs` decides real approval
-  requirements; a failed executable or CDP timeout is not an approval request.
+  requirements and supplies the prompt's approval block, so editing that table
+  is what changes the guidance; a failed executable or CDP timeout is not an
+  approval request.
 - **A task ends too early or repeats actions:** inspect the text loop in
   `runner.rs`, or the voice loop in `runner/sonic.rs`, together with the tool's
   output. Dispatch success alone is not proof that the user goal is complete.

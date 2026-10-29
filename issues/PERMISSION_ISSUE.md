@@ -16,7 +16,7 @@ swallows the next request.
 
 ## A1 — One source of truth for approval guidance
 
-- Status: open · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit TBD · Phase 1 · Priority: high
 - Depends on: A8
 - Evidence: `src/agent/runner/prompts.rs:131-142`, `src/tools/safety.rs:8-24`
 
@@ -40,22 +40,46 @@ A7).
 
 **Acceptance criteria**
 
-- [ ] `build_system_prompt` contains one guidance block derived from the policy
-      table, not a hand-maintained list.
-- [ ] No prompt text claims an ungated class or omits a gated one.
-- [ ] On a guarded request the model calls the tool once, without a spoken
-      "should I?", and repeats the runtime's pending-call text (A3).
-- [ ] Routine work (`rg`, `sed -n`, `git status`, `cargo test`) is named as free,
-      matching the classifier.
+- [x] `build_system_prompt` contains one guidance block derived from the policy
+      table, not a hand-maintained list. `prompts::approval_guidance_block()`
+      renders `tools::safety::approval_guidance()`, one row per registered tool.
+- [x] No prompt text claims an ungated class or omits a gated one. The block and
+      `user_profile_context` no longer pre-ask; the per-turn note in the runner
+      now repeats the "never ask first" rule.
+- [x] On a guarded request the model calls the tool once, without a spoken
+      "should I?", and repeats the runtime's pending-call text (A3). The prompt
+      now says the runtime is the only component that asks and describes what to
+      say when a result says the action needs confirmation.
+- [x] Routine work (`rg`, `sed -n`, `git status`, `cargo test`) is named as free,
+      matching the classifier, in the generated shell row.
 
 **Tests**
 
-- [ ] Prompt contains every policy row from the A8 table.
-- [ ] The retired phrases are absent.
-- [ ] Manual voice check: "delete the build folder" asks once.
+- [x] Prompt contains every policy row from the A8 table
+      (`prompts::tests::approval_block_is_generated_with_every_policy_row_once`).
+- [x] The retired phrases are absent
+      (`retired_guidance_phrases_are_absent`).
+- [x] `prompt_names_routine_work_as_free`,
+      `prompt_tells_the_model_never_to_pre_ask`, and
+      `generated_rows_never_contradict_their_decision`.
+- [ ] Manual voice check: "delete the build folder" asks once. Not run in this
+      session: it needs a live microphone, STT, and a provider.
 
 **Files.** `src/agent/runner/prompts.rs`, `src/tools/safety.rs`,
 `src/agent/runner.rs`.
+
+**Notes (2026-10-29, implemented).** The retired block claimed that ordinary
+app launches, navigation, timers, and workspace tasks needed no confirmation,
+listed only part of the gated classes, and told the model to ask before
+destructive actions. All three sentences are gone. The replacement is generated
+from the A8 table, so every gated class is named, and the prompt states that the
+runtime is the only component that asks, that a guarded call should be made once,
+and that the model repeats the pending action instead of retrying it.
+
+Evidence drift: the retired block now sits at
+`src/agent/runner/prompts.rs:119-141` before the change (the file grew by the
+`build_tool_specs`/`append_desktop_context` helpers). `safety.rs:8-24` was still
+the gate when the review was written; A8 moved it.
 
 ## A2 — Research delegation runs without approval
 

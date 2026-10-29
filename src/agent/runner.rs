@@ -782,7 +782,7 @@ impl Agent {
         // Approval is runtime state, not something inferred from old assistant
         // questions retained in conversation history. Any approval above has
         // already been consumed before we enter the model loop.
-        prompt.push_str("\nThere is currently no pending tool approval. Earlier confirmation questions in conversation history are inactive. Do not ask to confirm an ordinary app launch. Only a new tool result explicitly requiring approval establishes a pending tool approval; launch failures, missing executables, timeouts, and other execution errors do not. Never claim that the tool requires confirmation unless its result actually says so.\n");
+        prompt.push_str("\nThere is currently no pending tool approval. Earlier confirmation questions in conversation history are inactive. Never ask the user for permission before calling a tool, and do not ask to confirm an ordinary app launch: call the tool and let the runtime hold it when it is consequential. Only a new tool result explicitly requiring approval establishes a pending tool approval; launch failures, missing executables, timeouts, and other execution errors do not. Never claim that the tool requires confirmation unless its result actually says so.\n");
         if !self.vision {
             prompt.push_str("\nImage input is unavailable for this endpoint. Use browser DOM, accessibility, OCR/find_text rather than interpreting screenshot files.\n");
             strip_image_inputs(&mut self.messages);
