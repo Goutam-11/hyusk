@@ -30,10 +30,33 @@ pub(super) fn decode(raw: &str) -> String {
                 decoded.push_str(prose);
             }
             if let Some(text) = envelope_text(body) {
-                decoded.push_str(&text);
+                decoded.push_str(echo_remainder(prose, &text));
             }
             decoded
         }
+    }
+}
+
+/// The part of an envelope's answer that the prose has not said already.
+///
+/// Models routinely write the answer as prose and then echo it inside the
+/// envelope, so appending it whole would speak and display the same sentence
+/// twice. A text that is still only an echo adds nothing, and one that runs
+/// past the prose adds just its remainder.
+///
+/// The result only ever grows as more envelope text arrives, which
+/// [`ReplyStream`] relies on to hand out each new suffix exactly once.
+fn echo_remainder<'a>(prose: &str, text: &'a str) -> &'a str {
+    let prose = prose.trim();
+    if prose.is_empty() {
+        return text;
+    }
+    if prose.starts_with(text) {
+        return "";
+    }
+    match text.strip_prefix(prose) {
+        Some(remainder) => remainder.trim_start(),
+        None => text,
     }
 }
 
@@ -406,6 +429,31 @@ mod tests {
         let spoken = collect(&mut stream, &[narration], narration);
         assert!(spoken.is_empty(), "narration was spoken: {spoken:?}");
         assert!(!stream.delivered());
+    }
+
+    #[test]
+    fn an_echoed_envelope_is_spoken_once() {
+        let mut stream = ReplyStream::default();
+        let spoken = collect(
+            &mut stream,
+            &["Timer set.\n\n{\"text\": \"Timer set."],
+            "Timer set.\n\n{\"text\": \"Timer set.\", \"needs_reply\": false}",
+        );
+
+        assert_eq!(spoken, vec!["Timer set."]);
+        assert_eq!(stream.spoken(), "Timer set.");
+    }
+
+    #[test]
+    fn an_envelope_that_extends_the_prose_speaks_the_remainder() {
+        let mut stream = ReplyStream::default();
+        let spoken = collect(
+            &mut stream,
+            &["Timer set.\n\n{\"text\": \"Timer set. Anything else?"],
+            "Timer set.\n\n{\"text\": \"Timer set. Anything else?\", \"needs_reply\": true}",
+        );
+
+        assert_eq!(spoken, vec!["Timer set.", "Anything else?"]);
     }
 
     #[test]
