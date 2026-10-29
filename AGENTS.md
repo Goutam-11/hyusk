@@ -28,11 +28,14 @@ build or test.
 | `android/` | Kotlin companion app (Material 3). |
 | `scripts/` | Installers, wake training, mobile link, browser control, AT-SPI bridge. |
 | `docs/` | Focused references; index in `docs/README.md`. |
+| `issues/` | Open work items, one file per area, with stable IDs (`A1`, `S1`, `X1`, …). |
 | `systemd/`, `assets/`, `models/` | Unit templates, brand art, ignored runtime models. |
 
 Key documents: `README.md` (user-facing install/use), `ARCHITECTURE.md` (short
 top-level), `docs/architecture.md` (detailed), `docs/tools.md` (tool contracts
-and safety), `docs/voice-and-ui.md`, `DESIGN.md` (control-deck tokens).
+and safety), `docs/voice-and-ui.md`, `DESIGN.md` (control-deck tokens),
+`docs/architecture-roadmap.md` (planned pruning, tool boundary, memory, and
+preferences), and `issues/README.md` (open work).
 
 ## Build and test
 
@@ -109,20 +112,22 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   `docs/development.md` test counts accurate when tests are added.
 - Do not commit generated artifacts (`target/`, models, `.env`). Push only when
   asked.
+- When you close an item, update its status and notes in `issues/` with the
+  commit hash.
 
 ## Current known issues
 
-- `browser` actions are not in the central approval classifier.
-- The read-only shell allowlist (`cat`, `head`, `tail`, …) can read arbitrary
-  files into model context without approval.
-- `.env` is mode `0644` and holds a live provider key; it should be `0600`.
-- The agent mutex is held for a whole turn; `ApiKeySaved` can block the event
-  loop.
-- Session/status writes and the memory DB open are synchronous on async workers.
-- TTS WAV files, screenshots, and Codex output use predictable `/tmp` paths.
-- `OpenRouterClient`'s 150 s total timeout also caps streams.
-- Timer/scheduler accept unbounded durations (possible `Instant` overflow).
-- Mobile-link replay protection is per connection (sequence resets).
+Tracked in [`issues/`](issues/README.md) since 2026-10-29, one file per area:
+permission and approval policy (`A`), shell policy (`S`), desktop control (`D`),
+secrets (`X`), and the agent loop/runtime (`L`). Each entry records the
+evidence, the decision taken, acceptance criteria, and tests. Start with `A8`,
+then `A1` and `A2`; the phase order is in the issue index.
+
+Do not add new bullets here — open an issue file instead.
+
+Architecture work (prune and feature-gate, tool manifests and the MCP boundary,
+memory v2, preferences) is tracked in `issues/ARCHITECTURE_ISSUE.md` and
+designed in `docs/architecture-roadmap.md`. Start it after permission Phase 1.
 
 ## Memory and session notes
 

@@ -1,0 +1,138 @@
+# Shell policy issues
+
+`shell` runs `sh -c <command>` with the user's privileges. `safety.rs`
+classifies a command by parsing one simple command (no pipes, redirects,
+chaining, substitutions) and checking the program name against a small
+allowlist. Anything else asks for approval. This is why `mkdir`, `cp`, `touch`,
+and `mv` prompt while `cat` and `rg` do not.
+
+## S1 — Project-scoped shell writes
+
+- Status: open · Phase 1 · Priority: high
+- Depends on: A8
+- Evidence: `src/tools/safety.rs:60-154`
+
+**Problem.** The allowlist is keyed by program only and has no notion of a
+project. File operations that are routine while working on a project prompt
+every time, which is the second reported pain. The same policy also lets
+`cat`/`head`/`tail` read any file, so the gate is both too strict for writes and
+too loose for reads (S2).
+
+**Decision (2026-10-29).** The project root is `HYUSK_WORKSPACE` when set,
+otherwise the process working directory, canonicalised once per decision. File
+operations run free only when every path argument resolves inside that root.
+Destructive commands always ask. Paths given as `~` are expanded for the check;
+`$VAR` and command substitution already fail the simple-command parser and ask.
+
+**Scope.** In: `mkdir`, `touch`, `cp`, `mv`, `ln`, `install` with all paths
+inside the root; conservative argument parsing. Out: package managers, builds,
+network fetches, VCS commands, and `rm` (all still ask). `sed` keeps its current
+read-only rule.
+
+**Acceptance criteria**
+
+- [ ] `mkdir -p build`, `cp a b`, `mv a b`, `touch x`, `ln -s a b` inside the
+      root do not ask.
+- [ ] The same commands with a target outside the root ask.
+- [ ] `rm`, `rmdir`, `shred`, `truncate`, `chmod`, `chown` always ask.
+- [ ] `cp -t /outside a` and `cp --target-directory=/outside a` ask.
+- [ ] `cp ~/notes.txt .` is evaluated against the expanded home path and asks.
+- [ ] With `HYUSK_WORKSPACE` unset, the working directory is the root.
+
+**Tests**
+
+- [ ] Temp-directory fixture with an explicit root.
+- [ ] Table of allow and ask cases, including `--`, `-t`, `~`, and `..`
+      traversal.
+- [ ] Root selection precedence test.
+
+**Files.** `src/tools/safety.rs`, tests beside it.
+
+## S2 — Read confinement and secret denylist
+
+- Status: open · Phase 2 · Priority: high
+- Depends on: S1
+- Evidence: `src/tools/safety.rs:78-79`, `AGENTS.md` known issues
+
+**Problem.** `cat`, `head`, `tail`, `grep`, `rg`, `find`, `file`, `stat`,
+`git show`, and `git log -p` can read arbitrary files and the output goes to the
+remote provider. `.env`, SSH keys, keyrings, and browser profiles are all
+reachable without approval.
+
+**Decision (2026-10-29).** Reads are free inside the project root; reads outside
+ask; secret-shaped paths are refused outright, not merely confirmed. Refusal
+message names the rule, not the secret. The denylist is a compiled pattern list
+so it can grow without touching the classifier.
+
+**Scope.** In: path extraction for the read allowlist, root check, denylist,
+tests. Out: output redaction (X2), which handles values that arrive from
+elsewhere.
+
+**Acceptance criteria**
+
+- [ ] `cat src/main.rs` and `rg "tool" src` are free.
+- [ ] `cat ../other-project/file` asks.
+- [ ] `cat .env`, `cat ~/.ssh/id_ed25519`, `rg token ~/.config/gh` are refused
+      with a policy message that does not echo a secret.
+- [ ] `find / -name '*.pem'` is refused or asks before output.
+- [ ] The denylist covers `.env*`, `.ssh`, `.gnupg`, `.aws`, `.kube`, `.netrc`,
+      `.config/gh`, keyrings, and the managed browser profile directory.
+
+**Tests**
+
+- [ ] Denylist and outside-root tables in a temp fixture.
+- [ ] A path-traversal case (`..`) is resolved before the check.
+
+**Files.** `src/tools/safety.rs`, possibly a small `paths.rs` helper.
+
+## S3 — Reject programs containing a slash
+
+- Status: open · Phase 2 · Priority: medium
+- Depends on: S1
+- Evidence: `src/tools/safety.rs:74-76`
+
+**Problem.** The classifier takes the last path component, so `/tmp/x/ls` or
+`./wc` is treated as the allowlisted `ls`/`wc` and runs without approval. Any
+executable placed at such a path is a bypass.
+
+**Decision (2026-10-29).** A program containing `/` never inherits an
+allowlisted decision; it asks. Allowlisted names must be resolved through
+`PATH`. A relative or absolute path to a trusted binary still asks, which is
+acceptable friction.
+
+**Acceptance criteria**
+
+- [ ] `/tmp/x/ls`, `./ls`, and `../bin/wc` ask.
+- [ ] Bare `ls` is still free.
+- [ ] A test documents why a path form asks.
+
+**Tests**
+
+- [ ] Program-form table.
+
+**Files.** `src/tools/safety.rs`.
+
+## S4 — Launch parity between `process` and `shell`
+
+- Status: open · Phase 3 · Priority: low
+- Depends on: —
+- Evidence: `src/tools/safety.rs:129-154`, `src/tools/safety.rs:351-408`
+
+**Problem.** `process` may launch a browser alias with an `https://` argument
+without approval, but `shell firefox https://…` asks, and `shell firefox` alone
+is free. Two tools give different answers for the same user-visible action.
+
+**Decision (2026-10-29, tentative).** Pick one rule. Preferred: browser aliases
+with only `http(s)` arguments are free in both tools; every other argument set
+asks. Confirm the rule in the issue before implementing.
+
+**Acceptance criteria**
+
+- [ ] The same launch is classified identically through both tools.
+- [ ] A non-URL argument still asks in both.
+
+**Tests**
+
+- [ ] Cross-tool table.
+
+**Files.** `src/tools/safety.rs`.

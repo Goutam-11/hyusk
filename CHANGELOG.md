@@ -4,6 +4,17 @@
 
 ### Added
 
+- `docs/architecture-roadmap.md` and `issues/ARCHITECTURE_ISSUE.md`: the
+  2026-10-29 architecture decisions — park Android/link and Nova Sonic behind
+  features, delete the experimental shell agent, remove macOS branches,
+  feature-gate the GTK editor and the orb, keep one crate; in-process core with
+  one MCP-compatible tool boundary; memory v2 with provenance and
+  consolidation; preference-only learning; human-reviewed upgrades.
+- `issues/` work-item tracker from the 2026-10-29 permission and desktop-control
+  review: five area files with stable IDs (`A` approval policy, `S` shell, `D`
+  desktop control, `X` secrets, `L` agent loop), each with evidence, a recorded
+  decision, acceptance criteria, and tests. `AGENTS.md` now points at the
+  tracker instead of listing known issues inline.
 - Noctalia v5 bar widget (`noctalia-plugin/`) for niri, Hyprland, and Sway:
   state glyph, tooltip card, and a settings panel that switches models and
   saves provider API keys. Install with `scripts/install-noctalia-plugin.sh`.
