@@ -44,7 +44,13 @@ per-keystroke approval.
 - [x] Typing into a text editor, browser field, or chat window stays free.
 - [x] If focus cannot be determined, the action asks (fail closed).
 - [ ] The check works on GNOME and niri. (Manual check not run: it needs a live
-      GNOME Wayland and a niri session; see the notes.)
+      GNOME Wayland and a niri session; see the notes.) 2026-10-30: the niri
+      half of the *read* is verified live - `window::focused_window()` returned
+      `("brave-browser", ...)` and `desktop_context` reported `source: niri IPC`
+      and `session_type: wayland` on the running session. Still to do: focus a
+      terminal (Alacritty was open but unfocused) and ask the agent to type, so
+      the card names it; and repeat on a GNOME Wayland login. Typing into the
+      user's live session is not something an agent session may do unattended.
 
 **Tests**
 
@@ -57,7 +63,13 @@ per-keystroke approval.
       `an_approval_for_typing_names_the_focused_terminal`,
       `focused_window_is_read_for_the_approval_gate_or_reports_none`).
 - [ ] Manual check on both sessions. Not run: no live GNOME or niri control in
-      this session.
+      this session. 2026-10-30: `capabilities::line()` reports
+      `input unknown; screenshot unknown; accessibility unknown` (nothing
+      attempted in that process), and the session bus exposes
+      `org.freedesktop.portal.Desktop` with the `gnome` and `gtk` portal
+      implementations, which is the backend mismatch the notes describe on
+      niri. The remaining half is a real portal dialog: deny it once and watch
+      the capability turn `denied`.
 
 **Files.** `src/tools/safety.rs`, `src/agent/runner.rs`,
 `src/agent/runner/sonic.rs`, `src/tools/window.rs`, `src/tools/computer.rs`,

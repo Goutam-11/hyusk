@@ -107,6 +107,13 @@ defer" and "give up when the lock is held" are now "a running turn does not
 hide an armed approval" and "a stale click is detected while a turn holds the
 agent".
 
+Live re-check (2026-10-30): the packaged service was not running in the current
+niri session (no `hyusk-*` files in `$XDG_RUNTIME_DIR`, `hyusk.service`
+inactive), so the manual "stop during a slow model call" run could not be
+reproduced against a real provider. The runtime path is covered by the
+concurrency test above; the remaining live half needs the service started and
+the GNOME stop menu, which is the same surface as A6/A7.
+
 Drift: the Evidence line pointed at `runtime.rs:1514-1575` and `877-995`, which
 were the turn lock and the control arms before later sessions shifted them; the
 ranges above are current. `src/types/event.rs` needed no change: the events
@@ -200,6 +207,14 @@ spoken is reported, never replayed as a plain request) are unchanged.
 Drift: the Evidence line `openrouter.rs:85-86` pointed at the two builder calls,
 which is exact for the pre-change file; after the change the builder is at
 92-97 and the policy lives in `src/model/openrouter/stream.rs:15-63`.
+
+Live re-check (2026-10-30): the real `OpenRouterClient::chat_stream` path was
+run once against a local fixture that sent a chunk every 100 ms for 1,650
+chunks - 167.1 s of streaming, 6,600 bytes, well past the old 150-second cap -
+and completed successfully with all deltas delivered. That is the end-to-end
+proof of the fix; it took the place of a provider run because `~/.env` holds a
+billed key and nobody should spend tokens to prove a timeout. The fixture was
+temporary and is not part of the suite.
 
 Limits of the test fixtures: the slow-chunk and stall windows are scaled down
 (tens of milliseconds) so the suite stays fast, and the absence of the old

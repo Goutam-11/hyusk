@@ -7,7 +7,7 @@ files and values that must not travel by accident.
 
 ## X1 — `.env` permissions
 
-- Status: done (tooling) · 2026-10-29 · commit `921ff8a` · Phase 1 · Priority: high
+- Status: done · 2026-10-29 · commit `921ff8a` · Phase 1 · Priority: high
 - Owner: user applies the file-mode change in Phase 1; the installer, doctor,
   and docs work is the implementable part
 - Depends on: —
@@ -28,10 +28,10 @@ Out: moving keys to the keyring (already the primary path) and key rotation.
 
 **Acceptance criteria**
 
-- [ ] `.env` is `0600` on this machine (applied by the user in Phase 1). Still
-      `0644` as of this commit, by the decision that assigns the change to the
-      user. Run `chmod 600 .env` in the checkout; `gnome_doctor` now reports
-      `needs_attention` until then.
+- [x] `.env` is `0600` on this machine. Applied on 2026-10-30 with
+      `chmod 600 .env` in the checkout (`stat` reports `600`); the file is
+      git-ignored, so the mode is local state, not a commit. `gnome_doctor`'s
+      `.env permissions` check passes from now on.
 - [x] The installer fixes a wider mode and reports it:
       `scripts/install-autostart.sh` chmods an existing `.env` to `600` and
       prints the previous mode. `scripts/setup-mobile-link.sh` already writes
@@ -328,3 +328,28 @@ Verification: fail-before-fix probes are recorded in the session log - storing
 the card unscrubbed, skipping the snapshot pass, dropping the directory and file
 modes, making `journal_arguments` an identity function, and removing the
 userinfo rule each failed its test.
+
+**Live audit (2026-10-30, after the code changes).** Ran against the real data
+directory on this machine (`$XDG_DATA_HOME/hyusk`) rather than the test
+isolation:
+
+- Before: directory `0755`; `memory.db`, `memory.md`, `memory.json`,
+  `schedules.json`, and a `memory-before-profile-*.db` backup all `0644`;
+  `session.json` already `0600`; the two `bedrock-response*.json` files already
+  `0600`.
+- Content: zero secret-shaped matches (`sk-…`/`sk-or-v1-…`, `ghp_…`, `AKIA…`,
+  `AIza…`, `hf_…`, `Bearer …`, private-key blocks) in `memory.md`, `memory.db`,
+  `memory.json`, `schedules.json`, or `session.json`; no credential paths in the
+  memory text.
+- Applied: directory `0700`; `memory.db`, `memory.md`, `memory.json`,
+  `schedules.json`, and the profile backup `0600`. (`chmod` outside the
+  workspace needed the wider sandbox mode, so the approval prompt covered it.)
+- Finding fixed at the source: `scheduler::save_state` wrote `schedules.json`
+  through a predictable `schedules.json.tmp` with the default mode, so the
+  chmod would have been undone by the next schedule change. It now creates the
+  directory `0700`, writes the temporary file `0600` through `create_new`, and
+  restricts the file after the rename
+  (`tools::scheduler::tests::the_schedule_file_is_private`).
+- Reviewed, not changed: `~/.config/hyusk/commands.json` (`0644`, user-authored
+  commands, no secrets; the key lives in the keyring) and the legacy
+  `memory.json` (read once by the migration, no matches found).

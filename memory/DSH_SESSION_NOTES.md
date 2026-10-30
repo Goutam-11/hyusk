@@ -61,6 +61,11 @@ habits cost time on 2026-10-30:
 - A probe run can take longer than the default command timeout; if the tool
   moves it to a background job, read the job output before assuming the restore
   ran.
+- The sandbox binds only the workspace: `/tmp` is a per-call tmpfs, and files
+  under `$HOME` (for example `~/.local/share/hyusk`) are read-only unless a
+  command is retried with `sandbox_permissions: danger-full-access`. Use that
+  only for an explicit mode/ownership change the user asked for, and say what
+  changed afterwards.
 
 ## Search tools — what works (tested 2026-10-29)
 

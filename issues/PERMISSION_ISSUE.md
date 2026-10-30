@@ -62,8 +62,12 @@ A7).
 - [x] `prompt_names_routine_work_as_free`,
       `prompt_tells_the_model_never_to_pre_ask`, and
       `generated_rows_never_contradict_their_decision`.
-- [ ] Manual voice check: "delete the build folder" asks once. Not run in this
-      session: it needs a live microphone, STT, and a provider.
+- [ ] Manual voice check: "delete the build folder" asks once. Still not run:
+      it needs a live microphone, STT, and a provider. On 2026-10-30 the agent's
+      environment was checked again - the desktop session is niri (Wayland) and
+      `/dev/snd` is not present inside the agent sandbox, so the voice path
+      cannot be exercised from the agent's shell at all. This one needs the user
+      at the microphone with the service running.
 
 **Files.** `src/agent/runner/prompts.rs`, `src/tools/safety.rs`,
 `src/agent/runner.rs`.
@@ -408,7 +412,12 @@ Out: session-wide grants, a permissions config file, phone-link protocol change.
       covers `approve_turn` → `ApprovalScope::Turn`).
 - [x] Spoken grammar: `reply::tests::turn_approvals_cover_the_rest_of_the_turn`.
 - [ ] Manual panel check on GNOME and Noctalia: not run; it needs a live Shell
-      extension, the widget, and a desktop session.
+      extension, the widget, and a desktop session. Checked on 2026-10-30: the
+      extension is installed (`~/.local/share/gnome-shell/extensions/hyusk@hyusk.local`)
+      but the current session is niri, so neither `org.gnome.Shell` nor
+      `org.hyusk.Shell` is on the session bus, and Noctalia is not installed
+      (`~/.config/noctalia` is absent). The check needs a GNOME login with the
+      extension enabled, or a Noctalia bar session.
 
 **Files.** `src/agent/runner.rs`, `src/agent/runner/reply.rs`,
 `src/tools/safety.rs`, `src/types/event.rs`, `src/main.rs`,
@@ -483,6 +492,8 @@ voice loop, which only needs the kind change.
       plus `the_approval_card_kind_matches_what_both_panels_expect`.
 - [ ] Manual panel check on GNOME and Noctalia: not run in this session; it
       needs a live Shell extension, the Noctalia widget, and a desktop session.
+      Rechecked on 2026-10-30: extension installed, session is niri, no Shell
+      name on the bus, Noctalia absent - see the A6 note above.
 
 **Files.** `src/types/event.rs`, `src/status.rs`, `src/agent/runtime.rs`,
 `src/main.rs`, `src/agent/runner/sonic.rs`, both panel sources.
