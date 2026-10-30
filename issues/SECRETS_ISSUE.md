@@ -226,7 +226,7 @@ dropping `restrict_file` failed the tightening test.
 
 ## X4 — Leakage audit of logs, status, and memory
 
-- Status: done · 2026-10-30 · commit `X4PENDING` · Phase 3 · Priority: low
+- Status: done · 2026-10-30 · commit `d22e55e` · Phase 3 · Priority: low
 - Depends on: X2
 - Evidence: `src/status.rs` (`card`, `save`, `path`),
   `src/agent/runner/session.rs` (`save_session_to_path`,

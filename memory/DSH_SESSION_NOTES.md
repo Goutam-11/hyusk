@@ -6,7 +6,7 @@ knowledge (architecture, conventions, safety invariants, known issues) lives in
 [`AGENTS.md`](../AGENTS.md). What happened in each work session is logged in
 `memory/SESSION-YYYY-MM-DD.md`.
 
-Last updated: 2026-10-29.
+Last updated: 2026-10-30.
 
 ## Workspace
 
@@ -44,6 +44,23 @@ Workarounds:
 - `CCACHE_DIR="$PWD/target/ccache"` to keep the cache inside the workspace.
 
 Normal terminal builds can keep using ccache.
+
+### Probes and temporary backups
+
+Fail-before-fix probes edit a source file, run one test, then restore it. Two
+habits cost time on 2026-10-30:
+
+- Back up with `cp <file> /tmp/<name>.bak` and restore with the matching `cp`
+  **inside the same bash call**. An earlier probe used
+  `git checkout -- <file>` to undo the edit and discarded a whole uncommitted
+  refactor; git is not an undo for work in progress.
+- `/tmp` does not reliably carry a backup between separate bash invocations, so
+  do not split a probe and its restore across calls. Restore, then verify the
+  probe's marker line is gone (`grep` for it) and `cargo fmt --all -- --check`
+  still passes.
+- A probe run can take longer than the default command timeout; if the tool
+  moves it to a background job, read the job output before assuming the restore
+  ran.
 
 ## Search tools — what works (tested 2026-10-29)
 
