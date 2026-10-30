@@ -640,7 +640,7 @@ before a gated step. Those three claims were corrected. Evidence line drift:
 
 ## A10 — Approval audit log
 
-- Status: done · 2026-10-30 · commit `A10PENDING` · Phase 3 · Priority: low
+- Status: done · 2026-10-30 · commit `88132e7` · Phase 3 · Priority: low
 - Depends on: A3
 - Evidence: `src/agent/audit.rs` (new writer), `src/agent/runner.rs`
   (`run_turn`, `expire_stale_approval`), `src/agent/runtime.rs`
