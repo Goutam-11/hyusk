@@ -654,6 +654,15 @@ The tool platform has guardrails but no sandbox:
   `$XDG_RUNTIME_DIR/hyusk` (mode `0700`); the shared temporary directory is used
   only when the runtime directory is unavailable, and files created there keep
   the owner-only mode.
+- Nothing the agent keeps is a secret store. Tool-call arguments are redacted
+  when the journal entry is created, the saved session snapshot is redacted
+  (arguments, text, refusals) so a resumed turn never reloads a credential,
+  status cards are redacted before they are stored, written, or shown - a
+  credential path becomes `[redacted path]` - and remembered memory notes and
+  graph facts are redacted on write. The memory database is `0600` in an
+  owner-only directory and `hyusk-status.json` is chmodded `0600` because its
+  fallback location is `/tmp`. The pass is bounded, so an unrecognised shape can
+  still get through; see the sink table in `docs/development.md`.
 - Tool output and screenshots are sent back to the remote model provider.
 - API keys live in the login keyring and are not persisted in `commands.json`
   or the session snapshot. The Noctalia panel hands a key to the agent through

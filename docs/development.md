@@ -114,6 +114,27 @@ Model files are runtime assets and `models/` is ignored by Git. Keep trained
 wake models, Whisper files, Piper voices, and downloaded negative datasets out
 of normal commits.
 
+## Secret sinks
+
+`tools/redact.rs` is the bounded pass that replaces secret-shaped values
+(private-key blocks, token prefixes, bearer credentials, URL userinfo passwords,
+and long values assigned to a secret-shaped name). The 2026-10-30 audit (X4)
+recorded where it runs and what each sink is allowed to keep:
+
+| Sink | What reaches it | Decision |
+| --- | --- | --- |
+| Tool result | `execute_tool` output | Redacted once in the choke point every lane shares (X2), and the count is noted. |
+| Journal | Tool arguments, before execution | Redacted when the entry is created, so the in-memory copy and the session copy agree; the save path redacts again for entries loaded from an older file. |
+| Session file | Messages, tool calls, journal | The on-disk snapshot is redacted (arguments, text, refusals) so a resumed turn never reloads a credential; the live conversation keeps the user's words. The file is `0600`, written through a `0600` temporary file. |
+| Status card | Card text (approvals, replies, errors) | Redacted before it reaches the store, the file, and the panel subscribers; a credential path becomes `[redacted path]`. `hyusk-status.json` is chmodded `0600` because the fallback location is `/tmp`. |
+| Memory database | Remembered notes and graph facts | Redacted on write; the directory is `0700` and `memory.db`/`memory.md` are `0600`. |
+| Logs | `[Hyusk] Running …` lines | Arguments are redacted before printing; `[User] …` keeps the user's own words, which are already in the session. |
+
+The pass is bounded, so an unrecognised shape can still get through; it
+over-redacts rather than leaking. Credential *paths* are handled separately by
+`safety::redact_secret_paths` for cards and logs, because a path is not a
+secret-shaped value.
+
 ## Validation
 
 Run these before committing:
@@ -125,8 +146,8 @@ cargo clippy --all-targets
 cargo test --bin hyusk_agent
 ```
 
-`cargo test --all-targets` runs the full suite: 387 passing tests and 7
-ignored (the main binary alone: 360 passing, 6 ignored; shared model/stream
+`cargo test --all-targets` runs the full suite: 393 passing tests and 7
+ignored (the main binary alone: 366 passing, 6 ignored; shared model/stream
 tests are compiled into each binary). The ignored ones need a real session or
 network: the four portal smoke tests below, a live CDP browser test, a Whisper
 cancel/cache test, and the GTK workflow editor draft test. Coverage includes

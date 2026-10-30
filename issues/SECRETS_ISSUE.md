@@ -226,10 +226,13 @@ dropping `restrict_file` failed the tightening test.
 
 ## X4 — Leakage audit of logs, status, and memory
 
-- Status: open · Phase 3 · Priority: low
+- Status: done · 2026-10-30 · commit `X4PENDING` · Phase 3 · Priority: low
 - Depends on: X2
-- Evidence: `src/status.rs`, `src/agent/runner/session.rs`,
-  `src/tools/memory.rs`
+- Evidence: `src/status.rs` (`card`, `save`, `path`),
+  `src/agent/runner/session.rs` (`save_session_to_path`,
+  `sanitize_session_messages`), `src/tools/memory.rs` (`memory_dir`, `run_db`,
+  the `remember` action), `src/agent/runner.rs` (journal creation and the
+  `[Hyusk] Running …` line)
 
 **Problem.** Several sinks can retain text the user did not intend to keep: the
 journal, the session file, status cards (visible in the panel and on screen),
@@ -245,14 +248,83 @@ schema (that is A3/A6).
 
 **Acceptance criteria**
 
-- [ ] No sink stores a value that X2 would redact.
-- [ ] Status cards never show a URL with a token or a full path to a secret.
-- [ ] The memory database is `0600` and inside a private directory.
-- [ ] The audit result is written down.
+- [x] No sink stores a value that X2 would redact.
+- [x] Status cards never show a URL with a token or a full path to a secret.
+- [x] The memory database is `0600` and inside a private directory.
+- [x] The audit result is written down.
 
 **Tests**
 
-- [ ] Round-trip checks per sink with a synthetic secret.
+- [x] Round-trip checks per sink with a synthetic secret:
+      the session file
+      (`agent::runner::session::tests::the_saved_session_redacts_call_arguments_and_journal_values`),
+      the journal
+      (`agent::runner::tests::journal_arguments_lose_a_secret_before_the_entry_is_stored`),
+      status cards (`status::tests::the_stored_card_and_its_json_lose_the_secret`
+      and `card_text_loses_secret_values_and_credential_paths`), the memory
+      database
+      (`tools::memory::tests::the_database_is_private_and_a_secret_never_round_trips`),
+      and the new URL-userinfo rule
+      (`tools::redact::tests::url_userinfo_passwords_are_redacted`).
 
-**Files.** `src/status.rs`, `src/agent/runner/session.rs`,
-`src/tools/memory.rs`, docs.
+**Files.** `src/tools/redact.rs`, `src/tools/safety.rs`, `src/status.rs`,
+`src/agent/runner.rs`, `src/agent/runner/session.rs`, `src/tools/memory.rs`,
+`docs/development.md`, `docs/tools.md`, `docs/architecture.md`, `AGENTS.md`,
+`CHANGELOG.md`.
+
+**Notes (2026-10-30, implemented).** Audit result, sink by sink:
+
+- **Journal** (`action_journal`, persisted in the session snapshot). It stores
+  tool *arguments*, which never pass through X2's output choke point, so a
+  credential in `curl -H 'Authorization: Bearer …'` or a `browser fill` was
+  written verbatim and reused by later prompts. Now `journal_arguments` redacts
+  at each of the three creation sites (fast lane, approved call, model tool
+  round), and the save path redacts the entries again so a journal loaded from
+  an older file is cleaned.
+- **Session file.** Tool results were already redacted (X2), but assistant
+  tool-call arguments and the user's own text were not. `redact_for_storage`
+  runs on the snapshot after sanitisation and redacts message text (including
+  multimodal text parts), tool-call arguments, and refusals. Only the on-disk
+  copy is edited: the live conversation keeps the user's words, and a resumed
+  turn never reloads a credential from the file. The file is still written
+  through a `0600` temporary file and renamed, so the schema is unchanged.
+- **Status card.** Card text is scrubbed in `status::card` before it reaches
+  the store, the file, and the panel subscribers. Two passes: the X2 value pass,
+  and the new `safety::redact_secret_paths`, because a credential *path* is not
+  a secret-shaped value (the denylist is the same table S2 uses). The pass is
+  silent; a count note belongs on tool output, not on a card the user is
+  reading. `hyusk-status.json` is also chmodded `0600`, because when
+  `XDG_RUNTIME_DIR` is unset the fallback is `/tmp`.
+- **Memory database.** The directory was created with the default mode and the
+  database with SQLite's. `run_db` now creates the directory with `0700`
+  (`paths::ensure_private_dir`) and the database is `0600`
+  (`paths::restrict_file`) right after it opens; `memory.md` is restricted the
+  same way. Remembered notes and graph triples go through `stored_text`, the
+  same bounded pass, so the database and the markdown export never keep a
+  credential-shaped value.
+- **Logs** (the issue title names them). `[Hyusk] Running <tool>: <arguments>`
+  and the fast-lane line printed arguments; they now print the redacted form.
+  `[User] …` keeps the user's own words, which are already in the session.
+
+Decisions taken: over-redaction is preferred to leaking, and the pass stays
+bounded, so an unrecognised shape can still get through - the docs say so. A
+credential *path* is handled separately from a *value*, because the value pass
+would not match `/home/me/.ssh/id_ed25519`. The memory `remember` action does not
+refuse a secret; it stores the redacted text, so the user's note keeps its shape
+and loses only the credential. Reviewed and left alone: `hyusk-state` (a state
+word), `hyusk-control.json` (the agent scrubs the key payload as soon as it
+reads it, and the file lives in a `0700` directory), `hyusk-pairing.json`
+(already `0600`), and the legacy `memory.json` (read once by the migration, then
+unused; it is the user's file and the audit does not rewrite it).
+
+Discovery beyond the issue: the URL-userinfo password (`https://user:secret@host`)
+was not covered by any X2 rule, which the "URL with a token" criterion asks for;
+`redact_line` now redacts it, and the rule applies to tool output too.
+
+Drift: the Evidence ranges were module-level references, so they were replaced
+with the current function names rather than line numbers.
+
+Verification: fail-before-fix probes are recorded in the session log - storing
+the card unscrubbed, skipping the snapshot pass, dropping the directory and file
+modes, making `journal_arguments` an identity function, and removing the
+userinfo rule each failed its test.

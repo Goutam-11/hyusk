@@ -92,7 +92,7 @@ for the microphone at the same time.
 | `credentials.rs` | Login-keyring lookup and storage for provider keys. |
 | `link/` | Opt-in TLS WebSocket server, pairing auth, and phone command channel. |
 | `paths.rs` | Private per-user runtime directory: owner-only directories and files for generated audio, screenshots, and model output. |
-| `status.rs` | Publishes `hyusk-status.json` for the GNOME and Noctalia indicators. |
+| `status.rs` | Publishes `hyusk-status.json` for the GNOME and Noctalia indicators; card text is scrubbed of secret values and credential paths before it is stored or shown. |
 | `model/openrouter.rs` | Sends OpenAI-compatible HTTP requests, handles model catalogs and retry policy. |
 | `model/openrouter/protocol.rs` | Validates message roles, tool-call arguments, IDs, and complete result batches. |
 | `model/openrouter/stream.rs` | Decodes SSE text/tool deltas, preserves stream errors and refusals, and bounds response memory. |
@@ -104,7 +104,7 @@ for the microphone at the same time.
 | `tools/accessibility.rs` | Drives AT-SPI2 through the `pyatspi` bridge. |
 | `tools/window.rs` | Lists and activates windows over niri IPC or the extension's D-Bus. |
 | `tools/gnome_doctor.rs` | Read-only checks for GNOME window, accessibility, and capture support. |
-| `tools/memory.rs` | SQLite memory, FTS search, and knowledge-graph triples. |
+| `tools/memory.rs` | SQLite memory, FTS search, and knowledge-graph triples; the database is `0600` in an owner-only directory and stored text is redacted. |
 | `tools/safety.rs` | Holds the explicit per-tool approval table (unknown names ask), classifies risky calls, and arms one-shot confirmations that expire. |
 | `tools/scheduler.rs` | Persists one-shot reminders, workflows, and agent tasks. |
 | `tools/task.rs` | Bounded research and Codex workspace workers. |

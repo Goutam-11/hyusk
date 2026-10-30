@@ -100,7 +100,18 @@ where
     T: Send + 'static,
     F: FnOnce(SqlitePool) -> DbFuture<T> + Send + 'static,
 {
-    let path = memory_db_path();
+    run_db_at(memory_db_path(), operation)
+}
+
+/// Run one database operation against an explicit file.
+///
+/// Production always uses [`memory_db_path`]; the path is a parameter so the
+/// privacy tests can exercise the real open path on a scratch directory (X4).
+fn run_db_at<T, F>(path: PathBuf, operation: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(SqlitePool) -> DbFuture<T> + Send + 'static,
+{
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -112,7 +123,9 @@ where
                 .parent()
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("."));
-            std::fs::create_dir_all(&parent)
+            // The memory database is private to the user: the directory is
+            // owner-only and the database file is 0600 (X4).
+            crate::paths::ensure_private_dir(&parent)
                 .with_context(|| format!("Failed to create {}", parent.display()))?;
 
             let pool = SqlitePoolOptions::new()
@@ -126,6 +139,7 @@ where
                 )
                 .await
                 .with_context(|| format!("Failed to open {}", path.display()))?;
+            crate::paths::restrict_file(&path);
 
             initialize_db(&pool).await?;
             let result = operation(pool.clone()).await;
@@ -325,6 +339,7 @@ pub fn load_store() -> MemoryStore {
             if let Err(error) = std::fs::write(memory_md_path(), render_markdown(&store)) {
                 eprintln!("[Memory] Could not generate memory.md: {error}");
             }
+            crate::paths::restrict_file(&memory_md_path());
             store
         }
         Err(error) => {
@@ -332,6 +347,15 @@ pub fn load_store() -> MemoryStore {
             MemoryStore::default()
         }
     }
+}
+
+/// The text a remembered note or graph fact is stored as.
+///
+/// Memory is a long-lived sink: a note, or a value inside one, must not keep a
+/// secret-shaped credential (X4). The redaction is the same bounded pass tool
+/// output uses, so it over-redacts rather than leaking.
+fn stored_text(text: &str) -> String {
+    crate::tools::redact::redact(text.trim()).0
 }
 
 fn save_store(store: &MemoryStore) -> Result<()> {
@@ -403,6 +427,7 @@ fn save_store(store: &MemoryStore) -> Result<()> {
             if let Err(error) = std::fs::write(memory_md_path(), render_markdown(&store)) {
                 eprintln!("[Memory] Database saved, but memory.md export failed: {error}");
             }
+            crate::paths::restrict_file(&memory_md_path());
             Ok(())
         })
     })
@@ -848,9 +873,9 @@ impl Tool for MemoryTool {
 
         match action {
             MemoryAction::Remember { text, tags } => {
-                let text = text.trim().to_string();
+                let text = stored_text(&text);
 
-                if text.is_empty() {
+                if text.trim().is_empty() {
                     return Ok(ToolResult::failure("Memory text must not be empty."));
                 }
 
@@ -924,9 +949,11 @@ impl Tool for MemoryTool {
                 relation,
                 object,
             } => {
-                let subject = subject.trim().to_string();
-                let relation = relation.trim().to_string();
-                let object = object.trim().to_string();
+                // Graph facts are stored in the same database, so they get the
+                // same treatment as notes (X4).
+                let subject = stored_text(&subject);
+                let relation = stored_text(&relation);
+                let object = stored_text(&object);
 
                 if subject.is_empty() || relation.is_empty() || object.is_empty() {
                     return Ok(ToolResult::failure(
@@ -1055,6 +1082,59 @@ impl Tool for MemoryTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_database_is_private_and_a_secret_never_round_trips() {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "hyusk-memory-private-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let path = directory.join("memory.db");
+
+        let note = stored_text("my token is ghp_0123456789abcdef, keep it");
+        assert!(!note.contains("ghp_0123456789abcdef"), "{note}");
+
+        run_db_at(path.clone(), move |pool| {
+            Box::pin(async move {
+                create_schema(&pool).await?;
+                sqlx::query(
+                    "INSERT INTO memory_entries (id, text, tags_json, created_unix) \
+                     VALUES (999999, ?, '[]', 0)",
+                )
+                .bind(&note)
+                .execute(&pool)
+                .await?;
+                let stored: String =
+                    sqlx::query_scalar("SELECT text FROM memory_entries WHERE id = 999999")
+                        .fetch_one(&pool)
+                        .await?;
+                anyhow::ensure!(
+                    !stored.contains("ghp_0123456789abcdef"),
+                    "the database kept the secret: {stored}"
+                );
+                Ok(())
+            })
+        })
+        .expect("write and read the entry");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &std::path::Path| {
+                std::fs::metadata(path)
+                    .expect("metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777
+            };
+            assert_eq!(mode(&directory), 0o700, "the directory is owner-only");
+            assert_eq!(mode(&path), 0o600, "the database is owner-only");
+        }
+
+        std::fs::remove_dir_all(&directory).ok();
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn legacy_memory_read_error_does_not_mark_migration_complete() -> Result<()> {

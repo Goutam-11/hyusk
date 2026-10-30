@@ -6,7 +6,10 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::types::Message;
+use crate::types::{
+    message::{ContentPart, MessageContent},
+    Message,
+};
 
 /// Bytes per token assumed when converting a model's context window into a
 /// serialized-history budget. English prose and JSON tool output sit near
@@ -106,7 +109,7 @@ fn save_session_to_path(
     provider: &str,
     model: &str,
 ) {
-    let snapshot = SessionSnapshot {
+    let mut snapshot = SessionSnapshot {
         version: 2,
         messages: sanitize_session_messages(messages.to_vec()),
         journal: journal
@@ -122,6 +125,14 @@ fn save_session_to_path(
         provider: provider.to_string(),
         model: model.to_string(),
     };
+    // X4: this file is the conversation's long-term copy, so the secret-shaped
+    // values the model put into a call, and any the user typed, do not survive
+    // it. Tool results are already redacted on the way out of a tool (X2).
+    redact_for_storage(&mut snapshot.messages);
+    for entry in &mut snapshot.journal {
+        entry.arguments = crate::tools::redact::redact(&entry.arguments).0;
+    }
+
     let bytes = match serde_json::to_vec(&snapshot) {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -193,6 +204,41 @@ fn session_path() -> PathBuf {
     std::env::var_os("HYUSK_SESSION_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::tools::memory::memory_dir().join("session.json"))
+}
+
+/// Redact secret-shaped values from the persisted copy of the conversation.
+///
+/// Tool results arrive redacted (X2), but a tool call's arguments do not pass
+/// through that choke point, and the model can repeat a value from the
+/// conversation. Only the on-disk snapshot is edited: the live conversation
+/// keeps the user's own words, and a resumed session never reloads a
+/// credential from the file.
+fn redact_for_storage(messages: &mut [Message]) {
+    for message in messages.iter_mut() {
+        match &mut message.content {
+            Some(MessageContent::Text(text)) => {
+                *text = crate::tools::redact::redact(text).0;
+            }
+            Some(MessageContent::Parts(parts)) => {
+                for part in parts.iter_mut() {
+                    if let ContentPart::Text { text } = part {
+                        *text = crate::tools::redact::redact(text).0;
+                    }
+                }
+            }
+            None => {}
+        }
+
+        if let Some(calls) = &mut message.tool_calls {
+            for call in calls.iter_mut() {
+                call.function.arguments = crate::tools::redact::redact(&call.function.arguments).0;
+            }
+        }
+
+        if let Some(refusal) = &mut message.refusal {
+            *refusal = crate::tools::redact::redact(refusal).0;
+        }
+    }
 }
 
 pub(super) fn sanitize_session_messages(messages: Vec<Message>) -> Vec<Message> {
@@ -492,6 +538,53 @@ mod tests {
             "the session kept the secret: {text}"
         );
         assert!(text.contains("[redacted]"), "{text}");
+        fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn the_saved_session_redacts_call_arguments_and_journal_values() {
+        let path = test_session_path("storage-redaction");
+        let call: Message = serde_json::from_value(json!({
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {
+                    "name": "shell",
+                    "arguments": "{\"command\":\"curl -H 'Authorization: Bearer ghp_0123456789abcdef' https://example.test\"}"
+                }
+            }]
+        }))
+        .expect("assistant tool call");
+        let messages = vec![
+            // The user's own words are part of the record, but not a value the
+            // file should keep.
+            Message::user("my token is ghp_0123456789abcdef, keep it quiet"),
+            call,
+            Message::tool_result("call-1", "done"),
+        ];
+        let journal = vec![ActionJournalEntry {
+            tool: "shell".into(),
+            arguments: "{\"command\":\"export GH_TOKEN=ghp_0123456789abcdef\"}".into(),
+            status: "in_flight; verify before retry after interruption".into(),
+        }];
+
+        save_session_to_path(&path, &messages, &journal, false, "openrouter", "model-x");
+
+        let text = String::from_utf8(fs::read(&path).expect("session file")).expect("utf-8");
+        assert!(
+            !text.contains("ghp_0123456789abcdef"),
+            "the session kept the secret: {text}"
+        );
+        assert!(text.contains("[redacted]"), "{text}");
+
+        // The snapshot still pairs the call with its result, so a resumed turn
+        // does not see a broken tool batch.
+        let snapshot: SessionSnapshot = serde_json::from_str(&text).expect("session parses");
+        assert_eq!(snapshot.messages.len(), 3);
+        assert_eq!(snapshot.messages[2].role, "tool");
+        assert_eq!(snapshot.messages[2].tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(snapshot.journal.len(), 1);
         fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 

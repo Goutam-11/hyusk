@@ -533,11 +533,15 @@ impl Agent {
 
             let input = action.tool_input();
 
-            println!("[Hyusk][fast] {} {}", action.tool_name(), input);
+            println!(
+                "[Hyusk][fast] {} {}",
+                action.tool_name(),
+                journal_arguments(&input)
+            );
 
             self.action_journal.push(ActionJournalEntry {
                 tool: action.tool_name().into(),
-                arguments: input.clone(),
+                arguments: journal_arguments(&input),
                 status: "in_flight; verify before retry after interruption".into(),
             });
             self.persist_session();
@@ -848,7 +852,7 @@ impl Agent {
                 // "Allow for this turn" also covers the rest of this turn.
                 self.action_journal.push(ActionJournalEntry {
                     tool: pending.name.clone(),
-                    arguments: pending.arguments.clone(),
+                    arguments: journal_arguments(&pending.arguments),
                     status: "in_flight; verify before retry after interruption".into(),
                 });
                 self.persist_session();
@@ -1050,7 +1054,14 @@ impl Agent {
 
                         let args_str = call.function.arguments.clone();
 
-                        println!("\n[Hyusk] Running {}: {}\n", name, args_value);
+                        // Arguments are logged, and a log line ends up in
+                        // journald, so it gets the same treatment as the
+                        // journal itself (X4).
+                        println!(
+                            "\n[Hyusk] Running {}: {}\n",
+                            name,
+                            journal_arguments(&args_value.to_string())
+                        );
 
                         if let Some(tx) = ui_tx {
                             HyuskState::Working.publish();
@@ -1129,7 +1140,7 @@ impl Agent {
                                 Some(remaining) => {
                                     self.action_journal.push(ActionJournalEntry {
                                         tool: name.clone(),
-                                        arguments: args_str.clone(),
+                                        arguments: journal_arguments(&args_str),
                                         status: "in_flight; verify before retry after interruption"
                                             .into(),
                                     });
@@ -1311,6 +1322,15 @@ impl Agent {
         let model = self.control().model();
         session::compact_history(&mut self.messages, session::history_budget(&model))
     }
+}
+
+/// Journal arguments with secret-shaped values replaced.
+///
+/// The journal is persisted in the session file and is reused by later prompts,
+/// and a call's arguments never pass through X2's tool-output choke point, so
+/// this is where a credential the model put into a call is dropped (X4).
+fn journal_arguments(arguments: &str) -> String {
+    crate::tools::redact::redact(arguments).0
 }
 
 fn configured_vision() -> bool {
@@ -1525,9 +1545,9 @@ mod tests {
 
     use super::{
         build_system_prompt, confirms, execute_tool_with_deadline, is_denial,
-        is_voice_session_stop, parse_structured_reply, rejects_image_input, split_image_marker,
-        strip_image_inputs, tool_call_signature, Agent, AgentLoopLimits, PendingApproval,
-        ToolProgress,
+        is_voice_session_stop, journal_arguments, parse_structured_reply, rejects_image_input,
+        split_image_marker, strip_image_inputs, tool_call_signature, Agent, AgentLoopLimits,
+        PendingApproval, ToolProgress,
     };
     use crate::{
         model::openrouter::OpenRouterClient,
@@ -1680,6 +1700,15 @@ mod tests {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(ToolResult::success("played"))
         }
+    }
+
+    #[test]
+    fn journal_arguments_lose_a_secret_before_the_entry_is_stored() {
+        let arguments = r#"{"command":"curl -H 'Authorization: Bearer ghp_0123456789abcdef' https://example.test"}"#;
+        let stored = journal_arguments(arguments);
+
+        assert!(!stored.contains("ghp_0123456789abcdef"), "{stored}");
+        assert!(stored.contains("[redacted]"), "{stored}");
     }
 
     #[tokio::test]

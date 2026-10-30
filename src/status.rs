@@ -72,7 +72,10 @@ fn save(status: &mut Status) {
         .unwrap_or(0);
     status.revision = status.revision.max(now).saturating_add(1);
     if let Ok(json) = serde_json::to_vec(status) {
-        let _ = std::fs::write(path(), json);
+        let path = path();
+        let _ = std::fs::write(&path, json);
+        // The fallback location is /tmp, which other accounts can read (X4).
+        crate::paths::restrict_file(&path);
     }
     let _ = publisher().send(status.clone());
 }
@@ -100,11 +103,23 @@ pub fn card(kind: &str, text: impl Into<String>, persistent: bool) {
         s.latest = Some(Card {
             id: s.revision.saturating_add(1),
             kind: kind.to_string(),
-            text: text.into(),
+            text: scrub_card_text(text.into()),
             persistent,
         });
         save(&mut s);
     }
+}
+
+/// Card text is shown on screen and written to `hyusk-status.json`, so it never
+/// carries a secret-shaped value or a full path to a credential (X4).
+///
+/// The pass is silent: a count note belongs on tool output, not on a card the
+/// user is reading. It runs before the card reaches the store, the file, and
+/// the panel subscribers, so none of them can see the unedited text.
+fn scrub_card_text(text: String) -> String {
+    let (text, _) = crate::tools::redact::redact(&text);
+    let (text, _) = crate::tools::safety::redact_secret_paths(&text);
+    text
 }
 pub fn awaiting_reply(value: bool) {
     if let Ok(mut s) = store().lock() {
@@ -137,5 +152,64 @@ pub fn clear_timer() {
     if let Ok(mut s) = store().lock() {
         s.timer = None;
         save(&mut s);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn card_text_loses_secret_values_and_credential_paths() {
+        let scrubbed = scrub_card_text(
+            "ran OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef and read /home/me/.ssh/id_ed25519."
+                .to_string(),
+        );
+
+        assert!(
+            !scrubbed.contains("sk-or-v1-0123456789abcdef"),
+            "{scrubbed}"
+        );
+        assert!(!scrubbed.contains("/home/me/.ssh/id_ed25519"), "{scrubbed}");
+        assert!(scrubbed.contains("[redacted]"), "{scrubbed}");
+        assert!(scrubbed.contains("[redacted path]"), "{scrubbed}");
+        // The rest of the sentence, including the final period, is untouched.
+        assert!(scrubbed.starts_with("ran "), "{scrubbed}");
+        assert!(scrubbed.ends_with("."), "{scrubbed}");
+
+        // A URL that carries a credential in its userinfo is scrubbed too.
+        let scrubbed = scrub_card_text(
+            "filling https://oauth2:ghp_0123456789abcdef@example.test/login".to_string(),
+        );
+        assert!(!scrubbed.contains("ghp_0123456789abcdef"), "{scrubbed}");
+        assert!(scrubbed.contains("oauth2:[redacted]@"), "{scrubbed}");
+    }
+
+    #[test]
+    fn the_stored_card_and_its_json_lose_the_secret() {
+        // The store is process-global and other tests publish cards, so the
+        // card is read back through the same lock the writer holds.
+        card(
+            "response",
+            "OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef for /home/me/.env",
+            false,
+        );
+
+        let stored = {
+            let status = store().lock().expect("status store");
+            let card = status.latest.as_ref().expect("a card is stored");
+            assert!(
+                !card.text.contains("sk-or-v1-0123456789abcdef"),
+                "{}",
+                card.text
+            );
+            assert!(!card.text.contains("/home/me/.env"), "{}", card.text);
+            assert!(card.text.contains("[redacted]"), "{}", card.text);
+            assert!(card.text.contains("[redacted path]"), "{}", card.text);
+            serde_json::to_string(&*status).expect("status serializes")
+        };
+        assert!(!stored.contains("sk-or-v1-0123456789abcdef"), "{stored}");
+
+        dismiss();
     }
 }

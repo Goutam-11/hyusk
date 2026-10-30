@@ -883,6 +883,65 @@ fn project_and_working_directory() -> Option<(std::path::PathBuf, std::path::Pat
     ))
 }
 
+/// Replace any word that names a credential location with a marker (X4).
+///
+/// Cards are shown on screen and written to `hyusk-status.json`, and log lines
+/// end up in the journal, so neither should carry a full path to a secret even
+/// when the call itself was allowed. Punctuation around a word is preserved,
+/// and the count is returned for callers that report it.
+pub fn redact_secret_paths(text: &str) -> (String, usize) {
+    let mut output = String::with_capacity(text.len());
+    let mut replaced = 0usize;
+
+    for piece in text.split_inclusive(char::is_whitespace) {
+        let token_end = piece
+            .char_indices()
+            .find(|(_, character)| character.is_whitespace())
+            .map(|(index, _)| index)
+            .unwrap_or(piece.len());
+        let (token, trailing) = piece.split_at(token_end);
+
+        // A card or a log line often ends a path with punctuation.
+        let trimmed = token.trim_matches(is_path_punctuation);
+        let prefix_len = token.len() - token.trim_start_matches(is_path_punctuation).len();
+        let core = trimmed;
+
+        if !core.is_empty() && secret_rule_for_argument(core).is_some() {
+            output.push_str(&token[..prefix_len]);
+            output.push_str("[redacted path]");
+            output.push_str(&token[prefix_len + core.len()..]);
+            output.push_str(trailing);
+            replaced += 1;
+        } else {
+            output.push_str(piece);
+        }
+    }
+
+    (output, replaced)
+}
+
+/// Punctuation that can sit beside a path in a sentence without being part of it.
+fn is_path_punctuation(character: char) -> bool {
+    matches!(
+        character,
+        '"' | '\''
+            | '('
+            | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '<'
+            | '>'
+            | ','
+            | ';'
+            | ':'
+            | '.'
+            | '!'
+            | '?'
+    )
+}
+
 /// The refusal for a shell call that names a credential path, or `None` when the
 /// call names none. A refused read never runs and never asks: the message names
 /// the denylist rule, not the path or any value, so the policy cannot leak what

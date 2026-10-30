@@ -55,6 +55,19 @@
 
 ### Changed
 
+- Nothing the agent stores is a secret store. The four sinks were audited (X4):
+  tool-call arguments reached the journal and the saved session unredacted,
+  status card text could show a credential or a path to one, and the memory
+  database was created with the default mode. Arguments are now redacted where
+  a journal entry is created and again when the session snapshot is saved
+  (arguments, text, and refusals), card text is scrubbed before it is stored,
+  written, or shown (secret values, plus `[redacted path]` for credential
+  paths), and remembered notes and graph facts are redacted on write with the
+  database at `0600` inside an owner-only directory. The redaction pass also
+  now covers the password in a URL's userinfo, `[Hyusk] Running …` log lines
+  print redacted arguments, and `hyusk-status.json` is chmodded `0600` because
+  its fallback location is `/tmp`. The per-sink table is in
+  `docs/development.md`.
 - Runtime controls no longer wait for a turn. Approval, model-selection, and
   paused-task state moved out of the agent into a small control struct
   (`src/agent/control.rs`) behind its own lock, which the event loop takes

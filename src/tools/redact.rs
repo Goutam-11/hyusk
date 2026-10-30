@@ -128,7 +128,48 @@ fn private_key_end(line: &str) -> Option<String> {
 
 fn redact_line(line: &str, replaced: &mut usize) -> String {
     let line = redact_assignments(line, replaced);
-    redact_tokens(&line, replaced)
+    let line = redact_tokens(&line, replaced);
+    redact_url_userinfo(&line, replaced)
+}
+
+/// Replace the password half of a URL's userinfo, as in
+/// `https://oauth2:token@example.test/repo`: a credential in a URL is visible
+/// wherever the URL is shown or stored.
+fn redact_url_userinfo(line: &str, replaced: &mut usize) -> String {
+    let mut output = String::with_capacity(line.len());
+    let mut remaining = line;
+
+    while let Some(position) = remaining.find("://") {
+        let after_scheme = position + 3;
+        output.push_str(&remaining[..after_scheme]);
+        let authority = &remaining[after_scheme..];
+        let end = authority
+            .find(|c: char| c == '/' || c == '?' || c == '#' || c.is_whitespace())
+            .unwrap_or(authority.len());
+        let (authority, tail) = authority.split_at(end);
+
+        match authority.split_once('@') {
+            Some((userinfo, host))
+                if userinfo
+                    .split_once(':')
+                    .is_some_and(|(_, password)| !password.is_empty()) =>
+            {
+                let (user, _password) = userinfo.split_once(':').expect("checked above");
+                output.push_str(user);
+                output.push(':');
+                output.push_str(MARKER);
+                output.push('@');
+                output.push_str(host);
+                *replaced += 1;
+            }
+            _ => output.push_str(authority),
+        }
+
+        remaining = tail;
+    }
+
+    output.push_str(remaining);
+    output
 }
 
 /// Replace a long value assigned to a secret-shaped name, for example
@@ -304,6 +345,27 @@ mod tests {
         assert!(!text.contains("averylongsecretvalue1234"), "{text}");
         assert!(!text.contains("abcdef1234567890"), "{text}");
         assert!(text.contains(MARKER));
+    }
+
+    #[test]
+    fn url_userinfo_passwords_are_redacted() {
+        let (text, count) =
+            redact("clone https://oauth2:ghp_0123456789abcdef@github.com/hyusk/hyusk.git now");
+        assert_eq!(count, 1, "{text}");
+        assert_eq!(
+            text,
+            format!("clone https://oauth2:{MARKER}@github.com/hyusk/hyusk.git now")
+        );
+
+        // A URL without userinfo, and one with only a user, stay readable.
+        for text in [
+            "https://example.com/repo.git",
+            "https://user@example.com/path",
+        ] {
+            let (output, count) = redact(text);
+            assert_eq!(count, 0, "{text} became {output}");
+            assert_eq!(output, text);
+        }
     }
 
     #[test]
