@@ -225,7 +225,7 @@ evidence, the decision taken, acceptance criteria, and tests.
 
 Permission Phase 1 and Phase 2 are complete (2026-10-29): A1-A8, A9, S1-S3,
 X1, X2, and D1-D4 are closed. Phase 3 is open: S4 and the agent-loop items L2,
-L4, L5, and L6 are left; X3, X4, L3, L1, D5, D6, and A10 are closed. The order
+L4, and L5 are left; X3, X4, L3, L1, D5, D6, A10, and L6 are closed. The order
 and dependencies are in the issue index.
 
 Do not add new bullets here — open an issue file instead.

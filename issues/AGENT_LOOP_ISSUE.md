@@ -278,7 +278,7 @@ low priority.
 
 ## L6 — Approval state across restart
 
-- Status: done · 2026-10-30 · commit `L6PENDING` · Phase 3 · Priority: medium
+- Status: done · 2026-10-30 · commit `f2aa2d8` · Phase 3 · Priority: medium
 - Depends on: A3, A6
 - Evidence: `src/agent/runner/session.rs` (`load_session_from`,
   `settle_interrupted_approvals`), `src/tools/safety.rs` (`PENDING_PREFIX`)
