@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **424 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **425 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -104,7 +104,10 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   by `safety::secret_refusal` before any card is armed; `rm`, `rmdir`, `shred`,
   `truncate`, `chmod`, `chown`, `chgrp`, `dd`, `mkfs`, `wipefs` always ask; a
   program named by a path (`./ls`, `/tmp/x/ls`) never inherits the bare name's
-  decision and asks too (S3).
+  decision and asks too (S3). A bare GUI launch is free, and a browser may also
+  be given `http(s)` URLs and nothing else - the same rule `process` applies to
+  a browser alias, so one launch is classified the same way through both tools
+  (S4); any other argument asks in both.
 - `computer` (D1): `type_text`, `key_press`, and `key_combo` ask while a terminal
   is focused (the card names it) and ask when the focus cannot be read; the text
   runner and the Nova Sonic loop both pass the `window` tool's focus to

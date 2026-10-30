@@ -256,7 +256,8 @@ impl ToolName {
             ToolName::Process => ToolPolicy {
                 decision: Decision::Classified(process_requires_approval),
                 guidance: "a bare launch of a configured app alias (firefox, chrome, \
-                           brave, code, and so on) runs freely; extra arguments, an \
+                           brave, code, and so on) runs freely, and a browser alias may \
+                           also be given http(s) URLs; any other extra argument, an \
                            unknown program, or a raw executable path ask",
                 preview_keys: &["program", "args", "action"],
                 input_paths: &[],
@@ -280,8 +281,10 @@ impl ToolName {
                            refused outright rather than confirmed; a program named by a \
                            path (./ls, /tmp/x/ls) asks even when its bare name is allowlisted; \
                            chaining, pipes, redirection, expansion, in-place writes, and \
-                           unknown programs ask, and a detached mode asks unless it launches an \
-                           app",
+                           unknown programs ask, a bare GUI launch (firefox, chromium, \
+                           google-chrome, brave, spotify, nautilus, gedit, code) runs freely \
+                           and a browser may also be given http(s) URLs, and a detached mode \
+                           asks unless it launches an app",
                 preview_keys: &["command", "mode"],
                 input_paths: &[],
             },
@@ -1230,6 +1233,38 @@ fn project_file_operation_is_free(
         .all(|path| path_inside_root(path, root, working_directory))
 }
 
+/// Browser launchers that may be given `http(s)` URLs and nothing else (S4).
+///
+/// `process` matches a resolved alias against this list and `shell` matches the
+/// executable word, so one launch is classified the same way through either
+/// tool. `youtube music` and `youtube-music` are aliases that expand to a
+/// browser plus its URL, so `process` treats them as browsers too.
+const BROWSER_LAUNCHERS: &[&str] = &[
+    "brave",
+    "brave browser",
+    "brave-browser",
+    "chrome",
+    "chromium",
+    "chromium-browser",
+    "firefox",
+    "google chrome",
+    "google-chrome",
+    "google-chrome-stable",
+];
+
+fn is_browser_launcher(name: &str) -> bool {
+    BROWSER_LAUNCHERS.contains(&name.trim().to_ascii_lowercase().as_str())
+}
+
+/// True for an `http`/`https` URL, the only argument a browser launch may add.
+fn is_web_url(argument: &str) -> bool {
+    argument.starts_with("https://") || argument.starts_with("http://")
+}
+
+fn urls_only(arguments: &[String]) -> bool {
+    !arguments.is_empty() && arguments.iter().all(|argument| is_web_url(argument))
+}
+
 fn shell_requires_approval(args: &Value) -> bool {
     let Some(command) = args.get("command").and_then(Value::as_str) else {
         return true;
@@ -1345,10 +1380,11 @@ fn shell_requires_approval(args: &Value) -> bool {
         }
         // Destructive and ownership-changing programs always ask.
         program if DESTRUCTIVE_PROGRAMS.contains(&program) => false,
-        // Permit ordinary bare GUI launches through shell, while arguments
-        // and detached modes remain subject to the conservative checks below.
-        "firefox" | "chromium" | "chromium-browser" | "google-chrome" | "spotify" | "nautilus"
-        | "gedit" | "code" => rest.is_empty(),
+        // A bare GUI launch is free, and a browser may also be given http(s)
+        // URLs - exactly what `process` allows, so the same launch is decided
+        // the same way through either tool (S4). Any other argument asks.
+        program if is_browser_launcher(program) => rest.is_empty() || urls_only(&rest),
+        "spotify" | "nautilus" | "gedit" | "code" => rest.is_empty(),
         _ => false,
     };
     if !safe {
@@ -1358,18 +1394,9 @@ fn shell_requires_approval(args: &Value) -> bool {
         .get("mode")
         .and_then(Value::as_str)
         .unwrap_or("foreground");
-    mode == "detached"
-        && !matches!(
-            program.as_str(),
-            "firefox"
-                | "chromium"
-                | "chromium-browser"
-                | "google-chrome"
-                | "spotify"
-                | "nautilus"
-                | "gedit"
-                | "code"
-        )
+    let gui_launch = is_browser_launcher(&program)
+        || matches!(program.as_str(), "spotify" | "nautilus" | "gedit" | "code");
+    mode == "detached" && !gui_launch
 }
 
 fn simple_command_words(command: &str) -> Option<Vec<String>> {
@@ -1605,25 +1632,16 @@ fn process_requires_approval(args: &Value) -> bool {
         return true;
     };
     let extra_arguments = &arguments[consumed..];
-    let browser = matches!(
-        alias.trim().to_ascii_lowercase().as_str(),
-        "firefox"
-            | "brave"
-            | "brave browser"
-            | "chrome"
-            | "google chrome"
-            | "google-chrome"
-            | "google-chrome-stable"
-            | "chromium"
-            | "chromium-browser"
-            | "youtube music"
-            | "youtube-music"
-    );
+    // A browser alias may be given http(s) URLs; `shell` applies the same rule
+    // to the executable word (S4). The music aliases expand to a browser plus
+    // its URL, so they are allowed the same argument shape.
+    let browser = is_browser_launcher(alias)
+        || matches!(
+            alias.trim().to_ascii_lowercase().as_str(),
+            "youtube music" | "youtube-music"
+        );
     !extra_arguments.is_empty()
-        && !(browser
-            && extra_arguments
-                .iter()
-                .all(|value| value.starts_with("https://") || value.starts_with("http://")))
+        && !(browser && extra_arguments.iter().all(|value| is_web_url(value)))
 }
 
 fn computer_requires_approval_with_context(args: &Value, context: &FocusContext) -> bool {
@@ -3240,6 +3258,108 @@ mod tests {
             approval_arguments("shell", r#"{"command":"ls"}"#),
             r#"{"command":"ls"}"#
         );
+    }
+
+    #[test]
+    fn one_launch_is_classified_the_same_way_through_both_tools() {
+        // S4: a browser with http(s) URLs is free through `process` and through
+        // `shell`, and any other argument asks through both.
+        for browser in [
+            "firefox",
+            "chromium",
+            "chromium-browser",
+            "google-chrome",
+            "google-chrome-stable",
+        ] {
+            let process_call = serde_json::json!({
+                "action": "launch",
+                "program": browser,
+                "args": ["https://example.com/page"],
+            })
+            .to_string();
+            let shell_call = serde_json::json!({
+                "command": format!("{browser} https://example.com/page"),
+            })
+            .to_string();
+            assert!(
+                !check("process", &process_call),
+                "process {browser} with a URL is free"
+            );
+            assert!(
+                !check("shell", &shell_call),
+                "shell {browser} with a URL is free"
+            );
+
+            // A bare launch is free in both tools, with no URL needed.
+            let process_bare = serde_json::json!({
+                "action": "launch",
+                "program": browser,
+            })
+            .to_string();
+            let shell_bare = serde_json::json!({ "command": browser }).to_string();
+            assert!(!check("process", &process_bare), "process {browser} bare");
+            assert!(!check("shell", &shell_bare), "shell {browser} bare");
+
+            // Any non-URL argument asks in both.
+            for argument in ["--private-window", "file:///etc/passwd", "-P"] {
+                let process_call = serde_json::json!({
+                    "action": "launch",
+                    "program": browser,
+                    "args": [argument],
+                })
+                .to_string();
+                let shell_call = serde_json::json!({
+                    "command": format!("{browser} {argument}"),
+                })
+                .to_string();
+                assert!(
+                    check("process", &process_call),
+                    "process {browser} {argument} must ask"
+                );
+                assert!(
+                    check("shell", &shell_call),
+                    "shell {browser} {argument} must ask"
+                );
+            }
+        }
+
+        // Two URLs are still only URLs, and a detached browser launch is the
+        // same action as a foreground one.
+        assert!(!check(
+            "shell",
+            r#"{"command":"firefox https://a.example https://b.example"}"#
+        ));
+        assert!(!check(
+            "shell",
+            r#"{"command":"firefox https://example.com","mode":"detached"}"#
+        ));
+        // A browser named by a path never inherits the bare name (S3).
+        assert!(check(
+            "shell",
+            r#"{"command":"./firefox https://example.com"}"#
+        ));
+        // A non-browser launcher with a URL asks through both tools.
+        assert!(check(
+            "shell",
+            r#"{"command":"spotify https://example.com"}"#
+        ));
+        assert!(check(
+            "process",
+            r#"{"action":"launch","program":"spotify","args":["https://example.com"]}"#
+        ));
+        // The aliases that expand to a browser plus its URL keep their shape.
+        assert!(!check(
+            "process",
+            r#"{"action":"launch","program":"youtube-music","args":["https://example.com"]}"#
+        ));
+        assert!(!check(
+            "process",
+            r#"{"action":"launch","program":"brave","args":["https://example.com"]}"#
+        ));
+        assert!(!check(
+            "shell",
+            r#"{"command":"brave https://example.com"}"#
+        ));
     }
 
     #[test]

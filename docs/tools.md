@@ -448,6 +448,13 @@ when every path they name stays inside the project root. Destructive and
 ownership-changing programs (`rm`, `rmdir`, `shred`, `truncate`, `chmod`,
 `chown`) always ask, whatever the paths.
 
+A bare GUI launch (`firefox`, `chromium`, `google-chrome`, `brave`, `spotify`,
+`nautilus`, `gedit`, `code`) is free, and a browser may also be given `http(s)`
+URLs and nothing else. That is the same rule `process` applies to a browser
+alias (S4), so `firefox https://example.com` is one free action whichever tool
+runs it, while `firefox --private-window` asks in both. A browser named by a
+path (`./firefox https://…`) still asks (S3).
+
 ## Process
 
 `ProcessTool` launches an executable directly, without shell parsing.
@@ -461,6 +468,12 @@ and calls `try_wait()`. This gives a useful error when a binary cannot start or
 exits immediately, while allowing long-running applications to continue.
 
 Use `process` for a known executable and `shell` when shell syntax is required.
+
+A bare launch of a configured alias is free; a browser alias (`firefox`,
+`chrome`, `brave`, `chromium`, and the YouTube Music aliases) may also be given
+`http(s)` URLs, because that opens a page rather than running something new.
+Any other argument asks, and so does an unknown program or a raw executable
+path. `shell` applies the same rule to the executable word (S4).
 
 ## Media
 

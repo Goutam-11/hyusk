@@ -191,9 +191,10 @@ new check sits where that strip was.
 
 ## S4 — Launch parity between `process` and `shell`
 
-- Status: open · Phase 3 · Priority: low
+- Status: done · 2026-10-30 · commit `S4PENDING` · Phase 3 · Priority: low
 - Depends on: —
-- Evidence: `src/tools/safety.rs:129-154`, `src/tools/safety.rs:351-408`
+- Evidence: `src/tools/safety.rs` (`BROWSER_LAUNCHERS`, `is_browser_launcher`,
+  `is_web_url`, the shell GUI-launch arm, `process_requires_approval`)
 
 **Problem.** `process` may launch a browser alias with an `https://` argument
 without approval, but `shell firefox https://…` asks, and `shell firefox` alone
@@ -205,11 +206,50 @@ asks. Confirm the rule in the issue before implementing.
 
 **Acceptance criteria**
 
-- [ ] The same launch is classified identically through both tools.
-- [ ] A non-URL argument still asks in both.
+- [x] The same launch is classified identically through both tools.
+- [x] A non-URL argument still asks in both.
 
 **Tests**
 
-- [ ] Cross-tool table.
+- [x] Cross-tool table
+      (`one_launch_is_classified_the_same_way_through_both_tools`).
 
-**Files.** `src/tools/safety.rs`.
+**Files.** `src/tools/safety.rs`, `docs/tools.md`, `AGENTS.md`, `CHANGELOG.md`.
+
+**Notes (2026-10-30, implemented).** The tentative decision was confirmed as
+written, with one addition: the browser list is shared rather than duplicated,
+so the rule cannot drift. `BROWSER_LAUNCHERS` names the browsers (brave,
+brave-browser, chrome, chromium, chromium-browser, firefox, google-chrome,
+google-chrome-stable, and the two aliases with spaces), `is_browser_launcher`
+matches a name, and `is_web_url` is the only argument shape a browser may add.
+`process` applies them to the resolved alias, `shell` to the executable word,
+and both allow a bare launch. `youtube music`/`youtube-music` stay on the
+`process` side as an explicit extra, because those aliases expand to a browser
+plus its URL rather than naming a browser.
+
+What changes for a user: `shell firefox https://example.com` no longer asks
+(it matches `process firefox https://example.com`), and `shell firefox
+--private-window`, `file:///etc/passwd`, or `./firefox https://…` still ask.
+`spotify https://…` asks through both tools, because a URL is not an argument
+shape that tool understands.
+
+Judgement calls recorded here:
+
+- **The list is shared, not copied.** A second copy would have been the exact
+  failure this issue is about; `process` now calls `is_browser_launcher`.
+- **Only `http(s)`**, not `file://` or a bare path: a browser opened at a local
+  file or a `file://` URL is a different capability, and the issue says
+  `http(s)`.
+- **The detached-mode allowance moved with the list.** A detached browser launch
+  is the same action, so `gui_launch` now covers the shared browser names plus
+  the non-browser GUI programs.
+- **`shell` matches the executable case-sensitively**, while `process` lowercases
+  a friendly alias by design; the canonical spellings the tests use agree, and
+  `Firefox` is not a real executable.
+
+Drift: the Evidence ranges (`safety.rs:129-154`, `safety.rs:351-408`) pointed at
+the process guidance and the shell classifier, which have moved several times
+since; the issue now names the functions. Not covered by a test: a real launch
+of each browser (the classifier is the subject; the tools themselves are
+covered by their own tests).
+

@@ -69,6 +69,14 @@
 
 ### Changed
 
+- One launch is classified the same way through `process` and `shell`.
+  `process` already let a browser alias run with `http(s)` URLs, but
+  `shell firefox https://…` asked while `shell firefox` was free. Both tools now
+  share one browser list and one URL rule: a bare GUI launch is free, a browser
+  may also be given `http(s)` URLs and nothing else, and any other argument
+  asks in both. A browser named by a path (`./firefox https://…`) still asks
+  (S3), and a non-browser launcher with a URL still asks (`spotify https://…`).
+  The model-facing guidance for both rows and `docs/tools.md` state the rule.
 - Timers and schedules are bounded at 30 days. Both tools passed a model-supplied
   `u64` straight into a sleep, so a huge value (`u64::MAX` seconds, or an
   `at_unix` far in the future) overflowed the deadline conversion and panicked
