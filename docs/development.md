@@ -130,6 +130,7 @@ recorded where it runs and what each sink is allowed to keep:
 | Memory database | Remembered notes and graph facts | Redacted on write; the directory is `0700` and `memory.db`/`memory.md` are `0600`. |
 | Schedule file | Reminder and workflow prompts (`schedules.json`) | The live audit found it at `0644` in a `0755` directory; the directory is now `0700`, the temporary file is created `0600` through `create_new`, and the file is restricted after the rename. |
 | Logs | `[Hyusk] Running …` lines | Arguments are redacted before printing; `[User] …` keeps the user's own words, which are already in the session. |
+| Approval log | Decided previews (`approvals.jsonl`) | Redacted when the line is built (A10), values and credential paths, because the log outlives the turn; the directory is `0700`, the file `0600`, and it rotates into one previous copy at 256 KiB. |
 
 The pass is bounded, so an unrecognised shape can still get through; it
 over-redacts rather than leaking. Credential *paths* are handled separately by
@@ -147,8 +148,8 @@ cargo clippy --all-targets
 cargo test --bin hyusk_agent
 ```
 
-`cargo test --all-targets` runs the full suite: 401 passing tests and 7
-ignored (the main binary alone: 374 passing, 6 ignored; shared model/stream
+`cargo test --all-targets` runs the full suite: 409 passing tests and 7
+ignored (the main binary alone: 382 passing, 6 ignored; shared model/stream
 tests are compiled into each binary). The ignored ones need a real session or
 network: the four portal smoke tests below, a live CDP browser test, a Whisper
 cancel/cache test, and the GTK workflow editor draft test. Coverage includes

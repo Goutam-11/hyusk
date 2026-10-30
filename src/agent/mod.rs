@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod commands;
 pub(crate) mod control;
 pub mod runner;

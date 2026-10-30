@@ -4,6 +4,20 @@
 
 ### Added
 
+- Approval decisions are recorded in an audit log. Every resolved confirmation
+  appends one JSON line to `approvals.jsonl` in the data directory - approved
+  (with the `once` or `turn` scope), denied, dropped because the user asked for
+  something else, expired, or a panel click that arrived after expiry - with the
+  timestamp, tool, preview and turn. The line is written once, where the stored
+  call is resolved, so a repeated event cannot double it, and the preview is
+  redacted on the way out (secret-shaped values and credential paths), because
+  the file outlives the turn. The log is `approvals.jsonl` (`0600`) in a `0700`
+  directory and rotates into one previous copy at 256 KiB, so two bounded files
+  exist. The redaction pass also learned to split token candidates on `=`, so a
+  credential inside a rendered call such as `command=API_KEY=sk-…` is caught.
+  Tests cover the line shape and redaction, the scope and turn fields, a stale
+  click, private modes, and rotation; the runner records exactly one line per
+  denial, approval and expiry.
 - `docs/architecture-roadmap.md` and `issues/ARCHITECTURE_ISSUE.md`: the
   2026-10-29 architecture decisions — park Android/link and Nova Sonic behind
   features, delete the experimental shell agent, remove macOS branches,

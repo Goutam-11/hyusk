@@ -9,10 +9,11 @@ use tokio_util::sync::CancellationToken;
 pub(crate) use super::control::PendingApproval;
 use super::control::{self as control_state, AgentControl, ControlHandle};
 use crate::{
+    agent::audit::{self, Outcome as AuditOutcome},
     model::{bedrock_sonic::BedrockSonicClient, openrouter::OpenRouterClient},
     model::{codex::CodexClient, SharedActiveModel},
     tools::{ToolRegistry, ToolResult},
-    types::{HyuskEvent, HyuskState, Message},
+    types::{event::ApprovalScope, HyuskEvent, HyuskState, Message},
 };
 
 #[path = "runner/prompts.rs"]
@@ -333,6 +334,13 @@ impl Agent {
             }
             pending
         };
+        audit::record(
+            AuditOutcome::Expired,
+            None,
+            Some(&pending.name),
+            Some(&pending.preview),
+            self.control().turn(),
+        );
         if let Some(message) = self.messages.get_mut(pending.result_index) {
             *message = Message::tool_result(
                 pending.call_id,
@@ -823,7 +831,17 @@ impl Agent {
         // body, and the body mutates turn state.
         let pending = self.control().take_pending();
         if let Some(pending) = pending {
+            // The audit line names the turn whose processing resolves the call
+            // (A10); a decision recorded outside a turn carries none.
+            let turn = self.control().turn();
             if is_denial(&user_input) {
+                audit::record(
+                    AuditOutcome::Denied,
+                    None,
+                    Some(&pending.name),
+                    Some(&pending.preview),
+                    turn,
+                );
                 if let Some(message) = self.messages.get_mut(pending.result_index) {
                     *message = Message::tool_result(
                         pending.call_id,
@@ -847,6 +865,18 @@ impl Agent {
             } else if (confirms(&user_input) || confirms_turn(&user_input))
                 && !cancel.is_cancelled()
             {
+                let scope = if confirms_turn(&user_input) {
+                    ApprovalScope::Turn
+                } else {
+                    ApprovalScope::Once
+                };
+                audit::record(
+                    AuditOutcome::Approved,
+                    Some(scope),
+                    Some(&pending.name),
+                    Some(&pending.preview),
+                    turn,
+                );
                 // The confirmation authorizes this stored call directly. The model
                 // does not get another opportunity to substitute its arguments.
                 // "Allow for this turn" also covers the rest of this turn.
@@ -882,6 +912,13 @@ impl Agent {
                 }
                 self.persist_session();
             } else if !cancel.is_cancelled() {
+                audit::record(
+                    AuditOutcome::Dropped,
+                    None,
+                    Some(&pending.name),
+                    Some(&pending.preview),
+                    turn,
+                );
                 // The user said something else, so the stored call is dropped
                 // instead of holding the conversation hostage. The pending
                 // state is already cleared, the placeholder records what
@@ -2374,6 +2411,17 @@ mod tests {
     /// Arm a one-shot confirmation for a stored `shell` call, with the
     /// placeholder result the runner would have pushed.
     fn arm_shell_approval(agent: &mut Agent) -> usize {
+        arm_shell_approval_for(agent, "rm -rf build")
+    }
+
+    /// The same confirmation for a command a test can recognise in the audit
+    /// log, because other tests arm approvals in parallel (A10).
+    fn arm_shell_approval_for(agent: &mut Agent, command: &str) -> usize {
+        arm_shell_approval_at(agent, command, Instant::now() + Duration::from_secs(300))
+    }
+
+    fn arm_shell_approval_at(agent: &mut Agent, command: &str, expires_at: Instant) -> usize {
+        let arguments = json!({ "command": command }).to_string();
         // The conversation must hold the assistant call the placeholder answers.
         agent.messages.push(
             serde_json::from_value(json!({
@@ -2381,25 +2429,88 @@ mod tests {
                 "tool_calls": [{
                     "id": "pending-call",
                     "type": "function",
-                    "function": {"name": "shell", "arguments": "{\"command\":\"rm -rf build\"}"}
+                    "function": {"name": "shell", "arguments": arguments}
                 }]
             }))
             .expect("assistant tool call"),
         );
+        let preview = crate::tools::safety::preview("shell", &arguments);
         let index = agent.messages.len();
         agent.messages.push(Message::tool_result(
             "pending-call",
-            "Pending confirmation for: shell command=rm -rf build",
+            crate::tools::safety::pending_text(&preview),
         ));
         agent.control().set_pending(Some(PendingApproval {
             name: "shell".into(),
-            arguments: "{\"command\":\"rm -rf build\"}".into(),
-            preview: crate::tools::safety::preview("shell", "{\"command\":\"rm -rf build\"}"),
+            arguments,
+            preview,
             call_id: "pending-call".into(),
             result_index: index,
-            expires_at: Instant::now() + Duration::from_secs(300),
+            expires_at,
         }));
         index
+    }
+
+    /// The audit lines whose preview names `command`.
+    fn audit_lines_for(command: &str) -> Vec<Value> {
+        let Ok(text) = std::fs::read_to_string(crate::agent::audit::use_scratch_log()) else {
+            return Vec::new();
+        };
+        text.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|line| {
+                line["preview"]
+                    .as_str()
+                    .is_some_and(|preview| preview.contains(command))
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn every_approval_decision_is_audited_once() -> Result<()> {
+        let (base, _requests) = serve_tool_call_then_reply(Value::Null, final_reply()).await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut agent = shell_agent(base, &executions);
+        let cancel = CancellationToken::new();
+        // Other tests write their own decisions to the same scratch log, so the
+        // commands below are unique and the assertions filter by them.
+        crate::agent::audit::use_scratch_log();
+
+        let denied_command = "rm -rf audit-denied";
+        arm_shell_approval_for(&mut agent, denied_command);
+        let _ = agent
+            .handle("no thanks".into(), None, &cancel, None)
+            .await?;
+        let denied = audit_lines_for(denied_command);
+        assert_eq!(denied.len(), 1, "a denial is one line: {denied:?}");
+        assert_eq!(denied[0]["decision"], "denied");
+        assert_eq!(denied[0]["tool"], "shell");
+        assert!(denied[0]["scope"].is_null(), "a denial grants no scope");
+
+        let approved_command = "rm -rf audit-approved";
+        arm_shell_approval_for(&mut agent, approved_command);
+        let _ = agent
+            .handle("allow for this turn".into(), None, &cancel, None)
+            .await?;
+        let approved = audit_lines_for(approved_command);
+        assert_eq!(approved.len(), 1, "an approval is one line: {approved:?}");
+        assert_eq!(approved[0]["decision"], "approved");
+        assert_eq!(approved[0]["scope"], "turn");
+
+        let expired_command = "rm -rf audit-expired";
+        arm_shell_approval_at(
+            &mut agent,
+            expired_command,
+            Instant::now() - Duration::from_secs(1),
+        );
+        let reply = agent
+            .handle("hello there".into(), None, &cancel, None)
+            .await?;
+        assert!(reply.is_some_and(|reply| reply.contains("expired")));
+        let expired = audit_lines_for(expired_command);
+        assert_eq!(expired.len(), 1, "an expiry is one line: {expired:?}");
+        assert_eq!(expired[0]["decision"], "expired");
+        Ok(())
     }
 
     fn shell_agent(base: String, executions: &Arc<AtomicUsize>) -> Agent {

@@ -34,6 +34,26 @@ struct ActiveTurn {
     handle: JoinHandle<()>,
 }
 
+/// Labels the running turn for the approval audit log (A10).
+///
+/// Set when the turn starts and cleared when it ends, including on every early
+/// return of the turn task, so an expiry the event loop resolves afterwards is
+/// not attributed to a finished turn.
+struct TurnLabel(ControlHandle);
+
+impl TurnLabel {
+    fn new(control: &ControlHandle, id: u64) -> Self {
+        control_state::lock(control).set_turn(Some(id));
+        Self(Arc::clone(control))
+    }
+}
+
+impl Drop for TurnLabel {
+    fn drop(&mut self) {
+        control_state::lock(&self.0).set_turn(None);
+    }
+}
+
 /// The voice-listen flow (record + transcribe) runs as its own task so the
 /// event loop stays responsive while the microphone is being read.
 struct ActiveListen {
@@ -660,6 +680,7 @@ pub async fn run_agent_task(
                 let turn_resume = Arc::clone(&resume_media);
                 let turn_event_tx = agent_tx.clone();
                 let turn_voice_conversation = voice_conversation;
+                let turn_control = Arc::clone(&control);
                 let id = next_turn_id;
                 next_turn_id += 1;
                 last_finished_turn = None;
@@ -676,6 +697,7 @@ pub async fn run_agent_task(
                         turn_resume,
                         turn_event_tx.clone(),
                         turn_voice_conversation,
+                        turn_control,
                         id,
                     )
                     .await;
@@ -1212,6 +1234,16 @@ fn apply_approval_decision(
     if armed_approval(control) {
         Ok(input)
     } else {
+        // Nothing was armed, so this click decided nothing. It is recorded
+        // once, here, with no call and no turn: the stored call is already gone
+        // and the click is not part of the turn that happens to be running (A10).
+        crate::agent::audit::record(
+            crate::agent::audit::Outcome::Stale,
+            Some(scope),
+            None,
+            None,
+            None,
+        );
         Err(STALE_APPROVAL_REPLY)
     }
 }
@@ -1546,11 +1578,14 @@ async fn run_turn(
     resume_media: Arc<AtomicBool>,
     event_tx: Sender<HyuskEvent>,
     voice_conversation: bool,
+    control: ControlHandle,
     turn_id: u64,
 ) {
     // Keep the detector muted until this turn (including TTS) is done.
     let _output_guard = OutputOnDrop(output_active);
     let _media_guard = MediaOnDrop(resume_media);
+    // Every decision this turn resolves is labelled with it in the audit log.
+    let _turn_label = TurnLabel::new(&control, turn_id);
 
     println!("[User] {text}");
 
@@ -2793,6 +2828,36 @@ mod approval_decision_tests {
         assert!(!agent.lock().await.awaiting_approval());
         // Nothing was armed, so approving twice is still stale.
         assert!(apply_approval_decision(&control, false, ApprovalScope::Once).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_stale_click_is_audited_without_a_call_or_a_turn() {
+        let path = crate::agent::audit::use_scratch_log();
+        let stale_lines = || {
+            std::fs::read_to_string(&path)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|line| line["decision"] == "stale")
+                .collect::<Vec<_>>()
+        };
+        let before = stale_lines().len();
+
+        let agent = test_agent();
+        let control = agent.lock().await.control_handle();
+        assert!(apply_approval_decision(&control, true, ApprovalScope::Turn).is_err());
+
+        // Other tests may record their own stale clicks in parallel, so the
+        // assertion is that this click added one, not that the file is ours.
+        let lines = stale_lines();
+        assert!(
+            lines.len() > before,
+            "a stale click must be recorded: {lines:?}"
+        );
+        let last = lines.last().expect("stale line");
+        assert!(last["tool"].is_null(), "nothing was armed to name");
+        assert!(last["turn"].is_null(), "the click belongs to no turn");
+        assert_eq!(last["scope"], "turn", "the click's own scope is kept");
     }
 
     #[tokio::test]

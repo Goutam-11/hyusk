@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **401 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **409 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -168,6 +168,15 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   `safety::redact_secret_paths`. The memory directory is `0700` with `0600`
   files and `hyusk-status.json` is chmodded `0600`; do not add a sink without
   deciding which of those it is.
+- Approval audit (A10): every resolved confirmation appends one JSON line to
+  `approvals.jsonl` in the data directory - approved, denied, dropped, expired,
+  or a stale panel click - with the tool, the preview, the scope and the turn,
+  recorded once at the point that resolves the stored call. The preview is
+  redacted when the line is built (X2 values, then `redact_secret_paths` for
+  credential paths), the file is `0600` in a `0700` directory, and it rotates
+  into one previous copy at 256 KiB. A decision the event loop resolves outside
+  a turn is recorded without a turn id; a failed write is reported, never
+  fatal.
 - Control state (L1): the armed approval, provider/model, paused-task flag, and
   provider clients live in `agent/control.rs` behind their own lock, so the
   event loop reads and changes them while a turn holds the agent mutex. The lock

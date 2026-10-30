@@ -701,8 +701,10 @@ The tool platform has guardrails but no sandbox:
   credential path becomes `[redacted path]` - and remembered memory notes and
   graph facts are redacted on write. The memory database is `0600` in an
   owner-only directory and `hyusk-status.json` is chmodded `0600` because its
-  fallback location is `/tmp`. The pass is bounded, so an unrecognised shape can
-  still get through; see the sink table in `docs/development.md`.
+  fallback location is `/tmp`. Every approval decision also appends one redacted
+  line to `approvals.jsonl` (`0600`) in the data directory (A10). The pass is
+  bounded, so an unrecognised shape can still get through; see the sink table in
+  `docs/development.md`.
 - Tool output and screenshots are sent back to the remote model provider.
 - API keys live in the login keyring and are not persisted in `commands.json`
   or the session snapshot. The Noctalia panel hands a key to the agent through

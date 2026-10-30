@@ -306,6 +306,10 @@ fn is_token_delimiter(character: char) -> bool {
                 | '&'
                 | '`'
                 | '\\'
+                // `=` splits a rendered tool call (`command=API_KEY=sk-…`) so a
+                // credential after it is still seen as its own token, even
+                // though the outer name is not secret-shaped.
+                | '='
         )
 }
 
@@ -334,6 +338,17 @@ mod tests {
 
     #[test]
     fn assignments_with_secret_names_are_redacted_in_place() {
+        // A rendered call wraps the command in `command=…`, so the outer
+        // assignment is not secret-shaped; `=` still splits the inner token.
+        let (text, count) =
+            redact("shell command=OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef done");
+        assert_eq!(count, 1);
+        assert!(
+            !text.contains("sk-or-v1-0123456789abcdef"),
+            "a token after an inner `=` is redacted: {text}"
+        );
+        assert!(text.contains("[redacted]"), "{text}");
+
         let (text, count) = redact("OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef\nnormal=value");
         assert_eq!(count, 1);
         assert_eq!(text, format!("OPENROUTER_API_KEY={MARKER}\nnormal=value"));

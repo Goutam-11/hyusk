@@ -45,6 +45,11 @@ pub(crate) struct AgentControl {
     model: String,
     pending: Option<PendingApproval>,
     task_paused: bool,
+    /// The turn whose decisions the audit log labels (A10). The runtime sets it
+    /// while a turn runs and clears it afterwards, so a decision the event loop
+    /// resolves outside a turn is not attributed to the previous one. This is a
+    /// label, not a second counter: the runtime still owns `next_turn_id`.
+    turn: Option<u64>,
     /// The client the next text request uses. `None` only before a client is
     /// selected, which `select_model` refuses to leave in place.
     text_client: Option<OpenRouterClient>,
@@ -70,6 +75,7 @@ pub(crate) fn new_control(
         model: model.into(),
         pending: None,
         task_paused,
+        turn: None,
         text_client,
         openrouter: None,
         openai: None,
@@ -203,6 +209,15 @@ impl AgentControl {
 
     pub(crate) fn clear_pending_approval(&mut self) -> bool {
         self.pending.take().is_some()
+    }
+
+    /// The turn whose decisions the audit log labels, if one is running (A10).
+    pub(crate) fn turn(&self) -> Option<u64> {
+        self.turn
+    }
+
+    pub(crate) fn set_turn(&mut self, turn: Option<u64>) {
+        self.turn = turn;
     }
 
     pub(crate) fn task_paused(&self) -> bool {

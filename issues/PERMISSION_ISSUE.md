@@ -640,9 +640,11 @@ before a gated step. Those three claims were corrected. Evidence line drift:
 
 ## A10 — Approval audit log
 
-- Status: open · Phase 3 · Priority: low
+- Status: done · 2026-10-30 · commit `A10PENDING` · Phase 3 · Priority: low
 - Depends on: A3
-- Evidence: `src/status.rs`, `src/agent/runner.rs` (action journal)
+- Evidence: `src/agent/audit.rs` (new writer), `src/agent/runner.rs`
+  (`run_turn`, `expire_stale_approval`), `src/agent/runtime.rs`
+  (`apply_approval_decision`)
 
 **Problem.** The action journal records in-flight and completed calls, not the
 decisions the user made. There is no way to review what was approved and when.
@@ -653,13 +655,77 @@ the preview follows X2's redaction. Rotate by size.
 
 **Acceptance criteria**
 
-- [ ] Every approval, denial, expiry, and stale click is recorded once.
-- [ ] The log contains no secret-shaped values.
-- [ ] Rotation is bounded.
+- [x] Every approval, denial, expiry, and stale click is recorded once.
+- [x] The log contains no secret-shaped values.
+- [x] Rotation is bounded.
 
 **Tests**
 
-- [ ] Writer unit tests with a temporary directory.
-- [ ] Redaction case.
+- [x] Writer unit tests with a temporary directory
+      (`a_decision_is_one_private_json_line_without_secrets`,
+      `an_approved_call_records_its_scope_and_turn`,
+      `a_stale_click_names_no_call_and_no_turn`,
+      `rotation_keeps_the_live_file_and_one_previous_copy`,
+      `a_missing_parent_directory_is_created_private`,
+      `every_outcome_and_scope_has_a_name`).
+- [x] Redaction case (in the first writer test and in
+      `tools::redact::tests::assignments_with_secret_names_are_redacted_in_place`).
+- [x] Decisions reach the file from the runtime
+      (`agent::runner::tests::every_approval_decision_is_audited_once`,
+      `agent::runtime::approval_decision_tests::a_stale_click_is_audited_without_a_call_or_a_turn`).
 
-**Files.** `src/agent/runner.rs`, `src/agent/runtime.rs`, a small writer module.
+**Notes (2026-10-30, implemented).** `src/agent/audit.rs` writes one JSON line per
+decision to `approvals.jsonl` in the data directory (`$XDG_DATA_HOME/hyusk`,
+directory `0700`, file `0600`, restricted after every append). The line carries
+`timestamp`, `tool`, `preview`, `decision`, `scope`, and `turn`; a field is
+`null` when it does not apply. The writer creates the directory private, rotates
+when the live file reaches `MAX_BYTES` (256 KiB) by moving it to
+`approvals.jsonl.1` and replacing any previous copy, and reports a failed write
+as `[Audit] …` on stderr without failing the turn.
+
+Recording points, each at the one place that resolves the stored call:
+
+- `run_turn` records `denied` and `dropped` (the user asked for something else)
+  and `approved` with the scope the answer grants (`once` or `turn`).
+- `expire_stale_approval` records `expired`, whether a turn or the expiry timer
+  noticed it.
+- `runtime::apply_approval_decision` records `stale` when nothing was armed, with
+  the click's scope and no call or turn.
+
+Five judgement calls, recorded because the decision left them open:
+
+- **`dropped` is a fifth outcome.** The decision names approval, denial, expiry
+  and a stale click; "the user asked something else, so the call was dropped
+  unrun" is a distinct decision the audit would otherwise hide. It is recorded
+  with no scope.
+- **A turn id needs a label, not a second counter.** The runtime still owns
+  `next_turn_id`; it now sets `AgentControl.turn` for the duration of a turn
+  through a small RAII guard (`TurnLabel`), so every early return of the turn
+  task clears it and a decision the event loop resolves afterwards is recorded
+  without a turn. A panel click is recorded with no turn even when a turn is
+  running, because it is not that turn's decision.
+- **The preview is scrubbed on the way out, not at the source.** Values go
+  through X2's pass and credential paths through `redact_secret_paths`, the same
+  pair `status::card` uses, because the log outlives the turn.
+- **The write is synchronous.** It is one small append per card, not per tool
+  call; L2's coalescing writer can absorb it later, and nothing waits on it.
+- **Test builds never touch the data directory.** `default_path()` is compiled to
+  the scratch file under `cfg(test)`, so a parallel test cannot write the real
+  log whichever test runs first; the writer tests pass explicit paths.
+
+Discovery beyond the issue: the acceptance exposed a gap in X2's pass. A
+rendered call wraps its arguments as `key=value`, so `shell
+command=OPENROUTER_API_KEY=sk-…` defeated both rules - the assignment matcher
+saw the non-secret name `command`, and the token scanner saw one token starting
+with the key name. `=` is now a token delimiter, so a credential after any inner
+`=` becomes its own token and is redacted. That also closes the same gap for
+status cards (X4's sink) and tool output; the redaction test covers the shape.
+
+Drift: the Evidence was `src/status.rs` and "`src/agent/runner.rs` (action
+journal)", module references rather than a range; the writer and the four
+recording points are named above instead. Not covered by an automated test: the
+non-test `default_path()` (`$XDG_DATA_HOME/hyusk/approvals.jsonl`), because the
+test build resolves to the scratch log by construction.
+
+**Files.** `src/agent/audit.rs`, `src/agent/mod.rs`, `src/agent/runner.rs`,
+`src/agent/runtime.rs`, `src/agent/control.rs`, `src/tools/redact.rs`, docs.
