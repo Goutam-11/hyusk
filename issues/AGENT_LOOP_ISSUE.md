@@ -348,9 +348,12 @@ regression guard.
 
 ## L5 — Mobile-link replay across reconnects
 
-- Status: open · Phase 3 · Priority: low
+- Status: done · 2026-10-30 · commit `L5PENDING` · Phase 3 · Priority: low
 - Depends on: —
-- Evidence: `src/link/server.rs`, `docs/mobile-link-protocol.md`
+- Evidence: `src/link/auth.rs` (`StoredDevice::last_sequence`,
+  `DeviceStore::accept_sequence`), `src/link/server.rs` (hello reply and the
+  request loop), `src/link/protocol.rs` (`is_fresh_sequence`),
+  `docs/mobile-link-protocol.md`
 
 **Problem.** Replay protection is per connection, so a client that reconnects
 starts its sequence again. A captured command can be replayed by a new
@@ -363,16 +366,56 @@ low priority.
 
 **Acceptance criteria**
 
-- [ ] A reconnect with an older sequence is rejected.
-- [ ] The protocol document states the rule.
-- [ ] Existing pairing and command tests pass.
+- [x] A reconnect with an older sequence is rejected.
+- [x] The protocol document states the rule.
+- [x] Existing pairing and command tests pass.
 
 **Tests**
 
-- [ ] Reconnect fixture.
+- [x] Reconnect fixture
+      (`a_reconnect_cannot_replay_an_accepted_sequence`).
+- [x] Rule table (`a_sequence_is_fresh_only_when_it_advances`).
 
-**Files.** `src/link/server.rs`, `src/link/protocol.rs`,
-`docs/mobile-link-protocol.md`.
+**Files.** `src/link/auth.rs`, `src/link/server.rs`, `src/link/protocol.rs`,
+`android/app/src/main/java/io/github/hyusk/mobile/network/HyuskRpcClient.kt`,
+`docs/mobile-link-protocol.md`, `CHANGELOG.md`.
+
+**Notes (2026-10-30, implemented).** `StoredDevice` gained `last_sequence`
+(`#[serde(default)]`, so an existing `link-devices.json` loads unchanged), and
+`DeviceStore::accept_sequence` advances it only when the request's sequence is
+strictly greater, writing the device map each time. The connection loop now
+checks the MAC first and the per-device freshness second, and the hello reply
+returns the accepted value as `result.sequence`. `protocol::is_fresh_sequence`
+is the rule itself, so the protocol module states it and the store applies it.
+
+The protocol-version question the decision raised: the wire format is unchanged,
+so `hyusk.link.v1` stays. The behaviour is a rule the laptop enforces and the
+phone must honour, which is why the in-repo Android client was updated in the
+same commit: on the hello reply it seeds its counter from `result.sequence`
+instead of relying on a fresh zero. Without that, the client's existing reset in
+`closeSocket` would have made every request after a reconnect a replay. The
+client change is three lines and could not be compiled here (no Android SDK in
+the container); it is recorded as a manual check rather than claimed as verified.
+
+Three judgement calls, recorded because the decision left them open:
+
+- **The MAC is checked before the sequence.** An unauthenticated frame must
+  never be able to advance the device's counter.
+- **The counter is persisted with the device map on every accepted request.**
+  The link is low-traffic (a heartbeat plus commands), and the write is the same
+  atomic `0600` replace the store already used. A failed write is logged and the
+  request still runs, because the in-memory mark already enforces the rule for
+  the running process and the next write catches up.
+- **The hello reply carries the mark.** It is only disclosed to a device that
+  has just proved possession of its secret, and it lets a client with no local
+  state (a fresh app process) continue the sequence instead of needing its own
+  persistence.
+
+Drift: the Evidence was a module reference (`src/link/server.rs`) and the doc; it
+now names the functions. Not covered by an automated test: a full WebSocket
+reconnect (the suite has no TLS client fixture); the store-level fixture models
+the same transition, including a reload that stands in for a laptop restart.
+
 
 ## L6 — Approval state across restart
 

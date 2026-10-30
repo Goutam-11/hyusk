@@ -420,15 +420,18 @@ async fn connection(
     drop(connected);
     let device_id = hello.device_id;
     let result: Result<(), LinkServerError> = async {
+        // The device continues its request counter from here, so a client that
+        // has no local state (a fresh app process) never replays an accepted
+        // sequence after a reconnect (L5).
+        let sequence = devices.last_sequence(&device_id).await.unwrap_or(0);
         send_response(
             &mut socket,
             JsonRpcResponse::result(
                 hello_request.id,
-                json!({"ok": true, "protocol": super::PROTOCOL}),
+                json!({"ok": true, "protocol": super::PROTOCOL, "sequence": sequence}),
             ),
         )
         .await?;
-        let mut sequence = 0u64;
         loop {
             tokio::select! {
                 frame = receiver.recv() => {
@@ -467,14 +470,22 @@ async fn connection(
                         )).await?;
                         continue;
                     };
-                    if request_auth.sequence <= sequence || !verify_request_mac(&request, &device_secret) {
+                    // The MAC first, so an unauthenticated attempt can never
+                    // advance the counter, then the per-device replay rule.
+                    if !verify_request_mac(&request, &device_secret) {
                         send_response(&mut socket, JsonRpcResponse::error(
                             request.id,
                             super::JsonRpcError::unauthorized("invalid or replayed request"),
                         )).await?;
                         continue;
                     }
-                    sequence = request_auth.sequence;
+                    if !devices.accept_sequence(&device_id, request_auth.sequence).await {
+                        send_response(&mut socket, JsonRpcResponse::error(
+                            request.id,
+                            super::JsonRpcError::unauthorized("invalid or replayed request"),
+                        )).await?;
+                        continue;
+                    }
                     let response = handle_request(request, &device_id, &pending, &events, &commands).await;
                     send_response(&mut socket, response).await?;
                 }

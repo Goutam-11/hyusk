@@ -57,8 +57,18 @@ impl JsonRpcRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RequestAuth {
+    /// A per-device counter that must strictly increase for the life of the
+    /// pairing, across connections and restarts (L5). The server keeps the
+    /// highest value it has accepted and rejects anything at or below it, so a
+    /// captured request cannot be replayed on a new connection.
     pub sequence: u64,
     pub mac: String,
+}
+
+/// The replay rule: a request is fresh only when its sequence is strictly
+/// greater than the highest one the device has already used (L5).
+pub fn is_fresh_sequence(sequence: u64, highest_accepted: u64) -> bool {
+    sequence > highest_accepted
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -322,6 +332,24 @@ mod tests {
         let encoded = serde_json::to_string(&request).unwrap();
         let decoded: JsonRpcRequest = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.method, METHOD_SUBMIT);
+    }
+
+    #[test]
+    fn a_sequence_is_fresh_only_when_it_advances() {
+        assert!(super::is_fresh_sequence(1, 0), "the first request is fresh");
+        assert!(super::is_fresh_sequence(6, 5), "a later request is fresh");
+        assert!(
+            !super::is_fresh_sequence(5, 5),
+            "reusing an accepted sequence is a replay"
+        );
+        assert!(
+            !super::is_fresh_sequence(4, 5),
+            "an older sequence is a replay"
+        );
+        assert!(
+            !super::is_fresh_sequence(0, 0),
+            "zero never advances the counter"
+        );
     }
 
     #[test]

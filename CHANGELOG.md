@@ -69,6 +69,18 @@
 
 ### Changed
 
+- The mobile link no longer accepts a replayed request after a reconnect. Replay
+  protection used to be per connection: each new connection started its
+  sequence at zero, so a captured request could be replayed by opening a new
+  one. The laptop now keeps the highest request sequence it has accepted for
+  each paired device in `link-devices.json` (mode `0600`, written with the
+  device map), rejects anything at or below it with `invalid or replayed
+  request`, and checks the MAC before the sequence so an unauthenticated frame
+  cannot advance the counter. `device.hello` returns the accepted value as
+  `result.sequence`, and the Android client seeds its counter from it, so a
+  reconnect (or a fresh app process) continues above the mark instead of
+  replaying. The wire format is unchanged; `docs/mobile-link-protocol.md`
+  states the rule.
 - One launch is classified the same way through `process` and `shell`.
   `process` already let a browser alias run with `http(s)` URLs, but
   `shell firefox https://…` asked while `shell firefox` was free. Both tools now

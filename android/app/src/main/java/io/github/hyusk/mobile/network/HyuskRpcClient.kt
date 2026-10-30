@@ -114,6 +114,10 @@ class HyuskRpcClient {
                     else -> {
                         val response = RpcResponse(message.optLong("id"), message.optJSONObject("result"), message.optJSONObject("error"))
                         if (response.id == 1L && response.error == null) {
+                            // Continue the device's request counter where the
+                            // laptop left it, so a reconnect (or a fresh app
+                            // process) never replays an accepted sequence (L5).
+                            response.result?.let { sequence.set(it.optLong("sequence", 0)) }
                             _state.value = PairingState.Paired(settings!!.deviceId)
                             heartbeatHandler.removeCallbacks(heartbeat)
                             heartbeatHandler.postDelayed(heartbeat, HEARTBEAT_MILLIS)

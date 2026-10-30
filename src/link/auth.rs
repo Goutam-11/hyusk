@@ -137,6 +137,10 @@ struct StoredDevice {
     revoked: bool,
     created_at: u64,
     last_seen: u64,
+    /// The highest request sequence accepted from this device (L5). Persisted so
+    /// the counter survives a reconnect and a laptop restart.
+    #[serde(default)]
+    last_sequence: u64,
 }
 
 #[derive(Debug)]
@@ -211,6 +215,7 @@ impl DeviceStore {
                     revoked: false,
                     created_at: unix_now(),
                     last_seen: unix_now(),
+                    last_sequence: 0,
                 },
             );
         }
@@ -249,6 +254,41 @@ impl DeviceStore {
             .get(device_id)
             .map(|device| device.revoked)
             .unwrap_or(false)
+    }
+
+    /// The highest request sequence this device has used, if it is paired.
+    ///
+    /// The hello reply hands it back so a client that has no local counter
+    /// (a fresh app process) continues above it instead of replaying (L5).
+    pub async fn last_sequence(&self, device_id: &str) -> Option<u64> {
+        self.devices
+            .lock()
+            .await
+            .get(device_id)
+            .map(|device| device.last_sequence)
+    }
+
+    /// Accept `sequence` when it is newer than every sequence this device has
+    /// used, and persist the new high-water mark (L5).
+    ///
+    /// Rejecting anything at or below the mark is what stops a captured request
+    /// from being replayed on a new connection: the counter outlives the
+    /// connection and the process. A write failure is reported and the request
+    /// is still accepted, because the in-memory mark already enforces the rule
+    /// for this process and the next successful write catches up.
+    pub async fn accept_sequence(&self, device_id: &str, sequence: u64) -> bool {
+        let mut devices = self.devices.lock().await;
+        let Some(device) = devices.get_mut(device_id) else {
+            return false;
+        };
+        if !super::is_fresh_sequence(sequence, device.last_sequence) {
+            return false;
+        }
+        device.last_sequence = sequence;
+        if let Err(error) = self.persist_locked(&devices) {
+            eprintln!("[Link] Could not persist the replay counter: {error}");
+        }
+        true
     }
 
     pub async fn list(&self) -> Vec<DeviceInfo> {
@@ -360,6 +400,56 @@ mod tests {
         assert!(store.revoke("phone").await.unwrap());
         let reloaded = DeviceStore::load(&path).unwrap();
         assert!(reloaded.is_revoked("phone").await);
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_cannot_replay_an_accepted_sequence() {
+        let path = std::env::temp_dir().join(format!(
+            "hyusk-link-replay-{}.json",
+            encode_secret(&random_secret())
+        ));
+        let pairing = PairingState::new();
+        let store = DeviceStore::load(&path).unwrap();
+        let device_secret = random_secret();
+        store
+            .authenticate("phone", &device_secret, Some(&pairing.secret()), &pairing)
+            .await
+            .unwrap();
+
+        // First connection: the counter advances, and a repeat is a replay.
+        assert!(store.accept_sequence("phone", 1).await);
+        assert!(store.accept_sequence("phone", 2).await);
+        assert!(
+            !store.accept_sequence("phone", 2).await,
+            "a repeat is a replay"
+        );
+        assert!(
+            !store.accept_sequence("phone", 1).await,
+            "an older sequence is a replay"
+        );
+        assert_eq!(store.last_sequence("phone").await, Some(2));
+
+        // A reconnect after a restart: the mark was written with the device map,
+        // so the new connection cannot replay what the old one sent.
+        let reloaded = DeviceStore::load(&path).unwrap();
+        assert_eq!(
+            reloaded.last_sequence("phone").await,
+            Some(2),
+            "the high-water mark persists"
+        );
+        assert!(
+            !reloaded.accept_sequence("phone", 2).await,
+            "a reconnect cannot replay an accepted sequence"
+        );
+        assert!(
+            reloaded.accept_sequence("phone", 3).await,
+            "the client continues above the mark"
+        );
+
+        // An unknown device has no counter to advance.
+        assert!(!reloaded.accept_sequence("stranger", 1).await);
+        assert_eq!(reloaded.last_sequence("stranger").await, None);
         let _ = fs::remove_file(path);
     }
 
