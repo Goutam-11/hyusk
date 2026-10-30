@@ -208,8 +208,8 @@ secrets (`X`), and the agent loop/runtime (`L`). Each entry records the
 evidence, the decision taken, acceptance criteria, and tests.
 
 Permission Phase 1 and Phase 2 are complete (2026-10-29): A1-A8, A9, S1-S3,
-X1, X2, and D1-D4 are closed. Phase 3 is open: A10, S4, D6, and the agent-loop
-items L2, L4, L5, and L6 are left; X3, X4, L3, L1, and D5 are closed. The order
+X1, X2, and D1-D4 are closed. Phase 3 is open: A10, S4, and the agent-loop items
+L2, L4, L5, and L6 are left; X3, X4, L3, L1, D5, and D6 are closed. The order
 and dependencies are in the issue index.
 
 Do not add new bullets here — open an issue file instead.

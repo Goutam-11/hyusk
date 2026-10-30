@@ -407,7 +407,7 @@ see D1's note about not driving the live desktop unattended.
 
 ## D6 — Single-path invariant for typing versus shell
 
-- Status: done · 2026-10-30 · commit `D6PENDING` · Phase 3 · Priority: medium
+- Status: done · 2026-10-30 · commit `7c345f2` · Phase 3 · Priority: medium
 - Depends on: D1, D2
 - Evidence: `src/tools/safety.rs:82-97` (`ToolPolicy::input_paths`),
   `src/tools/safety.rs:533-551` (`reaches_input`, `input_asks`),
