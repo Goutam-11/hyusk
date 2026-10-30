@@ -6,6 +6,7 @@
 
 use std::{
     collections::HashMap,
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -412,11 +413,30 @@ fn save_state(state: &SchedulerState) -> Result<()> {
     };
     let bytes = serde_json::to_vec_pretty(&file)?;
     if let Some(parent) = state.path.parent() {
-        std::fs::create_dir_all(parent)?;
+        // The schedule file holds reminder and prompt text, so it is private to
+        // the user like the memory database (X4 live audit).
+        crate::paths::ensure_private_dir(parent)?;
     }
+
+    // Created owner-only before it is moved into place: the write must not
+    // depend on the directory mode or on the umask.
     let temporary = state.path.with_extension("json.tmp");
-    std::fs::write(&temporary, bytes)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut handle = options
+        .open(&temporary)
+        .with_context(|| format!("create {}", temporary.display()))?;
+    handle
+        .write_all(&bytes)
+        .with_context(|| format!("write {}", temporary.display()))?;
+    drop(handle);
     std::fs::rename(&temporary, &state.path)?;
+    crate::paths::restrict_file(&state.path);
     Ok(())
 }
 
@@ -588,6 +608,38 @@ mod tests {
             delivered,
             HyuskEvent::ScheduledWorkflow { id: 31, name } if name == "queued routine"
         ));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_schedule_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory =
+            std::env::temp_dir().join(format!("hyusk-scheduler-private-{}", now_unix()));
+        std::fs::create_dir_all(&directory).expect("create test directory");
+        let path = directory.join("schedules.json");
+        let (events, _received) = mpsc::channel(1);
+        let tool = SchedulerTool::with_path(path.clone(), events);
+
+        tool.execute(r#"{"action":"schedule","type":"reminder","text":"water the plants","after_seconds":600}"#)
+            .await
+            .expect("schedule executes");
+
+        let mode = |path: &std::path::Path| {
+            std::fs::metadata(path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(&path), 0o600, "the schedule file is owner-only");
+        assert_eq!(
+            mode(&directory),
+            0o700,
+            "the schedule directory is owner-only"
+        );
         let _ = std::fs::remove_dir_all(directory);
     }
 

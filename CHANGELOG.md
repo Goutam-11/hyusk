@@ -66,8 +66,10 @@
   database at `0600` inside an owner-only directory. The redaction pass also
   now covers the password in a URL's userinfo, `[Hyusk] Running …` log lines
   print redacted arguments, and `hyusk-status.json` is chmodded `0600` because
-  its fallback location is `/tmp`. The per-sink table is in
-  `docs/development.md`.
+  its fallback location is `/tmp`. The live audit also found the schedule file
+  at `0644` in a `0755` directory: `schedules.json` is now written `0600`
+  through a private temporary file in a `0700` directory and restricted after
+  the rename. The per-sink table is in `docs/development.md`.
 - Runtime controls no longer wait for a turn. Approval, model-selection, and
   paused-task state moved out of the agent into a small control struct
   (`src/agent/control.rs`) behind its own lock, which the event loop takes
