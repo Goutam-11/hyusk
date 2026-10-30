@@ -321,7 +321,7 @@ file.
 
 ## D5 — Consistent keyboard risk model
 
-- Status: done · 2026-10-30 · commit `D5PENDING` · Phase 3 · Priority: low
+- Status: done · 2026-10-30 · commit `589794e` · Phase 3 · Priority: low
 - Depends on: D1
 - Evidence: `src/tools/safety.rs:1559-1790` (`computer_requires_approval_with_context`,
   `KeyClass`, `DESTRUCTIVE_APPS`, `key_press_asks`, `key_combo_asks`,
