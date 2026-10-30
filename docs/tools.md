@@ -55,15 +55,33 @@ record is shown as one `capabilities: …` line in the per-turn desktop context
 and as the `Desktop capabilities` check in `gnome_doctor`; it is never
 persisted.
 
-Typing and key input are classified by the focused window. When the focused
-application is a terminal, `type_text`, `key_press`, and `key_combo` could run a
-shell command, so the call asks for confirmation and the card names the
-terminal. If the focus cannot be read the call also asks, which fails closed.
-Outside a terminal they run freely, so driving a TUI needs one approval rather
-than one per keystroke. The terminal list is built in (`kitty`, `alacritty`,
-`gnome-terminal`, `org.gnome.Console`, `foot`, `wezterm`, `xterm`, `konsole`,
-and others) and can be extended with `HYUSK_TERMINAL_APPS`, a comma-separated
-list of application names as the session reports them.
+Typing and key input are classified two ways: by the focused window, and by what
+the key does.
+
+The focused window decides first. When the focused application is a terminal,
+`type_text`, `key_press`, and `key_combo` could run a shell command, so the call
+asks for confirmation and the card names the terminal. If the focus cannot be
+read the call also asks, which fails closed. The terminal list is built in
+(`kitty`, `alacritty`, `gnome-terminal`, `org.gnome.Console`, `foot`, `wezterm`,
+`xterm`, `konsole`, and others) and can be extended with `HYUSK_TERMINAL_APPS`, a
+comma-separated list of application names as the session reports them.
+
+Outside a terminal, every key belongs to one of three classes (D5):
+
+| Class | Keys | Decision |
+| --- | --- | --- |
+| Navigation | Arrows, Home, End, Page Up/Down, Tab, Escape, Space, Print Screen, Caps Lock, the modifier keys, and F1-F12 except F4 | Free everywhere. |
+| Editing | Delete, Backspace, Insert | Free in an editor, a browser field, or a chat window, and asks in a file manager, where it deletes a file; the card names the application. A modified editing key (ctrl+delete) is a bulk delete and always asks. |
+| Commit | Enter/Return, F4, and any shortcut containing one (ctrl+enter, alt+F4) | Asks everywhere, because a commit is not something the agent can undo. |
+
+A single character is text input rather than a key class, so it follows the
+focused-window rule above. The file-manager list is built in (`nautilus`,
+`org.gnome.Nautilus`, `dolphin`, `org.kde.dolphin`, `thunar`, `nemo`, `caja`,
+`pcmanfm`, `krusader`, and others); a terminal is not listed because it already
+asks for every key. Ctrl+q and ctrl+w close a window or a document, so they
+always ask. "Allow for this turn" is keyed by the `computer` action, so one
+approval covers the rest of the turn's key presses; driving a TUI therefore
+needs one approval rather than one per keystroke.
 
 ```json
 { "action": "status" }
@@ -620,7 +638,10 @@ The tool platform has guardrails but no sandbox:
 - Read-only `shell` programs are confined to the project root, and a credential
   path on the denylist is refused outright, before any card is armed.
 - `computer` typing and key input ask when the focused window is a terminal (or
-  the focus cannot be read), and the card names the terminal.
+  the focus cannot be read), and the card names the terminal. Elsewhere the key
+  class decides: navigation keys run freely, Delete/Backspace/Insert ask only in
+  a file manager (the card names it), and commit keys (Enter, F4, ctrl+enter)
+  ask everywhere.
 - `browser` mutations (`click`, `fill`, `press_key`) ask; reads and navigation
   stay free, and an unknown action fails closed.
 - A denied or unsupported OS capability (portal input, screen capture, AT-SPI)

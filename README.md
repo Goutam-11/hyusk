@@ -329,9 +329,17 @@ presses, key combos, and short waits. Coordinates are global pixels with the
 origin at the top-left.
 
 Typing and key presses ask for confirmation while a terminal is focused, because
-the keystrokes could run a shell command; the card names the terminal. Outside a
-terminal they stay free, and an unreadable focus asks too. Add a terminal that is
-not recognised with `HYUSK_TERMINAL_APPS` (comma-separated application names).
+the keystrokes could run a shell command; the card names the terminal. An
+unreadable focus asks too. Add a terminal that is not recognised with
+`HYUSK_TERMINAL_APPS` (comma-separated application names).
+
+Elsewhere each key is classed by what it does. Navigation keys (arrows, Home,
+End, Page Up/Down, Tab, Escape, Space, and the function keys except F4) run
+freely. Delete, Backspace, and Insert run freely in an editor or a browser field
+and ask in a file manager, where they delete a file; the card names the
+application. Enter/Return, F4, and any shortcut containing one such as
+ctrl+enter or alt+F4 ask everywhere, because the agent cannot undo a commit.
+The full table is in [Tools](docs/tools.md#computer).
 
 Clicking OCR text whose label commits something asks: a payment, deletion,
 transfer, reset, or uninstall word always asks, and a submit/send/post/share/

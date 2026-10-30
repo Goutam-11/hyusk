@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **394 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **399 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -111,6 +111,15 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   `safety::requires_approval_with_context`. The terminal list is explicit plus
   `HYUSK_TERMINAL_APPS`. Adding a context-sensitive decision means adding a
   `Decision::Contextual` row, not a second gate.
+- Keyboard risk (D5): outside a terminal every key is classed by what it does.
+  Navigation keys (arrows, Home/End, Page Up/Down, Tab, Escape, Space, Print
+  Screen, modifiers, F1-F12 except F4) run freely; editing keys (Delete,
+  Backspace, Insert) run freely outside a file manager and ask inside one, where
+  the card names the application; commit keys (Enter/Return, F4, and any
+  shortcut containing one) ask everywhere. `key_press_asks` and `key_combo_asks`
+  in `src/tools/safety.rs` are the only key gates, a modified editing key and
+  ctrl+q/ctrl+w still ask, and malformed combinations ask. The file-manager
+  list is explicit; terminals stay D1's job.
 - Clicks (D4): `is_consequential_text` is an explicit table. High-risk words
   (`delete`, `remove`, `pay`, `purchase`, `buy`, `transfer`, `reset`,
   `uninstall`, place order) always ask; submission words (`submit`, `send`,

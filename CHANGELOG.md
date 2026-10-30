@@ -55,6 +55,18 @@
 
 ### Changed
 
+- Keyboard input outside a terminal now follows one stated model. Every key is
+  classed as navigation, editing, or commit (D5). Navigation keys (arrows, Home,
+  End, Page Up/Down, Tab, Escape, Space, Print Screen, the modifier keys, and
+  F1-F12 except F4) run freely. Editing keys (Delete, Backspace, Insert) run
+  freely in an editor, a browser field, or a chat window, and ask in a file
+  manager, where they delete a file; the card names the application. Commit keys
+  (Enter/Return, F4, and any shortcut containing one such as ctrl+enter or
+  alt+F4) ask everywhere, because the agent cannot undo a commit. A modified
+  editing key still asks as a bulk delete, ctrl+q and ctrl+w still ask, and a
+  terminal or an unreadable focus still asks for every key. "Allow for this
+  turn" covers the rest of the turn's key presses, so TUI driving still needs
+  one approval.
 - Nothing the agent stores is a secret store. The four sinks were audited (X4):
   tool-call arguments reached the journal and the saved session unredacted,
   status card text could show a credential or a path to one, and the memory

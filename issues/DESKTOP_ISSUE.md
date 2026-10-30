@@ -321,9 +321,11 @@ file.
 
 ## D5 — Consistent keyboard risk model
 
-- Status: open · Phase 3 · Priority: low
+- Status: done · 2026-10-30 · commit `D5PENDING` · Phase 3 · Priority: low
 - Depends on: D1
-- Evidence: `src/tools/safety.rs:426-449`
+- Evidence: `src/tools/safety.rs:1559-1790` (`computer_requires_approval_with_context`,
+  `KeyClass`, `DESTRUCTIVE_APPS`, `key_press_asks`, `key_combo_asks`,
+  `focus_is_the_reason`)
 
 **Problem.** `key_press` is always free, including Delete, while `key_combo`
 with a modifier and Enter/Delete/Backspace/F4 asks, and Ctrl+Q/W asks. Pressing
@@ -337,15 +339,71 @@ destructive-app list.
 
 **Acceptance criteria**
 
-- [ ] The classes are documented.
-- [ ] Delete in a file manager asks; in a text editor it does not.
-- [ ] Enter after typing in a terminal is covered by D1.
+- [x] The classes are documented.
+- [x] Delete in a file manager asks; in a text editor it does not.
+- [x] Enter after typing in a terminal is covered by D1.
 
 **Tests**
 
-- [ ] Key table tests.
+- [x] Key table tests (`key_classes_name_the_keys_the_tool_accepts`,
+      `commit_keys_ask_and_navigation_keys_run_freely`,
+      `delete_asks_in_a_file_manager_and_stays_free_in_an_editor`,
+      `file_managers_are_recognised_by_name`,
+      `an_approval_for_a_destructive_edit_names_the_application`).
 
-**Files.** `src/tools/safety.rs`, docs.
+**Files.** `src/tools/safety.rs`, `docs/tools.md`, `README.md`, `AGENTS.md`,
+`CHANGELOG.md`.
+
+**Notes (2026-10-30, implemented).** `KeyClass` names the three classes and
+`key_class` maps every spelling `computer::parse_keysym` accepts onto one of
+them: Navigation covers arrows, Home/End, Page Up/Down, Tab, Escape, Space,
+Print Screen, Caps Lock, the modifier keys, and F1-F12 except F4; Editing
+covers Delete, Backspace, and Insert; Commit covers Enter/Return and F4. A
+single character, an empty name, and an unsupported name have no class: the
+first is text input, and the tool rejects the other two at execution.
+
+`key_press_asks` and `key_combo_asks` are the only key gates, so the model,
+instant, and workflow lanes cannot disagree. A commit key asks in every
+application. An editing key asks only while `DESTRUCTIVE_APPS` (Nautilus,
+Dolphin, Thunar, Nemo, Caja, PCManFM, Krusader, Double Commander, SpaceFM) is
+focused, where Delete removes a file; a terminal is deliberately absent because
+D1 already asks for every key there. `focus_is_the_reason` decides the card's
+`(focused: …)` suffix, so a card about Delete names the file manager while a
+card about Enter does not claim the application is why it asks.
+
+Four judgement calls, recorded because the decision was tentative:
+
+- **Enter is gated everywhere.** "Commit keys … gated" was taken literally, so
+  `key_press enter` now asks even in a text editor. That tightens the case D1's
+  test asserted was free, and the assertion was moved into this issue's table
+  (typing itself stays free, which is what D1's acceptance says). The reason is
+  consistency: `browser press_key` asks for every key (D2), so the same
+  keystroke through `computer` could not stay free without leaving the union
+  weaker than its strongest path. A6's grant is keyed by the `computer` action,
+  so it costs one card per turn rather than one per keystroke.
+- **"Modifiers" means modified commit keys, not every modifier shortcut.**
+  Reading it as every ctrl/alt/super combination would make ctrl+c, ctrl+t, and
+  the already-free `shift+tab` ask. A commit key in a combination asks whatever
+  the modifiers are, and a *modified editing* key (ctrl+delete) stays gated as a
+  bulk delete, which is the pre-D5 rule kept rather than relaxed.
+- **Shift+Delete is newly gated in a file manager.** Shift is not in the strong
+  modifier list, so the old rule left the permanent-delete shortcut free; the
+  editing-key rule now asks there. In an editor it stays free.
+- **Malformed combos ask.** An empty `keys` array or a non-string entry asks
+  instead of running; the old rule treated an empty array as free.
+
+Batch behaviour is unchanged: each step is classified on its own, so the
+container cannot hide a gated key. `docs/tools.md` gained the class table
+(under `## Computer`), `README.md` the user-facing summary, and `AGENTS.md` a
+D5 invariant next to D1's.
+
+Drift: the Evidence range (`safety.rs:426-449`) pointed at `truncate_preview`
+and `policy_for`, not the keyboard rule, which lived in
+`computer_requires_approval_with_context`; it now lives in the functions above.
+
+Not covered by an automated test: a live Delete in a file manager. It would
+delete a real file in the user's session, so the unit tests stand in for it;
+see D1's note about not driving the live desktop unattended.
 
 ## D6 — Single-path invariant for typing versus shell
 

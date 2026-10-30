@@ -147,16 +147,16 @@ cargo clippy --all-targets
 cargo test --bin hyusk_agent
 ```
 
-`cargo test --all-targets` runs the full suite: 394 passing tests and 7
-ignored (the main binary alone: 367 passing, 6 ignored; shared model/stream
+`cargo test --all-targets` runs the full suite: 399 passing tests and 7
+ignored (the main binary alone: 372 passing, 6 ignored; shared model/stream
 tests are compiled into each binary). The ignored ones need a real session or
 network: the four portal smoke tests below, a live CDP browser test, a Whisper
 cancel/cache test, and the GTK workflow editor draft test. Coverage includes
-the computer tool and portal mapping, input and URL validation, browser CDP
-protocol handling, accessibility targeting, wake and clap detection, RNNoise
-denoising, the instant-command router, streaming sentence splitting, session
-repair and compaction, persistent memory, scheduling, and the one-shot
-`WakeResume` handshake.
+the computer tool and portal mapping, the keyboard risk classes, input and URL
+validation, browser CDP protocol handling, accessibility targeting, wake and
+clap detection, RNNoise denoising, the instant-command router, streaming
+sentence splitting, session repair and compaction, persistent memory,
+scheduling, and the one-shot `WakeResume` handshake.
 
 `cargo clippy --all-targets` currently reports three
 `result_large_err` warnings on `LinkServerError` in `src/link/server.rs`; there

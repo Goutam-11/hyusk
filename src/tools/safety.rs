@@ -166,16 +166,20 @@ impl ToolName {
             ToolName::Computer => ToolPolicy {
                 decision: Decision::Contextual(computer_requires_approval_with_context),
                 guidance: "screenshots, OCR, find, cursor, app state, mouse moves, clicks, \
-                           scrolling, and setting clipboard text run freely; typing and \
-                           single key presses also run freely, except when a terminal is \
-                           focused or the focus cannot be read, because the keystrokes \
-                           could run a shell command; reading or clearing the clipboard, \
-                           click_text on a consequential label (delete, pay, buy, remove, \
-                           transfer, reset, uninstall, place order, or a submit/send/post/ \
-                           share/install word without a benign qualifier such as search, \
-                           filter, query, calculator, feedback, or link), and shortcuts \
-                           that commit or quit (ctrl, alt, meta, or super with enter, \
-                           delete, backspace, or F4; ctrl+q or ctrl+w) ask",
+                           scrolling, and setting clipboard text run freely; typing, \
+                           navigation keys (arrows, Home, End, Page Up/Down, Tab, Escape, \
+                           F1-F12 except F4), and single character keys run freely, except \
+                           that any typing or key input asks when a terminal is focused or \
+                           the focus cannot be read, because the keystrokes could run a \
+                           shell command; commit keys (enter/return, F4, and any shortcut \
+                           containing one, such as ctrl+enter or alt+F4) ask everywhere; \
+                           Delete, Backspace, and Insert ask in a file manager, where they \
+                           delete files, and a modified editing key (ctrl+delete) or \
+                           ctrl+q/ctrl+w asks; reading or clearing the clipboard, click_text \
+                           on a consequential label (delete, pay, buy, remove, transfer, \
+                           reset, uninstall, place order, or a submit/send/post/share/ \
+                           install word without a benign qualifier such as search, filter, \
+                           query, calculator, feedback, or link) ask",
                 preview_keys: &["action", "text", "keys", "key"],
             },
             ToolName::GnomeDoctor => ToolPolicy {
@@ -341,15 +345,15 @@ pub fn preview(name: &str, arguments: &str) -> String {
     truncate_preview(&render_preview(name, arguments))
 }
 
-/// The preview plus the focused terminal when that is why the gate asks, so a
-/// card about typing says where the keystrokes will land (D1).
+/// The preview plus the focused application when that is why the gate asks, so
+/// a card about typing says where the keystrokes will land (D1) and a card
+/// about Delete says which file manager makes it destructive (D5).
 pub fn preview_with_context(name: &str, arguments: &str, context: &FocusContext) -> String {
     let mut text = render_preview(name, arguments);
-    if requires_focus_context(name, arguments) {
+    let args = serde_json::from_str::<Value>(arguments).unwrap_or(Value::Null);
+    if requires_focus_context(name, arguments) && focus_is_the_reason(&args, context) {
         if let Some(app) = context.app.as_deref().map(str::trim) {
-            if is_terminal_app(app) {
-                text.push_str(&format!(" (focused: {app})"));
-            }
+            text.push_str(&format!(" (focused: {app})"));
         }
     }
     truncate_preview(&text)
@@ -1576,32 +1580,11 @@ fn computer_requires_approval_with_context(args: &Value, context: &FocusContext)
         "click_text" => {
             is_consequential_text(args.get("text").and_then(Value::as_str).unwrap_or(""))
         }
-        // Outside a terminal, single keys are core navigation and editing.
-        // Labeled commits and consequential keyboard shortcuts still ask.
-        "key_press" => false,
-        "key_combo" => {
-            args.get("keys")
-                .and_then(Value::as_array)
-                .map(|keys| {
-                    let keys = keys
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_ascii_lowercase)
-                        .collect::<Vec<_>>();
-                    (keys.iter().any(|k| {
-                        matches!(k.as_str(), "ctrl" | "control" | "alt" | "meta" | "super")
-                    }) && keys.iter().any(|k| {
-                        matches!(
-                            k.as_str(),
-                            "enter" | "return" | "delete" | "backspace" | "f4"
-                        )
-                    })) || (keys
-                        .iter()
-                        .any(|k| matches!(k.as_str(), "ctrl" | "control"))
-                        && keys.iter().any(|k| matches!(k.as_str(), "q" | "w")))
-                })
-                .unwrap_or(true)
-        }
+        // Outside a terminal, keys are classed by what they do (D5): navigation
+        // runs freely, editing ask only where it deletes files, and commits
+        // ask. A terminal and an unreadable focus are caught above (D1).
+        "key_press" => key_press_asks(args, context),
+        "key_combo" => key_combo_asks(args, context),
         // Raw coordinates and text entry cannot be classified without screen
         // context. Keep ordinary navigation usable; blind raw clicks remain a risk.
         "mouse_click" | "type_text" | "mouse_drag" | "scroll" | "mouse_move" | "focus_window"
@@ -1619,6 +1602,187 @@ fn focus_is_safe(context: &FocusContext) -> bool {
         .as_deref()
         .map(str::trim)
         .is_some_and(|app| !app.is_empty() && !is_terminal_app(app))
+}
+
+/// How a key the agent presses carries risk (D5). Every named key belongs to one
+/// of the three classes; a single character and an unsupported name belong to
+/// none and are text input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyClass {
+    /// Moves around or types without changing stored data: arrows, Home/End,
+    /// Page Up/Down, Tab, Escape, Space, Print Screen, the modifier keys, and
+    /// F1-F12 except F4. These run freely in every application.
+    Navigation,
+    /// Removes or overwrites content: Delete, Backspace, and Insert. Free in an
+    /// editor or a browser field, gated in an application that deletes files.
+    Editing,
+    /// Confirms, sends, or closes something: Enter/Return and F4. These ask in
+    /// every application, because a commit is not reversible by the agent.
+    Commit,
+}
+
+/// The class of a key name, using the spellings the `computer` tool accepts
+/// (`computer::parse_keysym`). `None` means a single character, an unsupported
+/// name, or an empty string: text input rather than a key risk class.
+fn key_class(name: &str) -> Option<KeyClass> {
+    let key = name.trim().to_ascii_lowercase();
+    let class = match key.as_str() {
+        "escape" | "esc" | "tab" | "up" | "up_arrow" | "arrowup" | "arrow_up" | "down"
+        | "down_arrow" | "arrowdown" | "arrow_down" | "left" | "left_arrow" | "arrowleft"
+        | "arrow_left" | "right" | "right_arrow" | "arrowright" | "arrow_right" | "home"
+        | "end" | "pageup" | "page_up" | "pgup" | "pagedown" | "page_down" | "pgdn" | "space"
+        | "spacebar" | "printscreen" | "print_screen" | "printscr" | "capslock" | "caps_lock"
+        | "shift" | "ctrl" | "control" | "alt" | "option" | "meta" | "super" | "windows"
+        | "win" | "cmd" | "command" => KeyClass::Navigation,
+        "delete" | "del" | "backspace" | "insert" | "ins" => KeyClass::Editing,
+        "enter" | "return" | "f4" => KeyClass::Commit,
+        _ => {
+            let number = key
+                .strip_prefix('f')
+                .and_then(|rest| rest.parse::<u8>().ok())?;
+            if !(1..=12).contains(&number) {
+                return None;
+            }
+            // F4 closes a window, so it commits; the other function keys only
+            // fetch, refresh, or show help.
+            return Some(if number == 4 {
+                KeyClass::Commit
+            } else {
+                KeyClass::Navigation
+            });
+        }
+    };
+    Some(class)
+}
+
+/// Applications where an editing key deletes stored data: every common file
+/// manager, as GNOME and niri report the application name. Terminals are not
+/// listed because D1 already asks for every key in one.
+const DESTRUCTIVE_APPS: &[&str] = &[
+    "caja",
+    "dolphin",
+    "doublecmd",
+    "krusader",
+    "nautilus",
+    "nemo",
+    "org.gnome.files",
+    "org.gnome.nautilus",
+    "org.kde.dolphin",
+    "org.pcmanfm.pcmanfm",
+    "org.xfce.thunar",
+    "pcmanfm",
+    "pcmanfm-qt",
+    "spacefm",
+    "thunar",
+];
+
+/// True when Delete, Backspace, or Insert removes files in this application.
+fn is_destructive_app(app: &str) -> bool {
+    let app = app.trim().to_ascii_lowercase();
+    !app.is_empty() && DESTRUCTIVE_APPS.contains(&app.as_str())
+}
+
+/// True when an editing key reaches an application that deletes files.
+fn editing_key_is_destructive(context: &FocusContext) -> bool {
+    context
+        .app
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(is_destructive_app)
+}
+
+/// The gate for `key_press`: a commit key asks everywhere, an editing key asks
+/// only where it deletes files, and a navigation key or a character runs freely.
+/// A call without a key name cannot be classified, so it asks.
+fn key_press_asks(args: &Value, context: &FocusContext) -> bool {
+    let Some(key) = args.get("key").and_then(Value::as_str) else {
+        return true;
+    };
+    match key_class(key) {
+        Some(KeyClass::Commit) => true,
+        Some(KeyClass::Editing) => editing_key_is_destructive(context),
+        _ => false,
+    }
+}
+
+/// The gate for `key_combo`. A combo with a commit key asks wherever it runs, a
+/// combo that modifies an editing key is a bulk delete and asks, and ctrl+q or
+/// ctrl+w closes something and asks. Malformed arguments ask.
+fn key_combo_asks(args: &Value, context: &FocusContext) -> bool {
+    let Some(values) = args.get("keys").and_then(Value::as_array) else {
+        return true;
+    };
+    let Some(keys) = values.iter().map(Value::as_str).collect::<Option<Vec<_>>>() else {
+        return true;
+    };
+    if keys.is_empty() {
+        return true;
+    }
+    let holds = |class: KeyClass| keys.iter().any(|key| key_class(key) == Some(class));
+    if holds(KeyClass::Commit) {
+        return true;
+    }
+    let modified = keys.iter().any(|key| {
+        matches!(
+            key.trim().to_ascii_lowercase().as_str(),
+            "ctrl"
+                | "control"
+                | "alt"
+                | "option"
+                | "meta"
+                | "super"
+                | "windows"
+                | "win"
+                | "cmd"
+                | "command"
+        )
+    });
+    if holds(KeyClass::Editing) && (modified || editing_key_is_destructive(context)) {
+        return true;
+    }
+    let control = keys
+        .iter()
+        .any(|key| matches!(key.trim().to_ascii_lowercase().as_str(), "ctrl" | "control"));
+    let closes = keys
+        .iter()
+        .any(|key| matches!(key.trim().to_ascii_lowercase().as_str(), "q" | "w"));
+    control && closes
+}
+
+/// True when the call presses an editing key, so a card can say which
+/// application makes that key destructive. Walks a batch's steps.
+fn presses_editing_key(args: &Value) -> bool {
+    match action(args) {
+        "key_press" => {
+            key_class(args.get("key").and_then(Value::as_str).unwrap_or(""))
+                == Some(KeyClass::Editing)
+        }
+        "key_combo" => args
+            .get("keys")
+            .and_then(Value::as_array)
+            .is_some_and(|keys| {
+                keys.iter()
+                    .filter_map(Value::as_str)
+                    .any(|key| key_class(key) == Some(KeyClass::Editing))
+            }),
+        "batch" => args
+            .get("steps")
+            .and_then(Value::as_array)
+            .is_some_and(|steps| steps.iter().any(presses_editing_key)),
+        _ => false,
+    }
+}
+
+/// True when the focused application is why this call asks: it is a terminal
+/// (D1), or it is a file manager and the call presses an editing key (D5).
+fn focus_is_the_reason(arguments: &Value, context: &FocusContext) -> bool {
+    let Some(app) = context.app.as_deref().map(str::trim) else {
+        return false;
+    };
+    if app.is_empty() {
+        return false;
+    }
+    is_terminal_app(app) || (is_destructive_app(app) && presses_editing_key(arguments))
 }
 
 /// Terminal application names, lower-case app ids and window application names
@@ -2044,6 +2208,11 @@ mod tests {
         check_with("computer", input, &focus(app))
     }
 
+    /// A `computer` `key_press` call for one key name.
+    fn key_press_call(key: &str) -> String {
+        serde_json::json!({"action": "key_press", "key": key}).to_string()
+    }
+
     #[test]
     fn terminal_applications_are_recognised_by_name() {
         for app in [
@@ -2123,13 +2292,14 @@ mod tests {
             );
         }
 
-        // Outside a terminal, typing and navigation keys stay free.
+        // Outside a terminal, typing and navigation keys stay free. A commit
+        // key asks wherever it runs, which is D5's rule rather than D1's; the
+        // D5 tests below cover it.
         for input in [
             r#"{"action":"type_text","text":"hello"}"#,
-            r#"{"action":"key_press","key":"enter"}"#,
             r#"{"action":"key_press","key":"escape"}"#,
             r#"{"action":"key_combo","keys":["shift","tab"]}"#,
-            r#"{"action":"batch","steps":[{"action":"type_text","text":"thanks"},{"action":"key_press","key":"enter"}]}"#,
+            r#"{"action":"batch","steps":[{"action":"type_text","text":"thanks"},{"action":"key_press","key":"escape"}]}"#,
             r#"{"action":"screenshot"}"#,
             r#"{"action":"click_text","text":"Open settings"}"#,
         ] {
@@ -2165,6 +2335,254 @@ mod tests {
             r#"{"command":"rm -rf build"}"#,
             &focus("kitty")
         ));
+    }
+
+    #[test]
+    fn delete_asks_in_a_file_manager_and_stays_free_in_an_editor() {
+        // D5: Delete in a file manager removes a file; in an editor it removes
+        // a character. Backspace and Insert belong to the same class.
+        for key in ["delete", "del", "backspace", "insert", "ins"] {
+            let input = key_press_call(key);
+            for app in [
+                "org.gnome.Nautilus",
+                "nautilus",
+                "Dolphin",
+                "thunar",
+                "nemo",
+                "pcmanfm",
+            ] {
+                assert!(
+                    computer_check(app, &input),
+                    "{key} can delete a file in {app}"
+                );
+            }
+            for app in ["code", "org.gnome.gedit", "firefox", "slack"] {
+                assert!(
+                    !computer_check(app, &input),
+                    "{key} is ordinary editing in {app}"
+                );
+            }
+            // A terminal and an unreadable focus ask for every key (D1).
+            assert!(computer_check("kitty", &input), "a terminal asks: {key}");
+            assert!(
+                check_with("computer", &input, &FocusContext::unknown()),
+                "an unreadable focus asks: {key}"
+            );
+        }
+
+        // A modified editing key is a bulk delete and stays gated; shift+delete
+        // is the permanent-delete shortcut, so the file manager asks for it.
+        let shift_delete = r#"{"action":"key_combo","keys":["shift","delete"]}"#;
+        assert!(computer_check("org.gnome.Nautilus", shift_delete));
+        assert!(!computer_check("code", shift_delete));
+        assert!(computer_check(
+            "code",
+            r#"{"action":"key_combo","keys":["ctrl","delete"]}"#
+        ));
+
+        // A batch inherits each step's class.
+        assert!(computer_check(
+            "org.gnome.Nautilus",
+            r#"{"action":"batch","steps":[{"action":"key_press","key":"delete"}]}"#
+        ));
+        assert!(!computer_check(
+            "org.gnome.Nautilus",
+            r#"{"action":"batch","steps":[{"action":"type_text","text":"report"}]}"#
+        ));
+    }
+
+    #[test]
+    fn commit_keys_ask_and_navigation_keys_run_freely() {
+        for app in ["code", "firefox", "org.gnome.Nautilus"] {
+            for key in ["enter", "return", "f4", "F4"] {
+                assert!(
+                    computer_check(app, &key_press_call(key)),
+                    "{key} commits something in {app}"
+                );
+            }
+            for key in [
+                "escape",
+                "esc",
+                "tab",
+                "up",
+                "down_arrow",
+                "arrowleft",
+                "arrow_right",
+                "home",
+                "end",
+                "pageup",
+                "pgdn",
+                "printscreen",
+                "space",
+                "f1",
+                "f12",
+            ] {
+                assert!(
+                    !computer_check(app, &key_press_call(key)),
+                    "{key} moves or types without committing in {app}"
+                );
+            }
+            for input in [
+                r#"{"action":"key_combo","keys":["ctrl","enter"]}"#,
+                r#"{"action":"key_combo","keys":["alt","f4"]}"#,
+                r#"{"action":"key_combo","keys":["ctrl","q"]}"#,
+                r#"{"action":"key_combo","keys":["ctrl","w"]}"#,
+                // A malformed combo asks rather than runs.
+                r#"{"action":"key_combo","keys":[]}"#,
+                r#"{"action":"key_combo","keys":"enter"}"#,
+                r#"{"action":"key_combo","keys":[1,"enter"]}"#,
+            ] {
+                assert!(computer_check(app, input), "{input} asks in {app}");
+            }
+            // Opening a tab is neither a commit nor an edit.
+            assert!(!computer_check(
+                app,
+                r#"{"action":"key_combo","keys":["ctrl","shift","t"]}"#
+            ));
+        }
+
+        // A single character is text input, and an unsupported key name runs
+        // nothing at all, so neither carries a key risk class.
+        for key in ["a", "Z", "7", "numpad7", "foo"] {
+            assert!(!computer_check("code", &key_press_call(key)), "{key}");
+        }
+        // A call without a usable key name cannot be classified and asks.
+        for input in [
+            r#"{"action":"key_press"}"#,
+            r#"{"action":"key_press","key":7}"#,
+        ] {
+            assert!(computer_check("code", input), "{input} asks");
+        }
+    }
+
+    #[test]
+    fn key_classes_name_the_keys_the_tool_accepts() {
+        // The vocabulary in `computer::parse_keysym`, one class per spelling.
+        for key in [
+            "escape",
+            "ESC",
+            "tab",
+            "up",
+            "up_arrow",
+            "arrowup",
+            "down_arrow",
+            "left_arrow",
+            "arrow_right",
+            "home",
+            "end",
+            "pageup",
+            "page_up",
+            "pgdn",
+            "space",
+            "spacebar",
+            "printscreen",
+            "print_screen",
+            "capslock",
+            "shift",
+            "ctrl",
+            "control",
+            "alt",
+            "option",
+            "meta",
+            "super",
+            "windows",
+            "win",
+            "cmd",
+            "command",
+            "f1",
+            "F2",
+            "f3",
+            "f5",
+            "f11",
+            "f12",
+        ] {
+            assert_eq!(
+                super::key_class(key),
+                Some(super::KeyClass::Navigation),
+                "{key} is a navigation key"
+            );
+        }
+        for key in ["delete", "del", "Backspace", "insert", "ins"] {
+            assert_eq!(
+                super::key_class(key),
+                Some(super::KeyClass::Editing),
+                "{key} edits"
+            );
+        }
+        for key in ["enter", "Return", "f4", "F4"] {
+            assert_eq!(
+                super::key_class(key),
+                Some(super::KeyClass::Commit),
+                "{key} commits"
+            );
+        }
+        // A character, an out-of-range function key, and an unsupported name
+        // are not a key risk class; the tool rejects the last two at execution.
+        for key in ["", " ", "a", "Z", "7", "numpad7", "f0", "f13", "foo"] {
+            assert_eq!(super::key_class(key), None, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn file_managers_are_recognised_by_name() {
+        for app in [
+            "org.gnome.Nautilus",
+            "nautilus",
+            "Dolphin",
+            "org.kde.dolphin",
+            "thunar",
+            "org.xfce.thunar",
+            "nemo",
+            "caja",
+            "pcmanfm",
+            "pcmanfm-qt",
+            "krusader",
+            "doublecmd",
+            "spacefm",
+            "org.gnome.files",
+            "org.pcmanfm.pcmanfm",
+        ] {
+            assert!(super::is_destructive_app(app), "{app} deletes files");
+        }
+        for app in [
+            "code",
+            "org.gnome.gedit",
+            "firefox",
+            "slack",
+            "",
+            "   ",
+            "file manager notes", // a title, not an application
+        ] {
+            assert!(!super::is_destructive_app(app), "{app:?} is not");
+        }
+    }
+
+    #[test]
+    fn an_approval_for_a_destructive_edit_names_the_application() {
+        assert_eq!(
+            preview_with_context(
+                "computer",
+                r#"{"action":"key_press","key":"delete"}"#,
+                &focus("org.gnome.Nautilus")
+            ),
+            "computer action=key_press key=delete (focused: org.gnome.Nautilus)"
+        );
+        // A commit key asks everywhere, so the card does not claim the focused
+        // application is the reason.
+        assert_eq!(
+            preview_with_context("computer", &key_press_call("enter"), &focus("code")),
+            "computer action=key_press key=enter"
+        );
+        // An editing key in an editor asks nothing, so there is no card; the
+        // preview stays free of the suffix when the focus is not the reason.
+        assert_eq!(
+            preview_with_context(
+                "computer",
+                r#"{"action":"key_press","key":"delete"}"#,
+                &focus("code")
+            ),
+            "computer action=key_press key=delete"
+        );
     }
 
     #[test]
@@ -2736,15 +3154,17 @@ mod tests {
             "computer",
             r#"{"action":"mouse_click","x":10,"y":20}"#
         ));
-        // Typing is free only when the focused window is known and is not a
-        // terminal; the context-free wrapper asks (D1).
+        // Typing and navigation are free only when the focused window is known
+        // and is not a terminal; the context-free wrapper asks (D1). A commit
+        // key such as Enter asks everywhere (D5), so Escape stands in for the
+        // free case here.
         assert!(!computer_check(
             "code",
             r#"{"action":"type_text","text":"hello"}"#
         ));
         assert!(!computer_check(
             "code",
-            r#"{"action":"key_press","key":"enter"}"#
+            r#"{"action":"key_press","key":"escape"}"#
         ));
         assert!(check(
             "computer",
