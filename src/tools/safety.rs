@@ -423,10 +423,14 @@ fn render_preview(name: &str, arguments: &str) -> String {
     text
 }
 
+/// The prefix of the one sentence that names an armed call. A restart
+/// recognises the placeholder by it (L6), so it is the one source of truth.
+pub const PENDING_PREFIX: &str = "Pending confirmation for: ";
+
 /// The one sentence that names an armed call. The tool result and every status
 /// card use this function, so they always show the same text.
 pub fn pending_text(preview: &str) -> String {
-    format!("Pending confirmation for: {preview}")
+    format!("{PENDING_PREFIX}{preview}")
 }
 
 fn preview_fields(name: &str, args: &Value) -> Vec<(String, String)> {

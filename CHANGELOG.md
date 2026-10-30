@@ -69,6 +69,17 @@
 
 ### Changed
 
+- A restart no longer leaves a confirmation looking unanswered. The armed call
+  lives only in memory, but its placeholder tool result was saved in the
+  session, so after a restart the model saw "Pending confirmation for: …" with
+  nothing armed - it could repeat the question, and a later "yes" could be read
+  as an answer to a card that no longer existed. Loading a session now rewrites
+  every such placeholder to "Not confirmed: the service restarted before the
+  user answered", so the conversation agrees with the prompt's "no pending
+  approval" sentence and the next "yes" is an ordinary utterance that reaches
+  the model. Nothing is re-armed, and no grant survives: turn grants live only
+  in memory and were never persisted. The rewrite happens on load only, so a
+  live process still saves the armed placeholder it is showing.
 - Typing is one capability with one decision, whichever tool names the path.
   `accessibility set_text` used to run free in every application, so a command
   could be typed into a terminal through it while the equivalent `computer

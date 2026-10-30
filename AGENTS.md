@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **409 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **413 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -177,6 +177,13 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   into one previous copy at 256 KiB. A decision the event loop resolves outside
   a turn is recorded without a turn id; a failed write is reported, never
   fatal.
+- Restart safety (L6): loading a session rewrites every `Pending confirmation
+  for: …` placeholder to "Not confirmed: the service restarted before the user
+  answered" (`session::settle_interrupted_approvals`), because the armed call
+  lives only in memory and a placeholder without it would invite the model to
+  treat a later "yes" as an answer. Never re-arm a call from the session, and
+  never settle the placeholder on save: a live process still has the card, and
+  `safety::PENDING_PREFIX` is the one prefix both sides match.
 - Control state (L1): the armed approval, provider/model, paused-task flag, and
   provider clients live in `agent/control.rs` behind their own lock, so the
   event loop reads and changes them while a turn holds the agent mutex. The lock

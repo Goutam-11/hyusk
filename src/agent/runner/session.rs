@@ -60,8 +60,11 @@ pub(super) struct ActionJournalEntry {
 }
 
 pub(super) fn load_session() -> LoadedSession {
-    let path = session_path();
-    let snapshot = std::fs::read_to_string(&path)
+    load_session_from(&session_path())
+}
+
+fn load_session_from(path: &Path) -> LoadedSession {
+    let snapshot = std::fs::read_to_string(path)
         .ok()
         .and_then(|contents| serde_json::from_str::<SessionSnapshot>(&contents).ok());
     match snapshot.filter(|value| value.version == 1 || value.version == 2) {
@@ -73,6 +76,12 @@ pub(super) fn load_session() -> LoadedSession {
                 .map(|entry| format!("{}: {}", entry.tool, entry.status))
                 .collect::<Vec<_>>();
             let mut messages = sanitize_session_messages(value.messages);
+            // A confirmation the user never answered is settled before the
+            // model sees the conversation again (L6).
+            let settled = settle_interrupted_approvals(&mut messages);
+            if settled > 0 {
+                eprintln!("[Agent] {settled} unconfirmed action(s) were settled by the restart");
+            }
             if !uncertain.is_empty() {
                 messages.push(Message::assistant(format!("An earlier action may have completed before interruption and needs verification before retry: {}", uncertain.join("; "))));
             }
@@ -239,6 +248,39 @@ fn redact_for_storage(messages: &mut [Message]) {
             *refusal = crate::tools::redact::redact(refusal).0;
         }
     }
+}
+
+/// The tool result a restart leaves in place of an unanswered confirmation.
+///
+/// The prompt already says no approval is pending; this makes the conversation
+/// agree with it, so a later "yes" is read as an ordinary request rather than
+/// as an answer to a card that no longer exists.
+pub(super) const RESTARTED_BEFORE_ANSWER: &str = "Not confirmed: the service restarted before the user answered. This action was not executed. A later \"yes\" does not approve it; if the user still wants it, call the tool again.";
+
+/// Rewrite every armed-call placeholder left behind by a restart.
+///
+/// Grants (A6) live only in memory and the armed call itself is never
+/// persisted, so there is nothing else to clear: the placeholder is the only
+/// trace of the lost approval.
+pub(super) fn settle_interrupted_approvals(messages: &mut [Message]) -> usize {
+    let mut settled = 0;
+    for message in messages.iter_mut() {
+        if message.role != "tool" {
+            continue;
+        }
+        if !message
+            .text()
+            .starts_with(crate::tools::safety::PENDING_PREFIX)
+        {
+            continue;
+        }
+        let Some(call_id) = message.tool_call_id.clone() else {
+            continue;
+        };
+        *message = Message::tool_result(call_id, RESTARTED_BEFORE_ANSWER);
+        settled += 1;
+    }
+    settled
 }
 
 pub(super) fn sanitize_session_messages(messages: Vec<Message>) -> Vec<Message> {
@@ -469,9 +511,10 @@ pub(super) fn truncate_bytes(text: &str, max: usize) -> String {
 mod tests {
     use super::{
         compact_history, context_window_tokens, derived_history_budget, history_bytes,
-        sanitize_session_messages, save_bytes_atomically_with, save_session_to_path,
-        trim_session_messages, ActionJournalEntry, SessionSnapshot, COMPACT_TOOL_OUTPUT_BYTES,
-        MAX_HISTORY_BYTES, MIN_HISTORY_BYTES, PERSISTED_SESSION_MESSAGES,
+        load_session_from, sanitize_session_messages, save_bytes_atomically_with,
+        save_session_to_path, settle_interrupted_approvals, trim_session_messages,
+        ActionJournalEntry, SessionSnapshot, COMPACT_TOOL_OUTPUT_BYTES, MAX_HISTORY_BYTES,
+        MIN_HISTORY_BYTES, PERSISTED_SESSION_MESSAGES, RESTARTED_BEFORE_ANSWER,
     };
     use crate::types::Message;
     use serde_json::json;
@@ -502,6 +545,111 @@ mod tests {
                 .to_string_lossy()
                 .contains(".tmp-")
         }));
+    }
+
+    /// A conversation with one unanswered confirmation and one answered call.
+    fn conversation_with_a_pending_confirmation() -> Vec<Message> {
+        let arguments = r#"{"command":"rm -rf build"}"#;
+        let preview = crate::tools::safety::preview("shell", arguments);
+        vec![
+            Message::user("delete the build directory"),
+            serde_json::from_value(json!({
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "pending-call",
+                    "type": "function",
+                    "function": {"name": "shell", "arguments": arguments}
+                }]
+            }))
+            .expect("assistant tool call"),
+            Message::tool_result("pending-call", crate::tools::safety::pending_text(&preview)),
+            serde_json::from_value(json!({
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "done-call",
+                    "type": "function",
+                    "function": {"name": "shell", "arguments": "{\"command\":\"ls\"}"}
+                }]
+            }))
+            .expect("assistant tool call"),
+            Message::tool_result("done-call", "ran"),
+        ]
+    }
+
+    fn tool_result_for(messages: &[Message], call_id: &str) -> String {
+        messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some(call_id))
+            .map(|message| message.text())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_restart_settles_a_pending_confirmation_placeholder() {
+        let path = test_session_path("restart");
+        save_session_to_path(
+            &path,
+            &conversation_with_a_pending_confirmation(),
+            &[],
+            false,
+            "openrouter",
+            "test-model",
+        );
+
+        let (messages, journal, paused, identity) = load_session_from(&path);
+
+        assert_eq!(messages.len(), 5, "the exchange keeps its shape");
+        let settled = tool_result_for(&messages, "pending-call");
+        assert_eq!(
+            settled, RESTARTED_BEFORE_ANSWER,
+            "the placeholder is settled"
+        );
+        assert!(
+            !settled.contains(crate::tools::safety::PENDING_PREFIX),
+            "the model must not see a card that no longer exists: {settled}"
+        );
+        assert_eq!(
+            tool_result_for(&messages, "done-call"),
+            "ran",
+            "an answered call keeps its result"
+        );
+        assert!(journal.is_empty());
+        assert!(!paused, "a restart never re-arms the task state");
+        assert_eq!(
+            identity,
+            Some(("openrouter".to_string(), "test-model".to_string()))
+        );
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn an_armed_placeholder_is_still_saved_while_the_approval_is_pending() {
+        // Only a load settles the placeholder: the live process still shows the
+        // card, so the saved copy must keep the sentence the model will replace.
+        let path = test_session_path("armed");
+        save_session_to_path(
+            &path,
+            &conversation_with_a_pending_confirmation(),
+            &[],
+            false,
+            "openrouter",
+            "test-model",
+        );
+        let saved = fs::read_to_string(&path).expect("read session");
+        assert!(
+            saved.contains(crate::tools::safety::PENDING_PREFIX),
+            "the armed placeholder survives a save"
+        );
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn settling_leaves_unrelated_tool_results_alone() {
+        let mut messages = conversation_with_a_pending_confirmation();
+        assert_eq!(settle_interrupted_approvals(&mut messages), 1);
+        assert_eq!(tool_result_for(&messages, "done-call"), "ran");
+        // Running it again finds nothing left to settle.
+        assert_eq!(settle_interrupted_approvals(&mut messages), 0);
     }
 
     #[test]

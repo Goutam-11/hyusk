@@ -278,9 +278,10 @@ low priority.
 
 ## L6 — Approval state across restart
 
-- Status: open · Phase 3 · Priority: medium
+- Status: done · 2026-10-30 · commit `L6PENDING` · Phase 3 · Priority: medium
 - Depends on: A3, A6
-- Evidence: `src/agent/runner.rs:718-773`, `src/agent/runner/session.rs`
+- Evidence: `src/agent/runner/session.rs` (`load_session_from`,
+  `settle_interrupted_approvals`), `src/tools/safety.rs` (`PENDING_PREFIX`)
 
 **Problem.** A pending approval is in-memory only, but its placeholder tool
 result is saved in the session. After a restart the model sees "needs
@@ -293,12 +294,52 @@ any grant state. Do not re-arm silently.
 
 **Acceptance criteria**
 
-- [ ] Restarting mid-approval leaves a truthful tool result.
-- [ ] The next "yes" is an ordinary utterance, not an approval.
-- [ ] A test covers load with a pending placeholder.
+- [x] Restarting mid-approval leaves a truthful tool result.
+- [x] The next "yes" is an ordinary utterance, not an approval.
+- [x] A test covers load with a pending placeholder.
 
 **Tests**
 
-- [ ] Session load fixture.
+- [x] Session load fixture
+      (`a_restart_settles_a_pending_confirmation_placeholder`,
+      `an_armed_placeholder_is_still_saved_while_the_approval_is_pending`,
+      `settling_leaves_unrelated_tool_results_alone`).
+- [x] The next "yes" reaches the model
+      (`agent::runner::tests::a_yes_after_a_restart_is_an_ordinary_utterance`).
 
-**Files.** `src/agent/runner/session.rs`, `src/agent/runner.rs`.
+**Files.** `src/agent/runner/session.rs`, `src/agent/runner.rs`,
+`src/tools/safety.rs`, `AGENTS.md`, `CHANGELOG.md`.
+
+**Notes (2026-10-30, implemented).** `load_session` now delegates to
+`load_session_from(path)`, and after the usual sanitisation it calls
+`settle_interrupted_approvals`, which rewrites every tool result that starts
+with `safety::PENDING_PREFIX` to `RESTARTED_BEFORE_ANSWER`: "Not confirmed: the
+service restarted before the user answered. This action was not executed. A
+later \"yes\" does not approve it; if the user still wants it, call the tool
+again." The prefix moved into `safety::PENDING_PREFIX` so the writer and the
+repair cannot drift apart. The count is printed once at load
+(`[Agent] N unconfirmed action(s) were settled by the restart`).
+
+Four judgement calls, recorded because the decision left them open:
+
+- **Only a load settles the placeholder.** The live process still has the card
+  and the saved copy must keep the sentence its tool result will be replaced by,
+  so the repair is not part of saving; a test pins that.
+- **Grants need no clearing.** A6's turn grants live in `turn_grants`, are
+  cleared at turn start and end, and are never written to the session, so the
+  only trace of a lost approval is the placeholder.
+- **Nothing is re-armed from the session**, as the decision says: the armed call
+  is not persisted at all, and the repair only replaces text.
+- **The rewritten result names the tool call id it answers**, so the assistant
+  tool-call / tool-result pairing and the provider protocol stay valid.
+
+The prompt already carried "There is currently no pending tool approval.
+Earlier confirmation questions in conversation history are inactive"; this makes
+the conversation agree with it, which is what the acceptance asks for.
+
+Drift: the Evidence range (`runner.rs:718-773`) pointed at the old turn start in
+a file that has shifted several times; the issue now names the functions
+instead. Not covered by an automated test: a real process restart between an
+armed approval and the next start, because the suite drives the load path
+directly with a fixture.
+

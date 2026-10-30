@@ -2649,6 +2649,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_yes_after_a_restart_is_an_ordinary_utterance() -> Result<()> {
+        let (base, requests) = serve_tool_call_then_reply(Value::Null, final_reply()).await?;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut agent = shell_agent(base, &executions);
+
+        // The conversation a restart leaves: the model asked for a call, the
+        // user never answered, and the load settled the placeholder (L6).
+        let arguments = r#"{"command":"rm -rf build"}"#;
+        let preview = crate::tools::safety::preview("shell", arguments);
+        let mut history = vec![
+            serde_json::from_value(json!({
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "pending-call",
+                    "type": "function",
+                    "function": {"name": "shell", "arguments": arguments}
+                }]
+            }))
+            .expect("assistant tool call"),
+            Message::tool_result("pending-call", crate::tools::safety::pending_text(&preview)),
+        ];
+        assert_eq!(
+            super::session::settle_interrupted_approvals(&mut history),
+            1,
+            "the placeholder is settled at load"
+        );
+        history.insert(0, Message::system("Test"));
+        agent.messages = history;
+
+        let reply = agent
+            .handle("yes".into(), None, &CancellationToken::new(), None)
+            .await?;
+
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            0,
+            "a yes must not run the approval the restart lost"
+        );
+        assert!(!agent.awaiting_approval());
+        assert_eq!(
+            last_user_text(&requests),
+            "yes",
+            "the yes reaches the model as an ordinary request"
+        );
+        assert_eq!(reply.as_deref(), Some("Understood."));
+        assert!(
+            agent.messages[2]
+                .text()
+                .contains("restarted before the user answered"),
+            "the model sees the truth: {}",
+            agent.messages[2].text()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn plain_yes_executes_the_stored_call_once() -> Result<()> {
         let (base, _requests) = serve_tool_call_then_reply(Value::Null, final_reply()).await?;
         let executions = Arc::new(AtomicUsize::new(0));
