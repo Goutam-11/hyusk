@@ -55,6 +55,18 @@
 
 ### Changed
 
+- Typing is one capability with one decision, whichever tool names the path.
+  `accessibility set_text` used to run free in every application, so a command
+  could be typed into a terminal through it while the equivalent `computer
+  type_text` asked. Every typing and key action is now declared in its tool's
+  policy row (`computer` `type_text`/`key_press`/`key_combo`, `accessibility`
+  `set_text`, `browser` `fill`/`press_key`), the shared rule decides them before
+  the tool's own rules, and the runner reads the focused window for exactly
+  those actions. Text entry or a key press therefore asks when the focused
+  application is a terminal or the focus cannot be read, and the card names the
+  terminal. The browser's `fill` and `press_key` stay a stricter class that
+  always asks, and a tool that cannot reach the keyboard is listed explicitly,
+  with a test walking the table so a new tool or path has to be classified.
 - Keyboard input outside a terminal now follows one stated model. Every key is
   classed as navigation, editing, or commit (D5). Navigation keys (arrows, Home,
   End, Page Up/Down, Tab, Escape, Space, Print Screen, the modifier keys, and

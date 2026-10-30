@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **399 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **401 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -120,6 +120,17 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   in `src/tools/safety.rs` are the only key gates, a modified editing key and
   ctrl+q/ctrl+w still ask, and malformed combinations ask. The file-manager
   list is explicit; terminals stay D1's job.
+- Input paths (D6): every action that types text or presses keys is declared in
+  its tool's `ToolPolicy::input_paths` (`computer` `type_text`/`key_press`/
+  `key_combo`, `accessibility` `set_text`, `browser` `fill`/`press_key`), and the
+  shared `input_asks` rule decides it before the tool's own rules: entering text
+  or a key asks when the focused application is a terminal or the focus cannot
+  be read, whichever tool names the path. `requires_focus_context` reads the
+  focus for exactly those declared paths on a contextual row. A tool that cannot
+  reach the keyboard is listed in `TOOLS_WITHOUT_INPUT_PATHS`, and a test walks
+  the policy table, so a new tool or a new declared path cannot skip the
+  decision. The browser's form paths are their own class and ask for every call
+  (D2), which is stricter than the shared rule, never weaker.
 - Clicks (D4): `is_consequential_text` is an explicit table. High-risk words
   (`delete`, `remove`, `pay`, `purchase`, `buy`, `transfer`, `reset`,
   `uninstall`, place order) always ask; submission words (`submit`, `send`,

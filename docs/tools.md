@@ -83,6 +83,17 @@ always ask. "Allow for this turn" is keyed by the `computer` action, so one
 approval covers the rest of the turn's key presses; driving a TUI therefore
 needs one approval rather than one per keystroke.
 
+Typing is one capability with several paths, and every path is decided by the
+same rule (D6). `computer type_text`, `accessibility set_text`, and any future
+text-entry action ask when the focused application is a terminal or the focus
+cannot be read, so a command cannot be typed into a terminal through one tool
+while the equivalent `computer` call would ask. A tool declares its typing and
+key actions in the policy table (`input_paths`), the runner reads the focus for
+exactly those, and a test walks the table, so a new tool or path has to be
+classified. The `browser` tool's `fill` and `press_key` are a separate class:
+they always ask, because that profile can submit forms (D2), which is stricter
+than the shared rule and never weaker.
+
 ```json
 { "action": "status" }
 { "action": "screenshot", "include_cursor": false }
@@ -281,6 +292,11 @@ is much faster than screenshots for apps that expose an accessible tree.
 | `set_text` | `path` or `name`/`role`/`text`, `text` | Sets editable text. |
 | `get_text` | `path` or `name`/`role`/`text` | Reads text from a text interface. |
 | `read` | `app` or `path` | Dumps visible text as labelled lines (native screen reader). |
+
+`set_text` writes into the focused window, so it is the same capability as
+typing: it asks when the focused application is a terminal or the focus cannot
+be read (D6), and runs freely in an ordinary field. Reading, listing, finding,
+focusing, and `get_text` never reach the keyboard and stay free.
 
 Click labels are classified before the click runs, and the same table serves
 `computer` `click_text`:
@@ -642,6 +658,9 @@ The tool platform has guardrails but no sandbox:
   class decides: navigation keys run freely, Delete/Backspace/Insert ask only in
   a file manager (the card names it), and commit keys (Enter, F4, ctrl+enter)
   ask everywhere.
+- `accessibility set_text` is the same capability as typing, decided by the same
+  rule (D6), so it asks in a terminal or without a readable focus; reading,
+  finding, focusing, and `get_text` stay free.
 - `browser` mutations (`click`, `fill`, `press_key`) ask; reads and navigation
   stay free, and an unknown action fails closed.
 - A denied or unsupported OS capability (portal input, screen capture, AT-SPI)

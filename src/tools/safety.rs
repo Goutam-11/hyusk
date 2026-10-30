@@ -89,7 +89,43 @@ pub struct ToolPolicy {
     /// preview names these before any other argument, so the card shows what
     /// the call will do rather than the model's paraphrase.
     pub preview_keys: &'static [&'static str],
+    /// Actions that type text or press keys (D6). The shared rule
+    /// [`input_asks`] decides them before the tool's own rules, whatever tool
+    /// names the path, and the runner reads the focused window for them. Empty
+    /// means the tool cannot reach the keyboard; the classification test lists
+    /// those tools in `TOOLS_WITHOUT_INPUT_PATHS`.
+    pub input_paths: &'static [&'static str],
 }
+
+/// Every action that types text or presses keys, per tool (D6). One capability
+/// gets one decision whichever tool names it, so each of these is decided by
+/// [`input_asks`] first.
+const COMPUTER_INPUT_PATHS: &[&str] = &["key_combo", "key_press", "type_text"];
+const ACCESSIBILITY_INPUT_PATHS: &[&str] = &["set_text"];
+const BROWSER_INPUT_PATHS: &[&str] = &["fill", "press_key"];
+
+/// Tools that cannot type text or press keys, so D6 has nothing to decide for
+/// them. A tool that can must declare its actions in
+/// [`ToolPolicy::input_paths`]; a test walks the policy table, so a new tool has
+/// to be classified here or there.
+///
+/// `shell` is not a typing path: it is the capability the terminal rule
+/// protects, and its own command classifier decides it. `mobile` drives a
+/// separate device whose actions have their own rows and no desktop focus.
+#[cfg(test)]
+pub const TOOLS_WITHOUT_INPUT_PATHS: &[ToolName] = &[
+    ToolName::GnomeDoctor,
+    ToolName::Media,
+    ToolName::Memory,
+    ToolName::Mobile,
+    ToolName::Process,
+    ToolName::Scheduler,
+    ToolName::Shell,
+    ToolName::Task,
+    ToolName::Timer,
+    ToolName::WebSearch,
+    ToolName::Window,
+];
 
 impl ToolName {
     /// Every tool the policy knows, in name order.
@@ -144,16 +180,19 @@ impl ToolName {
     pub fn policy(self) -> ToolPolicy {
         match self {
             ToolName::Accessibility => ToolPolicy {
-                decision: Decision::Classified(accessibility_requires_approval),
-                guidance: "reading the screen, listing apps and windows, focusing, and \
-                           setting text run freely; clicking a control whose label or \
-                           action names a high-risk word (delete, remove, pay, purchase, \
-                           buy, transfer, reset, uninstall, or place an order) asks, \
+                decision: Decision::Contextual(accessibility_requires_approval_with_context),
+                guidance: "reading the screen, listing apps and windows, and focusing run \
+                           freely; setting text also runs freely, except that it asks when a \
+                           terminal is focused or the focus cannot be read, because the text \
+                           lands in that window in the same way as typing; clicking a control \
+                           whose label or action names a high-risk word (delete, remove, pay, \
+                           purchase, buy, transfer, reset, uninstall, or place an order) asks, \
                            clicking a submit/send/post/share/install control asks unless \
                            the label also names a benign qualifier (search, filter, query, \
                            calculator, feedback, or link), and an unrecognised action \
                            asks",
                 preview_keys: &["action", "name", "text", "action_name"],
+                input_paths: ACCESSIBILITY_INPUT_PATHS,
             },
             ToolName::Browser => ToolPolicy {
                 decision: Decision::Classified(browser_requires_approval),
@@ -162,6 +201,7 @@ impl ToolName {
                            - the automation profile has its own sign-ins, but the page can \
                            still submit forms, post comments, or buy something",
                 preview_keys: &["action", "target_id", "selector", "text", "key", "url"],
+                input_paths: BROWSER_INPUT_PATHS,
             },
             ToolName::Computer => ToolPolicy {
                 decision: Decision::Contextual(computer_requires_approval_with_context),
@@ -181,22 +221,26 @@ impl ToolName {
                            install word without a benign qualifier such as search, filter, \
                            query, calculator, feedback, or link) ask",
                 preview_keys: &["action", "text", "keys", "key"],
+                input_paths: COMPUTER_INPUT_PATHS,
             },
             ToolName::GnomeDoctor => ToolPolicy {
                 decision: Decision::Allow,
                 guidance: "read-only diagnostics never ask",
                 preview_keys: &["action"],
+                input_paths: &[],
             },
             ToolName::Media => ToolPolicy {
                 decision: Decision::Allow,
                 guidance: "playback control never asks",
                 preview_keys: &["action"],
+                input_paths: &[],
             },
             ToolName::Memory => ToolPolicy {
                 decision: Decision::Classified(memory_requires_approval),
                 guidance: "remembering, searching, and graph queries run freely; \
                            forgetting asks",
                 preview_keys: &["action", "text"],
+                input_paths: &[],
             },
             ToolName::Mobile => ToolPolicy {
                 decision: Decision::Classified(mobile_requires_approval),
@@ -207,6 +251,7 @@ impl ToolName {
                            delete, install, call, clipboard read or clear, \
                            memory.forget, shell.execute) or an unknown action asks",
                 preview_keys: &["action", "phone_action", "device_id"],
+                input_paths: &[],
             },
             ToolName::Process => ToolPolicy {
                 decision: Decision::Classified(process_requires_approval),
@@ -214,12 +259,14 @@ impl ToolName {
                            brave, code, and so on) runs freely; extra arguments, an \
                            unknown program, or a raw executable path ask",
                 preview_keys: &["program", "args", "action"],
+                input_paths: &[],
             },
             ToolName::Scheduler => ToolPolicy {
                 decision: Decision::Allow,
                 guidance: "scheduling, listing, and cancelling a reminder, workflow, or \
                            agent task never asks",
                 preview_keys: &["action", "type", "text", "workflow", "after_seconds"],
+                input_paths: &[],
             },
             ToolName::Shell => ToolPolicy {
                 decision: Decision::Classified(shell_requires_approval),
@@ -236,6 +283,7 @@ impl ToolName {
                            unknown programs ask, and a detached mode asks unless it launches an \
                            app",
                 preview_keys: &["command", "mode"],
+                input_paths: &[],
             },
             ToolName::Task => ToolPolicy {
                 decision: Decision::Classified(task_requires_approval),
@@ -243,23 +291,27 @@ impl ToolName {
                            delegation asks once, with its project root pinned; list and \
                            cancel run freely",
                 preview_keys: &["action", "profile", "task", "workspace", "label", "id"],
+                input_paths: &[],
             },
             ToolName::Timer => ToolPolicy {
                 decision: Decision::Allow,
                 guidance: "setting, listing, showing the time, and cancelling a timer \
                            never asks",
                 preview_keys: &["action", "seconds", "label"],
+                input_paths: &[],
             },
             ToolName::WebSearch => ToolPolicy {
                 decision: Decision::Allow,
                 guidance: "searching the web never asks",
                 preview_keys: &["query", "count", "freshness"],
+                input_paths: &[],
             },
             ToolName::Window => ToolPolicy {
                 decision: Decision::Classified(window_requires_approval),
                 guidance: "listing, reading the active window, and activating a window \
                            run freely; closing a window asks",
                 preview_keys: &["action", "query", "id"],
+                input_paths: &[],
             },
         }
     }
@@ -346,12 +398,12 @@ pub fn preview(name: &str, arguments: &str) -> String {
 }
 
 /// The preview plus the focused application when that is why the gate asks, so
-/// a card about typing says where the keystrokes will land (D1) and a card
+/// a card about typing says where the keystrokes will land (D1, D6) and a card
 /// about Delete says which file manager makes it destructive (D5).
 pub fn preview_with_context(name: &str, arguments: &str, context: &FocusContext) -> String {
     let mut text = render_preview(name, arguments);
     let args = serde_json::from_str::<Value>(arguments).unwrap_or(Value::Null);
-    if requires_focus_context(name, arguments) && focus_is_the_reason(&args, context) {
+    if requires_focus_context(name, arguments) && focus_is_the_reason(name, &args, context) {
         if let Some(app) = context.app.as_deref().map(str::trim) {
             text.push_str(&format!(" (focused: {app})"));
         }
@@ -462,26 +514,40 @@ pub fn requires_approval_with_context(name: &str, arguments: &str, context: &Foc
 }
 
 /// True when the decision for this call depends on which window has focus, so
-/// the runner reads it only for these calls (D1).
+/// the runner reads it only for these calls (D1, D6).
+///
+/// A tool declares its typing and key actions in
+/// [`ToolPolicy::input_paths`]; only a contextual row needs the focus read, while
+/// a row that already asks for those actions runs no desktop lookup.
 pub fn requires_focus_context(name: &str, arguments: &str) -> bool {
-    if name != "computer" {
-        return false;
-    }
     let Ok(args) = serde_json::from_str::<Value>(arguments) else {
         return false;
     };
-    computer_call_uses_focus(&args)
+    let Some(policy) = policy_for(name) else {
+        return false;
+    };
+    matches!(policy.decision, Decision::Contextual(_)) && reaches_input(&args, policy.input_paths)
 }
 
-fn computer_call_uses_focus(args: &Value) -> bool {
+/// True when this call performs one of the tool's declared typing or key
+/// actions. Walks a batch's steps, so a container cannot hide one.
+fn reaches_input(args: &Value, paths: &[&str]) -> bool {
     match action(args) {
-        "type_text" | "key_press" | "key_combo" => true,
         "batch" => args
             .get("steps")
             .and_then(Value::as_array)
-            .is_some_and(|steps| steps.iter().any(computer_call_uses_focus)),
-        _ => false,
+            .is_some_and(|steps| steps.iter().any(|step| reaches_input(step, paths))),
+        name => paths.contains(&name),
     }
+}
+
+/// The one rule for every path that types text or presses keys (D6).
+///
+/// The text or the keystroke lands in whatever has focus: a terminal can run a
+/// shell command with it, and an unreadable focus could be one, so both ask.
+/// Whichever tool names the path, this decision is the same.
+fn input_asks(context: &FocusContext) -> bool {
+    !focus_is_safe(context)
 }
 
 /// Rewrite the arguments stored for a pending confirmation so that the call
@@ -1557,10 +1623,10 @@ fn process_requires_approval(args: &Value) -> bool {
 }
 
 fn computer_requires_approval_with_context(args: &Value, context: &FocusContext) -> bool {
-    // Typing and key input reach whatever has focus. In a terminal the
-    // keystrokes can run a shell command, and an unreadable focus could be a
-    // terminal, so both ask (D1).
-    if computer_call_uses_focus(args) && !focus_is_safe(context) {
+    // Typing and key input reach whatever has focus, and the rule is shared
+    // with every other input path: a terminal or an unreadable focus asks
+    // (D1, D6).
+    if reaches_input(args, COMPUTER_INPUT_PATHS) && input_asks(context) {
         return true;
     }
     match action(args) {
@@ -1774,15 +1840,22 @@ fn presses_editing_key(args: &Value) -> bool {
 }
 
 /// True when the focused application is why this call asks: it is a terminal
-/// (D1), or it is a file manager and the call presses an editing key (D5).
-fn focus_is_the_reason(arguments: &Value, context: &FocusContext) -> bool {
+/// and the call types or presses keys (D1, D6), or it is a file manager and the
+/// call presses an editing key (D5).
+fn focus_is_the_reason(name: &str, arguments: &Value, context: &FocusContext) -> bool {
     let Some(app) = context.app.as_deref().map(str::trim) else {
         return false;
     };
     if app.is_empty() {
         return false;
     }
-    is_terminal_app(app) || (is_destructive_app(app) && presses_editing_key(arguments))
+    let Some(tool) = ToolName::from_name(name) else {
+        return false;
+    };
+    if is_terminal_app(app) && reaches_input(arguments, tool.policy().input_paths) {
+        return true;
+    }
+    tool == ToolName::Computer && is_destructive_app(app) && presses_editing_key(arguments)
 }
 
 /// Terminal application names, lower-case app ids and window application names
@@ -1852,7 +1925,12 @@ pub fn is_terminal_app(app: &str) -> bool {
     !app.is_empty() && configured_terminals().contains(&app)
 }
 
-fn accessibility_requires_approval(args: &Value) -> bool {
+fn accessibility_requires_approval_with_context(args: &Value, context: &FocusContext) -> bool {
+    // Setting a field's text is the same capability as typing: it asks in a
+    // terminal or when the focus cannot be read, whichever tool names it (D6).
+    if reaches_input(args, ACCESSIBILITY_INPUT_PATHS) && input_asks(context) {
+        return true;
+    }
     match action(args) {
         "click" => {
             let target = format!(
@@ -2028,7 +2106,7 @@ mod tests {
         approval_arguments, grant_key, is_terminal_app, pending_text, policy_for, preview,
         preview_with_context, requires_approval as check,
         requires_approval_with_context as check_with, requires_focus_context, secret_refusal,
-        Decision, FocusContext, ToolName, PREVIEW_LIMIT,
+        Decision, FocusContext, ToolName, PREVIEW_LIMIT, TOOLS_WITHOUT_INPUT_PATHS,
     };
     use serde_json::Value;
 
@@ -2586,6 +2664,101 @@ mod tests {
     }
 
     #[test]
+    fn every_input_path_is_decided_by_the_same_capability_rule() {
+        // The same effective action - entering text - through every path that
+        // reaches it. The tool name must not change the decision (D6).
+        let typing = [
+            (
+                "computer",
+                serde_json::json!({"action": "type_text", "text": "ls"}),
+            ),
+            (
+                "accessibility",
+                serde_json::json!({"action": "set_text", "name": "Search", "text": "ls"}),
+            ),
+        ];
+        for (tool, arguments) in &typing {
+            let input = arguments.to_string();
+            // A terminal can run a shell command with the text, and an
+            // unreadable focus could be one, so both ask.
+            for app in ["kitty", "org.gnome.Terminal"] {
+                assert!(
+                    check_with(tool, &input, &focus(app)),
+                    "{tool} must ask in {app}"
+                );
+            }
+            assert!(
+                check_with(tool, &input, &FocusContext::unknown()),
+                "{tool} must fail closed without a focus"
+            );
+            assert!(
+                check(tool, &input),
+                "the context-free wrapper asks for {tool}"
+            );
+            // An ordinary field is free through either path.
+            for app in ["code", "firefox", "org.gnome.gedit"] {
+                assert!(
+                    !check_with(tool, &input, &focus(app)),
+                    "{tool} stays free in {app}"
+                );
+            }
+        }
+
+        // The browser's form path is its own class and asks (D2); no path that
+        // enters text into a form is weaker than it.
+        for input in [
+            r##"{"action":"fill","selector":"#q","text":"hello"}"##,
+            r#"{"action":"press_key","key":"enter"}"#,
+        ] {
+            assert!(check("browser", input), "{input} must ask");
+        }
+
+        // A command that would ask through `shell` cannot run free by being
+        // typed into a terminal: the terminal rule protects the typed path.
+        assert!(check("shell", r#"{"command":"rm -rf build"}"#));
+        assert!(check_with(
+            "computer",
+            r#"{"action":"type_text","text":"rm -rf build"}"#,
+            &focus("kitty")
+        ));
+    }
+
+    #[test]
+    fn every_tool_declares_whether_it_can_type_or_press_keys() {
+        // A tool with no declaration and no entry here is an unclassified input
+        // path, which is exactly what D6 forbids.
+        let mut unclassified = Vec::new();
+        for tool in ToolName::ALL {
+            let declares = !tool.policy().input_paths.is_empty();
+            if declares == TOOLS_WITHOUT_INPUT_PATHS.contains(tool) {
+                unclassified.push(tool.name());
+            }
+        }
+        assert!(
+            unclassified.is_empty(),
+            "classify these tools for D6: {unclassified:?}"
+        );
+
+        // A declared path is either decided from the focus, so the terminal
+        // rule runs, or gated for every call. Nothing may declare an input path
+        // and leave it free.
+        for tool in ToolName::ALL {
+            let policy = tool.policy();
+            if policy.input_paths.is_empty() || matches!(policy.decision, Decision::Contextual(_)) {
+                continue;
+            }
+            for action in policy.input_paths {
+                let input = serde_json::json!({ "action": action }).to_string();
+                assert!(
+                    check_with(tool.name(), &input, &focus("code")),
+                    "{} declares {action} but does not ask outside the focus rule",
+                    tool.name()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn only_input_calls_read_the_focused_window() {
         for input in [
             r#"{"action":"type_text","text":"ls"}"#,
@@ -2595,6 +2768,11 @@ mod tests {
         ] {
             assert!(requires_focus_context("computer", input), "{input}");
         }
+        // Every input path reads the focus, whichever tool names it (D6).
+        assert!(requires_focus_context(
+            "accessibility",
+            r#"{"action":"set_text","name":"Search","text":"ls"}"#
+        ));
         for input in [
             r#"{"action":"screenshot"}"#,
             r#"{"action":"click_text","text":"Send"}"#,
@@ -2604,6 +2782,19 @@ mod tests {
         ] {
             assert!(!requires_focus_context("computer", input), "{input}");
         }
+        // Reading and clicking do not reach the keyboard, and a path that
+        // always asks needs no focus lookup.
+        for input in [
+            r#"{"action":"read"}"#,
+            r#"{"action":"click","name":"Send"}"#,
+            r#"{"action":"get_text"}"#,
+        ] {
+            assert!(!requires_focus_context("accessibility", input), "{input}");
+        }
+        assert!(!requires_focus_context(
+            "browser",
+            r##"{"action":"fill","selector":"#q","text":"hello"}"##
+        ));
         assert!(!requires_focus_context("shell", r#"{"command":"ls"}"#));
         assert!(!requires_focus_context("window", r#"{"action":"active"}"#));
     }
@@ -2635,6 +2826,15 @@ mod tests {
                 &FocusContext::unknown()
             ),
             "computer action=type_text text=hello"
+        );
+        // The other text-entry path names the same terminal (D6).
+        assert_eq!(
+            preview_with_context(
+                "accessibility",
+                r#"{"action":"set_text","name":"Search","text":"ls"}"#,
+                &focus("kitty")
+            ),
+            "accessibility action=set_text name=Search text=ls (focused: kitty)"
         );
         // The suffix still respects the preview limit.
         let long = preview_with_context(
@@ -3312,9 +3512,15 @@ mod tests {
             r#"{"action":"click","name":"Delete account"}"#
         ));
         assert!(!check("accessibility", r#"{"action":"read"}"#));
-        assert!(!check(
+        // Setting text is the typing capability through another path (D6): free
+        // in an ordinary field, gated in a terminal or without a focus.
+        let set_text = r#"{"action":"set_text","text":"hello"}"#;
+        assert!(!check_with("accessibility", set_text, &focus("code")));
+        assert!(check_with("accessibility", set_text, &focus("kitty")));
+        assert!(check_with(
             "accessibility",
-            r#"{"action":"set_text","text":"hello"}"#
+            set_text,
+            &FocusContext::unknown()
         ));
         assert!(!check(
             "accessibility",

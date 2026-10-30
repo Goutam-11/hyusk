@@ -417,7 +417,10 @@ than screenshots.
 Actions: `active`, `apps`, `windows`, `tree`, `find`, `click`, `focus`,
 `set_text`, `get_text`, `read`. `active` reports the focused app, window, and
 element (and with `read`, the visible text) — the fastest way to orient. `find`
-can match by `name`, `role`, and/or visible `text`.
+can match by `name`, `role`, and/or visible `text`. `set_text` writes into the
+focused window, so it asks when the focused application is a terminal (or the
+focus cannot be read), the same rule as `computer` typing; reading, finding, and
+focusing stay free.
 
 Requires `python3` with `pyatspi` and a running AT-SPI bus. Apps only appear if
 they publish an accessibility tree, so run the setup once:

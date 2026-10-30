@@ -407,9 +407,11 @@ see D1's note about not driving the live desktop unattended.
 
 ## D6 — Single-path invariant for typing versus shell
 
-- Status: open · Phase 3 · Priority: medium
+- Status: done · 2026-10-30 · commit `D6PENDING` · Phase 3 · Priority: medium
 - Depends on: D1, D2
-- Evidence: `src/tools/safety.rs:450-457`
+- Evidence: `src/tools/safety.rs:82-97` (`ToolPolicy::input_paths`),
+  `src/tools/safety.rs:533-551` (`reaches_input`, `input_asks`),
+  `src/tools/safety.rs:1927` (`accessibility_requires_approval_with_context`)
 
 **Problem.** The registry has several ways to reach the same capability
 (typing, accessibility `set_text`, browser `fill`, shell). Each has its own
@@ -424,13 +426,74 @@ asserts the same decision for the same effective action, and document it in
 
 **Acceptance criteria**
 
-- [ ] The invariant is written in `AGENTS.md`.
-- [ ] A test covers typing, `set_text`, and browser `fill` for a terminal or
+- [x] The invariant is written in `AGENTS.md`.
+- [x] A test covers typing, `set_text`, and browser `fill` for a terminal or
       form target.
-- [ ] Adding a new input path without a policy entry fails the test.
+- [x] Adding a new input path without a policy entry fails the test.
 
 **Tests**
 
-- [ ] Path-equivalence table.
+- [x] Path-equivalence table
+      (`every_input_path_is_decided_by_the_same_capability_rule`,
+      `every_tool_declares_whether_it_can_type_or_press_keys`,
+      `only_input_calls_read_the_focused_window`,
+      `an_approval_for_typing_names_the_focused_terminal`,
+      `accessible_and_mobile_actions_are_classified`).
 
-**Files.** `AGENTS.md`, `src/tools/safety.rs`, tests.
+**Files.** `AGENTS.md`, `src/tools/safety.rs`, `docs/tools.md`, `README.md`,
+`CHANGELOG.md`, tests.
+
+**Notes (2026-10-30, implemented).** The policy row gained
+`ToolPolicy::input_paths`, the actions that type text or press keys:
+`computer` `type_text`/`key_press`/`key_combo`, `accessibility` `set_text`, and
+`browser` `fill`/`press_key` (declared in `COMPUTER_INPUT_PATHS`,
+`ACCESSIBILITY_INPUT_PATHS`, `BROWSER_INPUT_PATHS`). One shared rule,
+`input_asks`, decides every declared path before the tool's own rules: text
+entry or a key press asks when the focused application is a terminal or the
+focus cannot be read. `reaches_input` walks a batch's steps so a container
+cannot hide a path, and `requires_focus_context` now reads the focus for exactly
+the declared paths on a contextual row, which is why the rule reaches the
+accessibility tool at all. `preview_with_context` names the terminal for any
+input path, not only for `computer`.
+
+The behaviour change is `accessibility set_text`, which used to run free
+everywhere and now asks in a terminal (the real hole: a command could be typed
+into a terminal through `set_text` while the equivalent `computer type_text`
+asked). In an ordinary field it stays free, so the tool remains the fast path
+for forms and dialogs.
+
+Five judgement calls, recorded because the decision was tentative:
+
+- **The equivalence is per target class, not global.** A terminal (gated), an
+  ordinary field (free), and the automation browser profile (gated by D2) are
+  different classes. So the browser's `fill`/`press_key` stay their own,
+  stricter class that asks for every call, while `computer type_text` in an
+  ordinary browser field stays free. The invariant forbids a path being weaker
+  than another path to the *same* class, not every path being equal.
+- **`shell` is not an input path.** It is the capability the terminal rule
+  protects; its command classifier stays in charge, and the test asserts that a
+  command `shell` would ask for asks when typed into a terminal too.
+- **`mobile` is out of scope.** It drives a separate device with its own action
+  rows and no desktop focus; the issue's list of paths is about this machine.
+- **Reading, listing, finding, focusing, `get_text`, and `click` stay free.**
+  They do not reach the keyboard, so they read no focus and ask nothing; only
+  `set_text` is an input path.
+- **The failure the classification test catches is a new tool, not a new
+  action.** `TOOLS_WITHOUT_INPUT_PATHS` names every tool that cannot reach the
+  keyboard, and the test asserts `input_paths.is_empty()` matches membership, so
+  a tool added with no declaration fails with `classify these tools for D6`.
+  An action added to an existing input tool still has to be added to that tool's
+  list by hand; nothing in the schema says which actions type text, so the table
+  stays the declaration and the issue records the limit rather than pretending
+  the test introspects the tools.
+
+The second half of the same test covers the other direction: a declared path on
+a row that is not contextual must ask anyway (the browser case), so a path can
+never be declared and left free.
+
+Drift: the Evidence range (`safety.rs:450-457`) pointed at
+`requires_approval_with_context`; the aliasing paths lived in the three
+classifiers. The declaration is now `ToolPolicy::input_paths`
+(`safety.rs:82-97`) with its lists at 103-105, `TOOLS_WITHOUT_INPUT_PATHS` at
+115, the shared rule in `reaches_input`/`input_asks` at 533-551, and the
+accessibility classifier at 1927.
