@@ -121,7 +121,7 @@ already carried only what the control needs.
 
 ## L2 — Async session and status writes
 
-- Status: done · 2026-10-30 · commit `L2PENDING` · Phase 3 · Priority: medium
+- Status: done · 2026-10-30 · commit `415c28e` · Phase 3 · Priority: medium
 - Depends on: —
 - Evidence: `src/persist.rs` (new writer), `src/agent/runner/session.rs`
   (`save_session`, `SessionSnapshot::capture`), `src/status.rs` (`save`),
