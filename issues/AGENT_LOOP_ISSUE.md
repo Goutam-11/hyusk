@@ -348,7 +348,7 @@ regression guard.
 
 ## L5 — Mobile-link replay across reconnects
 
-- Status: done · 2026-10-30 · commit `L5PENDING` · Phase 3 · Priority: low
+- Status: done · 2026-10-30 · commit `47bdaf0` · Phase 3 · Priority: low
 - Depends on: —
 - Evidence: `src/link/auth.rs` (`StoredDevice::last_sequence`,
   `DeviceStore::accept_sequence`), `src/link/server.rs` (hello reply and the
