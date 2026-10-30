@@ -287,7 +287,7 @@ from env to the parser is covered.
 
 ## L4 — Clamp timer and scheduler durations
 
-- Status: done · 2026-10-30 · commit `L4PENDING` · Phase 3 · Priority: low
+- Status: done · 2026-10-30 · commit `15b9253` · Phase 3 · Priority: low
 - Depends on: —
 - Evidence: `src/tools/timer.rs` (`set`), `src/tools/scheduler.rs`
   (`execute` schedule arm, `bounded_sleep_secs`), `src/tools/mod.rs`
