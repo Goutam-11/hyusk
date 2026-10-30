@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **420 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **424 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -184,6 +184,12 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   treat a later "yes" as an answer. Never re-arm a call from the session, and
   never settle the placeholder on save: a live process still has the card, and
   `safety::PENDING_PREFIX` is the one prefix both sides match.
+- Wait bounds (L4): a model-supplied wait is capped at `tools::MAX_WAIT_SECONDS`
+  (30 days). `timer` refuses a longer `seconds` and `scheduler` refuses an
+  `after_seconds`/`at_unix` further out, both with a failure naming the limit and
+  both schemas advertising it; the schedule worker also caps its own sleep at the
+  bound, so a schedule file from before the clamp cannot overflow the deadline.
+  Never pass a model-supplied `u64` straight into `tokio::time::sleep`.
 - Coalescing writes (L2): the session snapshot and `hyusk-status.json` are never
   written by the caller. `persist::enqueue` takes a builder, keeps at most one
   entry per file (the superseded snapshot is dropped unbuilt), and a single

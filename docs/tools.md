@@ -518,7 +518,10 @@ service process; use `scheduler` for anything that must survive a restart.
 { "action": "show_time" }
 ```
 
-Setting the same label again replaces the earlier timer.
+Setting the same label again replaces the earlier timer. `seconds` is at most
+2592000 (30 days): a longer wait would overflow the deadline the timer sleeps
+on, so it is refused with a clear failure instead of starting a worker that
+would panic (L4).
 
 ## Scheduler
 
@@ -535,7 +538,9 @@ job that becomes due during a foreground turn instead of interrupting it.
 ```
 
 `type` is `reminder`, `workflow`, or `agent_task`; give either `after_seconds`
-or `at_unix`.
+or `at_unix`, and the job must be due within 2592000 seconds (30 days). The same
+bound caps the worker's sleep, so a schedule file written before the limit was
+enforced still cannot overflow it (L4).
 
 ## Task workers
 

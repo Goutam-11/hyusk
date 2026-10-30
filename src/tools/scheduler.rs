@@ -135,7 +135,7 @@ impl SchedulerTool {
                 return;
             }
             loop {
-                let delay = run_at.saturating_sub(now_unix());
+                let delay = bounded_sleep_secs(run_at, now_unix());
                 tokio::time::sleep(Duration::from_secs(delay)).await;
 
                 let action = {
@@ -198,8 +198,18 @@ impl Tool for SchedulerTool {
                 "text": { "type": "string", "description": "Reminder text." },
                 "workflow": { "type": "string", "description": "Name of a configured deterministic workflow." },
                 "prompt": { "type": "string", "description": "Self-contained instruction for a scheduled model-driven task." },
-                "after_seconds": { "type": "integer", "minimum": 1 },
-                "at_unix": { "type": "integer", "minimum": 1 },
+                "after_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    // L4: a longer wait would overflow the timer deadline.
+                    "maximum": super::MAX_WAIT_SECONDS,
+                    "description": "At most 30 days (2592000 seconds)."
+                },
+                "at_unix": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "A Unix timestamp at most 30 days from now."
+                },
                 "id": { "type": "integer", "minimum": 1 }
             },
             "required": ["action"]
@@ -240,6 +250,17 @@ impl Tool for SchedulerTool {
                         ));
                     }
                 };
+
+                // A schedule further out than the maximum would overflow the
+                // timer that waits for it, and is almost certainly a mistake
+                // (L4). The same bound covers after_seconds and at_unix.
+                if run_at_unix.saturating_sub(now_unix()) > super::MAX_WAIT_SECONDS {
+                    return Ok(ToolResult::failure(format!(
+                        "A schedule may be at most {} seconds ({}) away.",
+                        super::MAX_WAIT_SECONDS,
+                        super::MAX_WAIT_LABEL
+                    )));
+                }
 
                 let action = match schedule_type.trim().to_ascii_lowercase().as_str() {
                     "reminder" => {
@@ -440,6 +461,15 @@ fn save_state(state: &SchedulerState) -> Result<()> {
     Ok(())
 }
 
+/// How long the schedule worker sleeps before looking at the item again (L4).
+///
+/// A file written before the clamp could hold a date further out than the
+/// maximum, and the deadline conversion panics past it, so the worker wakes at
+/// the bound and recomputes instead of sleeping for the whole distance.
+fn bounded_sleep_secs(run_at_unix: u64, now: u64) -> u64 {
+    run_at_unix.saturating_sub(now).min(super::MAX_WAIT_SECONDS)
+}
+
 fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -486,6 +516,28 @@ mod tests {
     }
 
     #[test]
+    fn the_worker_sleep_is_bounded() {
+        let now = 1_700_000_000;
+        assert_eq!(super::bounded_sleep_secs(now + 10, now), 10);
+        assert_eq!(
+            super::bounded_sleep_secs(now + crate::tools::MAX_WAIT_SECONDS + 5, now),
+            crate::tools::MAX_WAIT_SECONDS,
+            "a far date never produces a longer sleep"
+        );
+        assert_eq!(
+            super::bounded_sleep_secs(u64::MAX, now),
+            crate::tools::MAX_WAIT_SECONDS,
+            "the value that would overflow is capped"
+        );
+        assert_eq!(super::bounded_sleep_secs(now, now), 0);
+        assert_eq!(
+            super::bounded_sleep_secs(now - 5, now),
+            0,
+            "a past date is due"
+        );
+    }
+
+    #[test]
     fn persistence_creates_parent_and_reloads() {
         let directory = std::env::temp_dir().join(format!("hyusk-scheduler-{}", now_unix()));
         let path = directory.join("nested").join("schedules.json");
@@ -503,6 +555,102 @@ mod tests {
         };
         save_state(&state).expect("save");
         assert_eq!(load_schedules(&path).expect("load"), state.schedules);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[tokio::test]
+    async fn a_schedule_is_bounded_by_the_documented_maximum() {
+        let directory = std::env::temp_dir().join(format!("hyusk-scheduler-bound-{}", now_unix()));
+        let path = directory.join("schedules.json");
+        let (events, _received) = mpsc::channel(2);
+        let tool = SchedulerTool::with_path(path.clone(), events);
+        let max = crate::tools::MAX_WAIT_SECONDS;
+
+        // The boundary: either side of the maximum, plus the value that would
+        // overflow the sleep the scheduler arms (L4).
+        for (seconds, expected, why) in [
+            (0u64, false, "zero is not a delay"),
+            (1, true, "the shortest schedule works"),
+            (max - 1, true, "just under the maximum works"),
+            (max, true, "the maximum itself works"),
+            (max + 1, false, "one second over is refused"),
+            (u64::MAX, false, "a huge value is refused, not a panic"),
+        ] {
+            let result = tool
+                .execute(&format!(
+                    r#"{{"action":"schedule","type":"reminder","text":"bound","after_seconds":{seconds}}}"#
+                ))
+                .await
+                .expect("a refused schedule is a failure, not an error");
+            assert_eq!(result.success, expected, "{why} ({seconds})");
+            if !expected && seconds > max {
+                let error = result.error.unwrap_or_default();
+                assert!(
+                    error.contains("at most"),
+                    "a failure over the limit names it: {error}"
+                );
+            }
+        }
+
+        // The same bound applies to an absolute timestamp, and the schema says
+        // so in words the model can read.
+        let far = now_unix().saturating_add(max + 1);
+        let result = tool
+            .execute(&format!(
+                r#"{{"action":"schedule","type":"reminder","text":"far","at_unix":{far}}}"#
+            ))
+            .await
+            .expect("result");
+        assert!(!result.success, "an at_unix past the maximum is refused");
+        let near = now_unix().saturating_add(60);
+        let result = tool
+            .execute(&format!(
+                r#"{{"action":"schedule","type":"reminder","text":"near","at_unix":{near}}}"#
+            ))
+            .await
+            .expect("result");
+        assert!(result.success, "an at_unix inside the window is accepted");
+
+        let schema = tool.input_schema();
+        assert_eq!(
+            schema["properties"]["after_seconds"]["maximum"],
+            serde_json::json!(max),
+            "the schema advertises the same bound"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[tokio::test]
+    async fn a_persisted_schedule_past_the_maximum_does_not_panic() {
+        // An older file could hold a date further out than the clamp allows;
+        // the rearmed worker must wake at the bound instead of overflowing.
+        let directory = std::env::temp_dir().join(format!("hyusk-scheduler-old-{}", now_unix()));
+        let path = directory.join("schedules.json");
+        let state = SchedulerState {
+            path: path.clone(),
+            schedules: vec![Schedule {
+                id: 1,
+                run_at_unix: u64::MAX,
+                action: ScheduledAction::Reminder {
+                    text: "ancient".into(),
+                },
+            }],
+            next_id: 2,
+            tasks: HashMap::new(),
+        };
+        save_state(&state).expect("save");
+        let (events, _received) = mpsc::channel(2);
+        let tool = SchedulerTool::with_path(path.clone(), events);
+        // Constructing the tool re-arms the pending schedule; a panic in the
+        // worker would fail this test.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let listed = tool.execute(r#"{"action":"list"}"#).await.expect("list");
+        assert!(
+            listed.output.contains("ancient"),
+            "the far schedule stays armed: {}",
+            listed.output
+        );
         let _ = std::fs::remove_dir_all(directory);
     }
 

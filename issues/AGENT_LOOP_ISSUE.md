@@ -287,9 +287,11 @@ from env to the parser is covered.
 
 ## L4 — Clamp timer and scheduler durations
 
-- Status: open · Phase 3 · Priority: low
+- Status: done · 2026-10-30 · commit `L4PENDING` · Phase 3 · Priority: low
 - Depends on: —
-- Evidence: `src/tools/timer.rs:96-104`, `src/tools/scheduler.rs:130-140`
+- Evidence: `src/tools/timer.rs` (`set`), `src/tools/scheduler.rs`
+  (`execute` schedule arm, `bounded_sleep_secs`), `src/tools/mod.rs`
+  (`MAX_WAIT_SECONDS`)
 
 **Problem.** `seconds` is a `u64` straight into `Duration::from_secs` and
 `tokio::time::sleep`. A huge value can overflow the deadline computation and
@@ -300,15 +302,49 @@ clear failure above it. Apply the same rule to schedules and reminders.
 
 **Acceptance criteria**
 
-- [ ] `u64::MAX` seconds returns a failure, not a panic.
-- [ ] The maximum is documented in the tool schema.
-- [ ] Existing timer tests pass.
+- [x] `u64::MAX` seconds returns a failure, not a panic.
+- [x] The maximum is documented in the tool schema.
+- [x] Existing timer tests pass.
 
 **Tests**
 
-- [ ] Boundary table around the maximum.
+- [x] Boundary table around the maximum
+      (`a_timer_is_bounded_by_the_documented_maximum`,
+      `a_schedule_is_bounded_by_the_documented_maximum`,
+      `the_worker_sleep_is_bounded`,
+      `a_persisted_schedule_past_the_maximum_does_not_panic`).
 
-**Files.** `src/tools/timer.rs`, `src/tools/scheduler.rs`.
+**Files.** `src/tools/timer.rs`, `src/tools/scheduler.rs`, `src/tools/mod.rs`,
+`docs/tools.md`, `AGENTS.md`, `CHANGELOG.md`.
+
+**Notes (2026-10-30, implemented).** `tools::MAX_WAIT_SECONDS` (30 days, 2592000
+seconds) is the one bound, with `MAX_WAIT_LABEL` for messages. `timer` `set`
+refuses a longer `seconds` with "A timer may run for at most 2592000 seconds (30
+days).", and the scheduler refuses an `after_seconds`/`at_unix` further out with
+the same shape of message; both schemas carry `maximum` (and a description) so
+the model sees the limit before it calls. The boundary is inclusive: exactly
+2592000 works, one second more is refused.
+
+Three judgement calls, recorded because the decision left them open:
+
+- **One constant, two tools.** The number is shared rather than written twice,
+  because the clamp, the message, and both schemas have to agree and a drifting
+  copy would let one path through.
+- **The scheduler enforces it on the resolved date, not on the field.** Checking
+  `run_at_unix - now` covers `after_seconds` and `at_unix` with one rule and
+  catches any future arithmetic change in between.
+- **The worker caps its own sleep.** A `schedules.json` written before this
+  change (or edited by hand) can hold a date further out than the maximum, and
+  the rearm path sleeps for it; `bounded_sleep_secs` wakes at the bound and
+  recomputes, so the panic is unreachable from the file as well as from a call.
+
+Drift: the Evidence ranges (`timer.rs:96-104`, `scheduler.rs:130-140`) still
+pointed at the right functions; `bounded_sleep_secs` and the shared constant are
+new, so the issue now names the functions rather than ranges. Not covered by a
+test: that the old code actually panicked rather than freezing; the failure mode
+is `tokio::time::sleep`'s deadline overflow, and the boundary table is the
+regression guard.
+
 
 ## L5 — Mobile-link replay across reconnects
 

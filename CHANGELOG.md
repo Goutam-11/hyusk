@@ -69,6 +69,15 @@
 
 ### Changed
 
+- Timers and schedules are bounded at 30 days. Both tools passed a model-supplied
+  `u64` straight into a sleep, so a huge value (`u64::MAX` seconds, or an
+  `at_unix` far in the future) overflowed the deadline conversion and panicked
+  the worker; the schema only enforced a minimum. `tools::MAX_WAIT_SECONDS`
+  (2592000) is now the one bound: `timer` `set` refuses a longer `seconds` and
+  the scheduler refuses an `after_seconds`/`at_unix` further out, each with a
+  failure that names the limit, and both schemas advertise it. The schedule
+  worker also caps its own sleep at the bound, so a `schedules.json` written
+  before the clamp (or by hand) wakes and recomputes instead of panicking.
 - The session snapshot and the status file are written by one coalescing
   writer instead of on the async worker that runs a turn. `persist_session`
   runs after every message and tool result, and each status card rewrote

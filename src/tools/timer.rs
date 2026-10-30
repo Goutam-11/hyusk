@@ -58,7 +58,13 @@ impl Tool for TimerTool {
             "type": "object",
             "properties": {
                 "action": { "type": "string", "enum": ["set", "cancel", "list", "show_time"] },
-                "seconds": { "type": "integer", "minimum": 1 },
+                "seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    // L4: a longer wait would overflow the timer deadline.
+                    "maximum": super::MAX_WAIT_SECONDS,
+                    "description": "At most 30 days (2592000 seconds)."
+                },
                 "label": { "type": "string" }
             },
             "required": ["action"]
@@ -73,6 +79,14 @@ impl Tool for TimerTool {
                 let seconds = input.seconds.unwrap_or(0);
                 if seconds == 0 {
                     return Ok(ToolResult::failure("seconds must be greater than zero"));
+                }
+                // A longer wait overflows the timer deadline (L4).
+                if seconds > super::MAX_WAIT_SECONDS {
+                    return Ok(ToolResult::failure(format!(
+                        "A timer may run for at most {} seconds ({}).",
+                        super::MAX_WAIT_SECONDS,
+                        super::MAX_WAIT_LABEL
+                    )));
                 }
                 let notify_label = label.clone();
                 let ends_at_ms = now_ms().saturating_add(seconds.saturating_mul(1000));
@@ -263,6 +277,50 @@ mod tests {
             .unwrap();
         assert!(cancelled.success);
         assert!(tool.timers.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_timer_is_bounded_by_the_documented_maximum() {
+        let tool = TimerTool::default();
+        let max = crate::tools::MAX_WAIT_SECONDS;
+        // The boundary: one second either side, plus the value that would
+        // overflow the deadline conversion (L4).
+        for (seconds, expected, why) in [
+            (0u64, false, "zero is not a duration"),
+            (1, true, "the smallest timer works"),
+            (max - 1, true, "just under the maximum works"),
+            (max, true, "the maximum itself works"),
+            (max + 1, false, "one second over is refused"),
+            (u64::MAX, false, "a huge value is refused, not a panic"),
+        ] {
+            let result = tool
+                .execute(&format!(
+                    r#"{{"action":"set","seconds":{seconds},"label":"bound-{seconds}"}}"#
+                ))
+                .await
+                .expect("a raise is a failure, not an error");
+            assert_eq!(result.success, expected, "{why} ({seconds})");
+            if seconds > max {
+                let error = result.error.unwrap_or_default();
+                assert!(
+                    error.contains("at most"),
+                    "a failure over the limit names it: {error}"
+                );
+            }
+            let _ = tool
+                .execute(&format!(
+                    r#"{{"action":"cancel","label":"bound-{seconds}"}}"#
+                ))
+                .await;
+        }
+
+        // The maximum is part of the model-facing schema.
+        let schema = tool.input_schema();
+        assert_eq!(
+            schema["properties"]["seconds"]["maximum"],
+            serde_json::json!(max),
+            "the schema advertises the same bound"
+        );
     }
 
     #[tokio::test]
