@@ -191,7 +191,7 @@ new check sits where that strip was.
 
 ## S4 — Launch parity between `process` and `shell`
 
-- Status: done · 2026-10-30 · commit `S4PENDING` · Phase 3 · Priority: low
+- Status: done · 2026-10-30 · commit `96b592d` · Phase 3 · Priority: low
 - Depends on: —
 - Evidence: `src/tools/safety.rs` (`BROWSER_LAUNCHERS`, `is_browser_launcher`,
   `is_web_url`, the shell GUI-launch arm, `process_requires_approval`)
