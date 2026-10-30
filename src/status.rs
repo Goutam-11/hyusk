@@ -71,12 +71,15 @@ fn save(status: &mut Status) {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     status.revision = status.revision.max(now).saturating_add(1);
-    if let Ok(json) = serde_json::to_vec(status) {
-        let path = path();
-        let _ = std::fs::write(&path, json);
-        // The fallback location is /tmp, which other accounts can read (X4).
-        crate::paths::restrict_file(&path);
-    }
+    // The file is written by the one writer task, atomically and owner-only,
+    // so a status update costs the caller no file IO (L2), and the fallback
+    // location /tmp cannot expose the file to another account (X4).
+    let snapshot = status.clone();
+    crate::persist::enqueue(
+        crate::persist::Category::Status,
+        path(),
+        Box::new(move || serde_json::to_vec(&snapshot).ok()),
+    );
     let _ = publisher().send(status.clone());
 }
 pub fn state(value: &str) {

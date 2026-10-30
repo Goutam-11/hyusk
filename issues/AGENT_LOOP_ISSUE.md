@@ -121,9 +121,11 @@ already carried only what the control needs.
 
 ## L2 — Async session and status writes
 
-- Status: open · Phase 3 · Priority: medium
+- Status: done · 2026-10-30 · commit `L2PENDING` · Phase 3 · Priority: medium
 - Depends on: —
-- Evidence: `src/agent/runner/session.rs:84-190`, `src/status.rs:80-105`
+- Evidence: `src/persist.rs` (new writer), `src/agent/runner/session.rs`
+  (`save_session`, `SessionSnapshot::capture`), `src/status.rs` (`save`),
+  `src/main.rs` (`persist::start`, shutdown flush)
 
 **Problem.** `persist_session` runs after every message and tool result, and
 status cards write a JSON file on each update, all synchronously on async
@@ -136,17 +138,77 @@ Keep the synchronous path for shutdown and tests.
 
 **Acceptance criteria**
 
-- [ ] No blocking file IO in the hot path.
-- [ ] At most one queued write per file.
-- [ ] Shutdown flushes the latest snapshot.
-- [ ] Failure to write is logged and does not abort a turn.
+- [x] No blocking file IO in the hot path.
+- [x] At most one queued write per file.
+- [x] Shutdown flushes the latest snapshot.
+- [x] Failure to write is logged and does not abort a turn.
 
 **Tests**
 
-- [ ] Coalescing test with a fake writer.
-- [ ] Shutdown flush test.
+- [x] Coalescing test with a fake writer
+      (`coalescing_keeps_one_pending_write_per_file`,
+      `a_superseded_snapshot_is_not_even_built`).
+- [x] Shutdown flush test
+      (`enqueue_does_no_file_io_and_flush_writes_the_latest_snapshot`).
+- [x] Writer behaviour
+      (`a_snapshot_that_cannot_be_built_is_dropped`,
+      `a_failed_write_is_reported_and_keeps_the_previous_file`,
+      `write_atomically_leaves_a_private_file_and_no_temp_files`,
+      `a_failed_rename_keeps_the_previous_file_and_cleans_the_temp`,
+      `an_older_snapshot_never_overwrites_a_newer_one`,
+      `categories_name_themselves`).
 
-**Files.** `src/agent/runner/session.rs`, `src/status.rs`.
+**Files.** `src/persist.rs`, `src/main.rs`, `src/status.rs`,
+`src/agent/runner/session.rs`, `docs/architecture.md`, `docs/development.md`,
+`AGENTS.md`, `CHANGELOG.md`.
+
+**Notes (2026-10-30, implemented).** `src/persist.rs` owns the writer. A caller
+hands over a `Builder` (`FnOnce() -> Option<Vec<u8>>`) and returns: `enqueue`
+puts at most one entry per path into a small queue, replacing the older builder
+so a superseded snapshot is never serialised, and notifies the task. The task
+drains the queue and replaces each file atomically (temporary file mode `0600`
+in the same directory, rename, then `paths::restrict_file`) with failures logged
+as `[Writer] Could not write <category> <path>: <error>`.
+
+- `session::save_session` now clones the snapshot (`SessionSnapshot::capture`)
+  and hands the writer a builder that sanitises, redacts (X4) and serialises at
+  write time. `session::save_session_to_path` stays as the synchronous shape for
+  tests, and `save_bytes_atomically{,_with}` moved into the writer with its two
+  failure tests.
+- `status::save` builds the JSON in the writer too, so a card update costs the
+  store lock and a queue push. The file is now replaced atomically, which also
+  matters because the GNOME extension polls it.
+- `main` calls `persist::start()` at the top and `persist::flush()` before
+  `process::exit`, printing how many writes it flushed.
+
+Five judgement calls, recorded because the decision left them open:
+
+- **The builder, not the bytes.** Coalescing at the byte level would still
+  serialise (and redact) every snapshot before dropping it; handing over a
+  builder means only the snapshot that actually reaches the disk is built. This
+  is what makes the change win beyond moving the syscall.
+- **A caller without a started writer writes synchronously.** Tests, the
+  standalone workflow binary, and anything before startup keep the old
+  behaviour instead of queueing into a task that will never run. The
+  composition root is the only place that starts the task.
+- **Newest wins, across writers.** Each queued entry carries a generation and a
+  per-path "last written" map; the writer and `flush` share one lock across the
+  write, so a slow writer can never put an older snapshot back over a newer one.
+- **`flush` writes the queue synchronously** instead of waking the task and
+  waiting: shutdown runs inside the runtime that is about to stop.
+- **Status and session stay separate entries in one queue.** They are different
+  files with different owners; "one pending write per file" is the invariant,
+  not "one write in total".
+
+**Not covered by a test:** the claim that `main` starts the writer, because that
+is composition-root wiring; the queue behaviour it relies on is unit-tested,
+and the synchronous fallback is exercised by every existing status test.
+
+Drift: the Evidence range (`session.rs:84-190`, `status.rs:80-105`) still
+pointed at the right functions but not at the writer, because the writer did not
+exist; the issue now names the functions. The session's atomic-write tests moved
+to `persist.rs` with the primitive.
+
 
 ## L3 — Streaming idle timeout
 

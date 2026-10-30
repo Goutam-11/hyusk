@@ -46,7 +46,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **413 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **420 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -184,6 +184,14 @@ Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
   treat a later "yes" as an answer. Never re-arm a call from the session, and
   never settle the placeholder on save: a live process still has the card, and
   `safety::PENDING_PREFIX` is the one prefix both sides match.
+- Coalescing writes (L2): the session snapshot and `hyusk-status.json` are never
+  written by the caller. `persist::enqueue` takes a builder, keeps at most one
+  entry per file (the superseded snapshot is dropped unbuilt), and a single
+  writer task started by the composition root replaces the file atomically with
+  mode `0600`. A caller without a started writer writes synchronously, which is
+  what tests, the workflow binary, and startup rely on; `persist::flush` writes
+  the queue before the process exits. A write failure is logged with its
+  category and never fails a turn.
 - Control state (L1): the armed approval, provider/model, paused-task flag, and
   provider clients live in `agent/control.rs` behind their own lock, so the
   event loop reads and changes them while a turn holds the agent mutex. The lock

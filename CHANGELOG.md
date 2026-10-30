@@ -69,6 +69,18 @@
 
 ### Changed
 
+- The session snapshot and the status file are written by one coalescing
+  writer instead of on the async worker that runs a turn. `persist_session`
+  runs after every message and tool result, and each status card rewrote
+  `hyusk-status.json`; both serialised their snapshot and did their file IO
+  inline. A caller now hands the writer a builder and returns: the queue keeps
+  at most one entry per file (a superseded snapshot is dropped without being
+  serialised), a single writer task replaces the file atomically with mode
+  `0600`, and a snapshot that cannot be built or written is logged with its
+  category instead of failing the turn. The writer starts in the composition
+  root; without it (tests, the standalone workflow binary, early startup) a
+  write still happens synchronously, and shutdown flushes whatever is queued.
+  A stale snapshot can never overwrite a newer one that already landed.
 - A restart no longer leaves a confirmation looking unanswered. The armed call
   lives only in memory, but its placeholder tool result was saved in the
   session, so after a restart the model saw "Pending confirmation for: …" with

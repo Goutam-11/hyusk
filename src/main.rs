@@ -4,6 +4,7 @@ mod credentials;
 mod link;
 mod model;
 mod paths;
+mod persist;
 mod settings;
 mod speech;
 mod status;
@@ -674,6 +675,9 @@ fn build_tools(setup: ToolSetup<'_>) -> ToolRegistry {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // One writer task owns the session snapshot and the status file from here
+    // on, so neither is written on the async worker that runs a turn (L2).
+    persist::start();
     dotenv().ok();
 
     if std::env::var_os("HYUSK_NOVA_SONIC_TEST").is_some() {
@@ -1459,6 +1463,11 @@ async fn main() -> Result<()> {
     // Give the wake thread and runtime a moment to unwind, then exit hard so a
     // detached blocking microphone task cannot keep the process alive.
     tokio::time::sleep(Duration::from_millis(250)).await;
+    // Write whatever the queue still holds before the process goes away (L2).
+    let flushed = persist::flush();
+    if flushed > 0 {
+        println!("[Persist] Flushed {flushed} pending write(s) before exit");
+    }
     std::process::exit(0);
 }
 

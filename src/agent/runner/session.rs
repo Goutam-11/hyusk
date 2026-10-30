@@ -1,10 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, Write},
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::path::{Path, PathBuf};
 
 use crate::types::{
     message::{ContentPart, MessageContent},
@@ -100,16 +95,22 @@ pub(super) fn save_session(
     provider: &str,
     model: &str,
 ) {
-    save_session_to_path(
-        &session_path(),
-        messages,
-        journal,
-        task_paused,
-        provider,
-        model,
+    // The snapshot is cloned here and serialised by the writer, so a persist
+    // that is superseded before it reaches the disk costs one clone and no
+    // serialisation at all (L2).
+    let snapshot = SessionSnapshot::capture(messages, journal, task_paused, provider, model);
+    crate::persist::enqueue(
+        crate::persist::Category::Session,
+        session_path(),
+        Box::new(move || snapshot.serialize()),
     );
 }
 
+/// The synchronous save, for tests that need the file on disk immediately.
+///
+/// The runtime goes through [`save_session`], which hands the writer task a
+/// builder; this is the "keep the synchronous path for tests" half of L2.
+#[cfg(test)]
 fn save_session_to_path(
     path: &Path,
     messages: &[Message],
@@ -118,95 +119,55 @@ fn save_session_to_path(
     provider: &str,
     model: &str,
 ) {
-    let mut snapshot = SessionSnapshot {
-        version: 2,
-        messages: sanitize_session_messages(messages.to_vec()),
-        journal: journal
-            .iter()
-            .rev()
-            .take(32)
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect(),
-        task_paused,
-        provider: provider.to_string(),
-        model: model.to_string(),
+    let snapshot = SessionSnapshot::capture(messages, journal, task_paused, provider, model);
+    let Some(bytes) = snapshot.serialize() else {
+        eprintln!("Could not serialize agent session");
+        return;
     };
-    // X4: this file is the conversation's long-term copy, so the secret-shaped
-    // values the model put into a call, and any the user typed, do not survive
-    // it. Tool results are already redacted on the way out of a tool (X2).
-    redact_for_storage(&mut snapshot.messages);
-    for entry in &mut snapshot.journal {
-        entry.arguments = crate::tools::redact::redact(&entry.arguments).0;
-    }
-
-    let bytes = match serde_json::to_vec(&snapshot) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            eprintln!("Could not serialize agent session");
-            return;
-        }
-    };
-    if let Err(error) = save_bytes_atomically(path, &bytes) {
+    if let Err(error) = crate::persist::write_atomically(path, &bytes) {
         eprintln!("Could not save agent session ({})", error.kind());
     }
 }
 
-fn save_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    save_bytes_atomically_with(
-        path,
-        bytes,
-        |file, bytes| file.write_all(bytes),
-        |from, to| fs::rename(from, to),
-    )
-}
-
-fn save_bytes_atomically_with(
-    path: &Path,
-    bytes: &[u8],
-    write_contents: impl FnOnce(&mut File, &[u8]) -> io::Result<()>,
-    rename_file: impl FnOnce(&Path, &Path) -> io::Result<()>,
-) -> io::Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "session path has no parent directory",
-        )
-    })?;
-    fs::create_dir_all(parent)?;
-
-    let file_name = path.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "session path has no file name")
-    })?;
-    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-    let (temporary, mut file) = loop {
-        let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut temporary_name = file_name.to_os_string();
-        temporary_name.push(format!(".tmp-{}-{sequence}", std::process::id()));
-        let temporary = parent.join(temporary_name);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+impl SessionSnapshot {
+    /// Clone the live conversation into the shape that is saved.
+    fn capture(
+        messages: &[Message],
+        journal: &[ActionJournalEntry],
+        task_paused: bool,
+        provider: &str,
+        model: &str,
+    ) -> Self {
+        let mut snapshot = Self {
+            version: 2,
+            messages: sanitize_session_messages(messages.to_vec()),
+            journal: journal
+                .iter()
+                .rev()
+                .take(32)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect(),
+            task_paused,
+            provider: provider.to_string(),
+            model: model.to_string(),
+        };
+        // X4: this file is the conversation's long-term copy, so the
+        // secret-shaped values the model put into a call, and any the user
+        // typed, do not survive it. Tool results are already redacted on the
+        // way out of a tool (X2).
+        redact_for_storage(&mut snapshot.messages);
+        for entry in &mut snapshot.journal {
+            entry.arguments = crate::tools::redact::redact(&entry.arguments).0;
         }
-        match options.open(&temporary) {
-            Ok(file) => break (temporary, file),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        }
-    };
-
-    let write_result = write_contents(&mut file, bytes);
-    drop(file);
-    let result = write_result.and_then(|()| rename_file(&temporary, path));
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+        snapshot
     }
-    result
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        serde_json::to_vec(self).ok()
+    }
 }
 
 fn session_path() -> PathBuf {
@@ -511,16 +472,15 @@ pub(super) fn truncate_bytes(text: &str, max: usize) -> String {
 mod tests {
     use super::{
         compact_history, context_window_tokens, derived_history_budget, history_bytes,
-        load_session_from, sanitize_session_messages, save_bytes_atomically_with,
-        save_session_to_path, settle_interrupted_approvals, trim_session_messages,
-        ActionJournalEntry, SessionSnapshot, COMPACT_TOOL_OUTPUT_BYTES, MAX_HISTORY_BYTES,
-        MIN_HISTORY_BYTES, PERSISTED_SESSION_MESSAGES, RESTARTED_BEFORE_ANSWER,
+        load_session_from, sanitize_session_messages, save_session_to_path,
+        settle_interrupted_approvals, trim_session_messages, ActionJournalEntry, SessionSnapshot,
+        COMPACT_TOOL_OUTPUT_BYTES, MAX_HISTORY_BYTES, MIN_HISTORY_BYTES,
+        PERSISTED_SESSION_MESSAGES, RESTARTED_BEFORE_ANSWER,
     };
     use crate::types::Message;
     use serde_json::json;
     use std::{
         fs,
-        io::{self, Write},
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
     };
@@ -763,49 +723,6 @@ mod tests {
                 0o600
             );
         }
-        assert_no_temp_files(&path);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn failed_temp_write_preserves_previous_snapshot_and_cleans_own_temp() {
-        let path = test_session_path("write-failure");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let previous = b"previous session";
-        fs::write(&path, previous).unwrap();
-
-        let result = save_bytes_atomically_with(
-            &path,
-            b"replacement",
-            |file, bytes| {
-                file.write_all(&bytes[..3])?;
-                Err(io::Error::other("injected write failure"))
-            },
-            |from, to| fs::rename(from, to),
-        );
-
-        assert!(result.is_err());
-        assert_eq!(fs::read(&path).unwrap(), previous);
-        assert_no_temp_files(&path);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn failed_rename_preserves_previous_snapshot_and_cleans_own_temp() {
-        let path = test_session_path("rename-failure");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let previous = b"previous session";
-        fs::write(&path, previous).unwrap();
-
-        let result = save_bytes_atomically_with(
-            &path,
-            b"replacement",
-            |file, bytes| file.write_all(bytes),
-            |_temporary, _destination| Err(io::Error::other("injected rename failure")),
-        );
-
-        assert!(result.is_err());
-        assert_eq!(fs::read(&path).unwrap(), previous);
         assert_no_temp_files(&path);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
