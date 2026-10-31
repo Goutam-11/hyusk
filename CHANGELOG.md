@@ -551,6 +551,21 @@
 
 ### Fixed
 
+- An external tool can no longer be approved "for this turn". The turn-grant key
+  was derived from the call's `action` field for every non-shell tool, so a
+  server that named one of its arguments `action` earned a grant that then ran
+  later calls with no card - the opposite of what the `ext.` policy row and
+  `AGENTS.md` promise. `grant_key` now refuses the `ext.` namespace outright,
+  and both the safety and provider-contract tests try an action-shaped call.
+- A consolidation merge is no longer undone by the next `remember`. The memory
+  tool kept the store it had loaded at startup while the M3 worker loaded and
+  saved its own copy, and a save replaces the whole table, so each writer could
+  discard the other's work (and `search`/`list`/`why` served a pre-consolidation
+  snapshot for the rest of the session). The pass and the tool now share one
+  gate and both reload inside it.
+- The standing preference block is charged against
+  `HYUSK_MEMORY_PROMPT_TOKENS` like retrieved memory, instead of injecting every
+  preference however many had collected.
 - The `mobile` tool no longer offers a `pairing` action, so the live pairing
   secret cannot appear in a model tool result or session history. Pairing codes
   remain available from the GNOME and Noctalia indicators.

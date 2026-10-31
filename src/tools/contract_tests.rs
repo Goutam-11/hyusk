@@ -234,11 +234,15 @@ async fn every_provider_kind_asks_for_every_tool() {
                 !requires_focus_context(name, r#"{"text":"hello"}"#),
                 "{label}: {name} claims a focus-dependent input path"
             );
-            assert_eq!(
-                crate::tools::safety::grant_key(name, r#"{"text":"hello"}"#),
-                None,
-                "{label}: {name} can be covered by a turn grant"
-            );
+            // A server names its own arguments, so an `action` field must not
+            // turn its tool into one a turn grant can cover (T2).
+            for arguments in [r#"{"text":"hello"}"#, r#"{"action":"status"}"#] {
+                assert_eq!(
+                    crate::tools::safety::grant_key(name, arguments),
+                    None,
+                    "{label}: {name} can be covered by a turn grant ({arguments})"
+                );
+            }
         }
 
         provider.shutdown().await;

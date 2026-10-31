@@ -67,11 +67,11 @@ cargo check --all-targets --offline --features sonic
 cargo test --all-targets --offline --features sonic -- --test-threads=4
 ```
 
-Current baseline: **457 tests passing, 6 ignored** for the default suite.
-`--features sonic` restores the second loop (470 passing, 6 ignored), and
-`--features mobile` restores the link (470 passing, 6 ignored). The workflow
+Current baseline: **459 tests passing, 6 ignored** for the default suite.
+`--features sonic` restores the second loop (472 passing, 6 ignored), and
+`--features mobile` restores the link (472 passing, 6 ignored). The workflow
 editor adds five tests (one ignored) under `--features workflow-editor`, for
-**462 passing, 7 ignored**; all features together are **488 passing, 7
+**464 passing, 7 ignored**; all features together are **490 passing, 7
 ignored**. Default and `--features sonic` clippy are clean; the three
 pre-existing `result_large_err` warnings live behind `mobile` in
 `src/link/server.rs` and appear with that feature. CI runs fmt, clippy, the
@@ -302,7 +302,9 @@ tests live in `#[cfg(test)]` modules beside the code.
   model file, no network); `HYUSK_MEMORY_EMBEDDINGS=0` is the lexical-only
   fallback. `context_for` renders inside `HYUSK_MEMORY_PROMPT_TOKENS` (four
   characters per token, whole notes only), so a retrieval change must keep the
-  budget test green and must not add a provider call.
+  budget test green and must not add a provider call. The standing preference
+  block (G1) is charged against the same budget, header first, so neither block
+  can be injected without bound.
 - Preferences (G1): a preference is a `preference`-kind entry with a `scope`
   (global, or project tied to the shell policy's root) and a `topic`; a newer
   preference on the same topic and scope sets the older one's `superseded_by`,
@@ -319,7 +321,10 @@ tests live in `#[cfg(test)]` modules beside the code.
   stops at its cancellation token or time budget. `consolidate_at` backs the
   database up to `memory-before-consolidation-*.db` before writing, and a
   cancelled pass saves nothing. The worker starts from the composition root
-  (`start_consolidation_worker`) and is stopped by `stop_consolidation`.
+  (`start_consolidation_worker`) and is stopped by `stop_consolidation`. The
+  pass and the `memory` tool share `store_gate`: a save replaces the whole
+  table, so every load-to-save holds that gate and reloads inside it - do not
+  cache a store in the tool or save one loaded outside the gate.
 - Explain and export (M4): `explain_entry` (the `why` action) reports
   provenance, confidence, and the supersession chain, and `export_notes` writes
   one note per active entry into `<HYUSK_MEMORY_VAULT>/hyusk-notes` (directory

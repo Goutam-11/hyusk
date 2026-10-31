@@ -488,6 +488,10 @@ notes, so they apply to every turn rather than only to a matching message.
   is built from the store without it.
 - **Review.** `preferences` lists the active ones with scope, age in days,
   topic, and id.
+- **The block is bounded.** It is charged against the same
+  `HYUSK_MEMORY_PROMPT_TOKENS` budget as retrieved memory (header first, each
+  preference included whole or dropped), so a long list cannot crowd out the
+  turn.
 
 ### Explain and export
 
@@ -540,6 +544,10 @@ off the async workers, and `stop_consolidation` cancels a pass at shutdown.
 - **A backup is written first.** When a pass changes anything, the database is
   copied to `memory-before-consolidation-<unix>.db` (owner-only, one previous
   copy kept) before the write, so a bad merge is recoverable.
+- **One writer at a time.** A save replaces the whole store, so the pass and the
+  `memory` tool share one gate around their load-to-save and both reload inside
+  it. A pass therefore cannot drop a note saved while it ran, and the next
+  `remember` cannot put a stale copy back over a merge (F2).
 - `HYUSK_MEMORY_CONSOLIDATE=0` disables the pass.
 
 Retrieval is hybrid (M2). Each candidate is scored from four signals: the FTS
@@ -563,7 +571,9 @@ The injected block is bounded: `HYUSK_MEMORY_PROMPT_TOKENS` (default 600,
 highest 4000, `0` disables) caps it in estimated tokens, four characters per
 token, with the header and footer charged first. The best-ranked notes are
 included whole and the first one that would not fit ends the block - a note is
-never cut in half. Graph facts share the same budget.
+never cut in half. Graph facts share the same budget, and so does the standing
+preference block, which is charged header first and drops a preference whole
+rather than truncating it.
 
 ## Shell
 

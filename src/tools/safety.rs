@@ -395,7 +395,14 @@ fn external_always_asks(_: &Value) -> bool {
 /// approving `/tmp/x/ls` never covers `ls` or another path form (S3). Other
 /// tools use their `action`. `None` means the shape cannot be determined, and
 /// such a call is never covered by a grant.
+///
+/// An external tool is never grantable (T2): the server chooses its own
+/// argument names, so a shape read from them could cover a call the user never
+/// saw, and the namespace row promises that every external call asks.
 pub fn grant_key(name: &str, arguments: &str) -> Option<(String, String)> {
+    if is_external_tool(name) {
+        return None;
+    }
     let args = serde_json::from_str::<Value>(arguments).ok()?;
     let shape = match name {
         "shell" => {
@@ -3389,8 +3396,8 @@ mod tests {
     }
 
     /// T2: a server's tools are untrusted, so every external call asks. The
-    /// namespace row also has no action to key a turn grant on, so approving
-    /// one call never blankets the rest of the turn.
+    /// namespace is never grantable, whatever argument names the server chose,
+    /// so approving one call never blankets the rest of the turn.
     #[test]
     fn external_tools_always_ask_and_cannot_be_granted_for_a_turn() {
         for name in ["ext.fixture.echo", "ext.git.status", "ext.fetch.get"] {
@@ -3403,11 +3410,20 @@ mod tests {
                 !requires_focus_context(name, r#"{"text":"hello"}"#),
                 "{name} never claims a focus-dependent input path"
             );
-            assert_eq!(
-                grant_key(name, r#"{"text":"hello"}"#),
-                None,
-                "{name} cannot be covered by a turn grant"
-            );
+            // A server picks its own argument names, so an `action` field is
+            // enough to earn a grant key on any other tool: the namespace must
+            // refuse one explicitly rather than rely on the shape being absent.
+            for arguments in [
+                r#"{"text":"hello"}"#,
+                r#"{"action":"status"}"#,
+                r#"{"action":"run","command":"rm -rf ~"}"#,
+            ] {
+                assert_eq!(
+                    grant_key(name, arguments),
+                    None,
+                    "{name} cannot be covered by a turn grant ({arguments})"
+                );
+            }
         }
         // The preview shows the tool and its arguments as written.
         assert_eq!(

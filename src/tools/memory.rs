@@ -704,8 +704,24 @@ fn stored_text(text: &str) -> String {
     crate::tools::redact::redact(text.trim()).0
 }
 
-fn save_store(store: &MemoryStore) -> Result<()> {
-    save_store_at(&memory_db_path(), store)
+/// The one gate for a memory read-modify-write.
+///
+/// A save replaces the whole table, so two writers that each load, mutate, and
+/// save must not overlap: the later save would silently drop the other's work.
+/// The `memory` tool and the M3 consolidation pass therefore take this gate
+/// around their whole load-to-save, and both reload from the database inside
+/// it. Holding a complete copy in the tool instead was the bug this closes:
+/// the copy was loaded at startup, so the next `remember` wrote a stale store
+/// over a consolidation, and the pass could drop a note saved meanwhile.
+///
+/// The worker runs on a blocking thread, so this is a plain `std` mutex. The
+/// order is always gate then database; the load and save helpers never take it.
+fn store_gate() -> std::sync::MutexGuard<'static, ()> {
+    static GATE: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+    GATE.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Write one database file and its Markdown mirror, so a test never touches the
@@ -1317,12 +1333,15 @@ pub fn stop_consolidation() {
 ///
 /// The backup is taken only when something changed, and always before the
 /// write, so the previous store can be recovered from
-/// `memory-before-consolidation-*.db`.
+/// `memory-before-consolidation-*.db`. The whole load-to-save holds
+/// [`store_gate`], so the pass cannot overwrite a note the `memory` tool saved
+/// while it was running, and the next tool write cannot revert the pass.
 fn consolidate_at(
     db: &std::path::Path,
     options: &ConsolidationOptions,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<ConsolidationReport> {
+    let _gate = store_gate();
     let mut store = load_store_at(db);
     let report = consolidate(&mut store, options, cancel, now_unix());
 
@@ -1975,23 +1994,42 @@ fn active_preferences<'a>(store: &'a MemoryStore, project: Option<&str>) -> Vec<
 pub fn preferences_for_prompt() -> String {
     let project =
         crate::tools::safety::current_project_root().map(|root| root.display().to_string());
-    let store = load_store();
+    let store = {
+        // A read takes the gate too, so it observes a completed write rather
+        // than a store the consolidation worker is in the middle of replacing.
+        let _gate = store_gate();
+        load_store()
+    };
     let preferences = active_preferences(&store, project.as_deref());
 
-    render_preferences(&preferences)
+    render_preferences(&preferences, context_budget_tokens())
 }
 
 /// The standing-preference block: one line per preference with its scope, so a
 /// project rule cannot be mistaken for a global one.
-fn render_preferences(preferences: &[&MemoryEntry]) -> String {
-    if preferences.is_empty() {
+///
+/// The block is a prompt sink like the retrieved-memory one, so it is charged
+/// against the same `HYUSK_MEMORY_PROMPT_TOKENS` budget: the header is charged
+/// first, and each preference is added whole or dropped. Before this fix every
+/// preference was injected however long it was or however many had collected
+/// (F3); `0` still disables the whole block.
+fn render_preferences(preferences: &[&MemoryEntry], budget_tokens: usize) -> String {
+    const HEADER: &str =
+        "The user stated these preferences. Honour them unless the user changes them, \
+         and do not ask again about what they already decided.\n";
+
+    if preferences.is_empty() || budget_tokens == 0 {
         return String::new();
     }
 
-    let mut output = String::from(
-        "The user stated these preferences. Honour them unless the user changes them, \
-         and do not ask again about what they already decided.\n",
-    );
+    let header_cost = estimate_tokens(HEADER);
+
+    if budget_tokens <= header_cost {
+        return String::new();
+    }
+
+    let mut output = String::from(HEADER);
+    let mut used = header_cost;
 
     for entry in preferences {
         let scope = if entry.project.is_some() {
@@ -2000,7 +2038,15 @@ fn render_preferences(preferences: &[&MemoryEntry]) -> String {
             "global"
         };
 
-        output.push_str(&format!("- ({scope}) {}\n", safe_context_text(&entry.text)));
+        let line = format!("- ({scope}) {}\n", safe_context_text(&entry.text));
+        let cost = estimate_tokens(&line);
+
+        if used + cost > budget_tokens {
+            break;
+        }
+
+        used += cost;
+        output.push_str(&line);
     }
 
     output
@@ -2035,7 +2081,10 @@ fn render_preference_list(preferences: &[&MemoryEntry], now: u64) -> String {
 pub fn context_for(query: &str, limit: usize) -> String {
     let embedder = LocalEmbedder::new();
     let embedder: Option<&dyn Embedder> = embeddings_enabled().then_some(&embedder);
-    let store = load_store();
+    let store = {
+        let _gate = store_gate();
+        load_store()
+    };
 
     context_from_store(&store, query, limit, context_budget_tokens(), embedder)
 }
@@ -2249,15 +2298,26 @@ fn remember_entry(
     RememberResult::Saved(entry)
 }
 
+/// The model's memory tool: one database file, and no state of its own.
+///
+/// Every action loads the store inside [`store_gate`], so a call always sees
+/// the last completed write - including the ones the consolidation worker
+/// makes - and a save never puts a stale copy back over it.
 pub struct MemoryTool {
-    state: tokio::sync::Mutex<MemoryStore>,
+    db: PathBuf,
 }
 
 impl MemoryTool {
     pub fn new() -> Self {
         Self {
-            state: tokio::sync::Mutex::new(load_store()),
+            db: memory_db_path(),
         }
+    }
+
+    /// A tool over one database file, so a test never touches the real store.
+    #[cfg(test)]
+    fn at(db: PathBuf) -> Self {
+        Self { db }
     }
 }
 
@@ -2352,7 +2412,11 @@ impl Tool for MemoryTool {
         let action: MemoryAction = serde_json::from_str(input)
             .context("Memory tool input must be JSON with an `action` field")?;
 
-        let mut store = self.state.lock().await;
+        // The gate covers the load-to-save, so a consolidation pass and a tool
+        // call cannot each write a whole store over the other's work (F2).
+        // Nothing here awaits while it is held: every branch is synchronous.
+        let _gate = store_gate();
+        let mut store = load_store_at(&self.db);
 
         match action {
             MemoryAction::Remember {
@@ -2408,7 +2472,7 @@ impl Tool for MemoryTool {
                         )))
                     }
                     RememberResult::Saved(entry) => {
-                        save_store(&store)?;
+                        save_store_at(&self.db, &store)?;
 
                         let label = match entry.kind {
                             MemoryKind::Preference => {
@@ -2493,7 +2557,7 @@ impl Tool for MemoryTool {
                     store.graph.drain(0..excess);
                 }
 
-                save_store(&store)?;
+                save_store_at(&self.db, &store)?;
 
                 Ok(ToolResult::success(format!(
                     "Added fact: {subject} {relation} {object}"
@@ -2580,7 +2644,7 @@ impl Tool for MemoryTool {
                     return Ok(ToolResult::failure(format!("No memory with id #{id}.")));
                 }
 
-                save_store(&store)?;
+                save_store_at(&self.db, &store)?;
 
                 Ok(ToolResult::success(format!("Forgot memory #{id}.")))
             }
@@ -2861,6 +2925,11 @@ CREATE TABLE memory_graph (
 );
 CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 ";
+
+    /// A budget that every preference block in these tests fits inside: the
+    /// budget behaviour itself is covered by
+    /// `the_preference_block_stays_inside_the_prompt_budget`.
+    const TEST_PREFERENCE_BUDGET: usize = 2_000;
 
     fn scratch(label: &str) -> PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -3386,7 +3455,7 @@ CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         assert_eq!(active.len(), 1, "the replaced statement is not active");
         assert_eq!(active[0].text, "no, use pnpm");
 
-        let block = render_preferences(&active);
+        let block = render_preferences(&active, TEST_PREFERENCE_BUDGET);
         assert!(block.contains("- (global) no, use pnpm"), "{block}");
         assert!(!block.contains("use npm"), "{block}");
     }
@@ -3415,12 +3484,16 @@ CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             );
         }
 
-        let in_a = render_preferences(&active_preferences(&store, Some("/tmp/project-a")));
+        let in_a = render_preferences(
+            &active_preferences(&store, Some("/tmp/project-a")),
+            TEST_PREFERENCE_BUDGET,
+        );
         assert!(in_a.contains("call me Sir"), "{in_a}");
         assert!(in_a.contains("use pnpm"), "{in_a}");
         assert!(!in_a.contains("use cargo fmt"), "{in_a}");
 
-        let no_project = render_preferences(&active_preferences(&store, None));
+        let no_project =
+            render_preferences(&active_preferences(&store, None), TEST_PREFERENCE_BUDGET);
         assert!(no_project.contains("call me Sir"), "{no_project}");
         assert!(!no_project.contains("use pnpm"), "{no_project}");
     }
@@ -3440,14 +3513,71 @@ CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             panic!("the preference is saved");
         };
 
-        assert!(render_preferences(&active_preferences(&store, None)).contains("use pnpm"));
+        assert!(
+            render_preferences(&active_preferences(&store, None), TEST_PREFERENCE_BUDGET)
+                .contains("use pnpm")
+        );
 
         store.entries.retain(|candidate| candidate.id != entry.id);
 
         assert!(
-            render_preferences(&active_preferences(&store, None)).is_empty(),
+            render_preferences(&active_preferences(&store, None), TEST_PREFERENCE_BUDGET)
+                .is_empty(),
             "the prompt no longer carries the forgotten preference"
         );
+    }
+
+    /// F3: the preference block is part of the prompt, so it obeys the same
+    /// budget as the retrieved notes instead of growing without bound.
+    #[test]
+    fn the_preference_block_stays_inside_the_prompt_budget() {
+        let mut store = MemoryStore::default();
+
+        for index in 0..40 {
+            remember_entry(
+                &mut store,
+                format!("preference {index} {}", "x".repeat(200)),
+                vec![],
+                MemoryKind::Preference,
+                MemoryScope::Global,
+                Some(format!("topic {index}")),
+                None,
+            );
+        }
+
+        let active = active_preferences(&store, None);
+        assert_eq!(active.len(), 40, "every preference is active");
+
+        for budget in [80, 140, 400] {
+            let block = render_preferences(&active, budget);
+
+            assert!(
+                estimate_tokens(&block) <= budget,
+                "budget {budget} produced {} tokens",
+                estimate_tokens(&block)
+            );
+            assert!(
+                block.starts_with("The user stated these preferences."),
+                "a block that fits still carries its header"
+            );
+            // Whatever fits is a whole line, never half a preference.
+            assert!(
+                block
+                    .lines()
+                    .skip(1)
+                    .all(|line| line.starts_with("- (global) ")),
+                "{block}"
+            );
+        }
+
+        // A large budget eventually carries all 40: the cap is the budget, not
+        // a hidden count limit.
+        let full = render_preferences(&active, 100_000);
+        assert_eq!(full.lines().count(), 41, "the header plus every preference");
+
+        // Zero still disables the block, as it disables retrieved memory.
+        assert!(render_preferences(&active, 0).is_empty());
+        assert!(render_preferences(&[], TEST_PREFERENCE_BUDGET).is_empty());
     }
 
     #[test]
@@ -3726,6 +3856,64 @@ CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             Box::pin(async move { read_store(&pool).await })
         })?;
         assert_eq!(reloaded.entries[0].superseded_by, Some(2));
+        Ok(())
+    }
+
+    /// F2: the tool used to keep the store it loaded at startup, so its next
+    /// save wrote that stale copy over a consolidation the worker had already
+    /// saved. It now reloads under the gate, so a merge survives a `remember`.
+    #[tokio::test]
+    async fn a_remember_after_a_consolidation_keeps_the_merge() -> Result<()> {
+        let directory = scratch("consolidate-then-remember");
+        let path = directory.join("memory.db");
+        let now = now_unix();
+        let mut older = note(1, "deploy with make release");
+        older.created_unix = now - 600;
+        older.updated_unix = older.created_unix;
+        older.last_used_unix = older.created_unix;
+        let mut newer = note(2, "deploy with make release.");
+        newer.created_unix = now - 60;
+        newer.updated_unix = newer.created_unix;
+        newer.last_used_unix = newer.created_unix;
+        save_store_at(
+            &path,
+            &MemoryStore {
+                entries: vec![older, newer],
+                ..MemoryStore::default()
+            },
+        )?;
+
+        let tool = MemoryTool::at(path.clone());
+
+        // The startup pass merges the duplicate.
+        let report = consolidate_at(&path, &consolidation_options(), &never_cancelled())?;
+        assert_eq!(report.merged, 1, "{report:?}");
+
+        // The next user-visible write must not undo it.
+        let result = tool
+            .execute(r#"{"action":"remember","text":"the coffee machine is on the third floor"}"#)
+            .await?;
+        assert!(result.success, "{:?}", result.error);
+
+        let after = load_store_at(&path);
+        assert_eq!(after.entries.len(), 3, "the new note is stored");
+        assert_eq!(
+            after.entries[0].superseded_by,
+            Some(2),
+            "the merge survives a tool write"
+        );
+
+        // The tool also reads the merged state: the superseded duplicate no
+        // longer appears in a search, which a stale in-process copy would show.
+        let search = tool
+            .execute(r#"{"action":"search","query":"deploy make release"}"#)
+            .await?;
+        assert!(search.output.contains("[#2]"), "{:?}", search.output);
+        assert!(
+            !search.output.contains("[#1]"),
+            "a superseded entry is not returned: {:?}",
+            search.output
+        );
         Ok(())
     }
 

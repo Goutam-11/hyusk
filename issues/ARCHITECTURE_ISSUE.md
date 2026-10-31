@@ -1595,3 +1595,101 @@ repository still passes `cargo fmt --all -- --check`, `cargo check --all-targets
 default suite: 457 passing, 6 ignored, unchanged. Probes do not apply: there is
 no code path to break. The manual check a future session can run is the loop
 itself on the next real change (branch, review, merge, supervised restart).
+
+## Review follow-ups (2026-11-01)
+
+A fresh review of the closed items re-ran the whole check matrix and probed the
+two guarantees that are easy to state and hard to test. It found three defects
+in work marked done; two are fixed below and one is left open rather than
+implied.
+
+The review itself reproduced every number in `AGENTS.md` (default 457/6,
+`--features sonic` 470/6, `--features mobile` 470/6, `--features
+workflow-editor` 462/7, `--all-features` 488/7, fmt and clippy clean apart from
+the three documented `result_large_err` warnings) and resolved all 301
+issue-named identifiers in this tracker against real `fn` definitions, so
+nothing here was invented. It also confirmed the two unchecked manual criteria
+the tracker already records (P2's cross-target build and P3's installer run)
+are still open, and that P4 is deferred by decision, not skipped.
+
+### F1 — an external call could be granted for a turn (T2)
+
+- Status: fixed 2026-11-01 · commit `b474d60`
+- Evidence: `grant_key` handled `shell` and `task` and fell through to the
+  call's `action` for everything else. An external tool whose schema named an
+  `action` argument therefore produced a grant key, `grant_for_turn` recorded
+  it on "allow for this turn", and `runner.rs` ran later same-shape calls with
+  no card. Probe: `grant_key("ext.git.status", {"action":"status"})` returned
+  `Some(("ext.git.status", "status"))`.
+- Why it mattered: `AGENTS.md`, `docs/tools.md` and the `EXTERNAL_POLICY`
+  comment all promise that a turn grant cannot cover an external call, and a
+  server picks its own argument names - the case the promise exists to exclude.
+  Both existing tests only tried arguments without `action`, so they passed.
+- Fix: `grant_key` returns `None` for the `ext.` namespace before reading any
+  shape, and both `external_tools_always_ask_and_cannot_be_granted_for_a_turn`
+  and `every_provider_kind_asks_for_every_tool` now try
+  `{"action":"status"}` and a `{"action":"run",...}` call.
+- Proof: with the guard removed both tests fail
+  (`local (T2): ext.fixture.echo can be covered by a turn grant
+  ({"action":"status"})`); with it in place both pass.
+- Human-only: this is `src/tools/safety.rs`, so the diff is prepared, not
+  merged.
+
+### F2 — a consolidation merge was undone by the next memory write (M3)
+
+- Status: fixed 2026-11-01 · commit `78805e4`
+- Evidence: `MemoryTool` held the store it loaded at construction
+  (`main.rs` registers it before `start_consolidation_worker`), and every
+  mutation saved the whole table (`DELETE` + re-`INSERT` in `save_store_at`).
+  The M3 worker loaded and saved its own copy from the same file, so the two
+  writers replaced each other. Probe: after a merged pass, the next
+  `remember` left `superseded_by: None` on disk - the merge was gone. The
+  reverse order drops a saved note the same way, and `search`/`list`/`why`
+  served the startup snapshot while the prompt read the file, so the model saw
+  two different stores.
+- Fix: the tool keeps only its database path, `store_gate` serialises every
+  load-to-save, and the tool, `consolidate_at` and the two prompt reads all
+  reload inside it. `MemoryTool::at` exists so a test can drive the tool over a
+  scratch database.
+- Proof: new `a_remember_after_a_consolidation_keeps_the_merge` passes; with
+  the old construction-time snapshot restored it fails at "the merge survives a
+  tool write". The suite is green in every feature combination.
+
+### F3 — the preference block ignored the prompt budget (G1, M2)
+
+- Status: fixed 2026-11-01 · commit `78805e4`
+- Evidence: `preferences_for_prompt` rendered every active preference with no
+  cap, while `HYUSK_MEMORY_PROMPT_TOKENS` was charged only by `context_for`.
+  Probe: 40 preferences at budget 80 produced a 2,291-token block.
+- Fix: `render_preferences` takes the same budget, charges its header first and
+  includes each preference whole or drops it, and `preferences_for_prompt`
+  passes `context_budget_tokens()`.
+- Proof: `the_preference_block_stays_inside_the_prompt_budget` fails at
+  "budget 80 produced 2291 tokens" without the change and passes at 80, 140,
+  and 400 with it, including the `0` - disables case.
+
+### R1 — the memory path still opens the database twice per turn
+
+- Status: open · Priority: low · Size: small
+- Evidence: `preferences_for_prompt` and `context_for` each call `load_store`,
+  and `run_db_at` spawns a thread, builds a runtime and pool, and re-runs
+  `create_schema`/`migrate_schema` on every open, then `.join()`s on the calling
+  thread. Measured 2026-11-01: 5.83 ms per open with 200 entries, so about
+  12 ms of blocking work on a tokio worker per turn.
+- Why it is left open: the fix is a kept pool or a kept connection rather than
+  the `spawn_blocking` shape L2 moved away from, and it changes error and
+  lifetime handling in a path that currently fails soft (a read error logs and
+  returns an empty store). Doing it in the same pass as F2 would have hidden a
+  design decision inside a bug fix.
+- Acceptance criteria: one database open per turn at most (measured), the
+  budget and consistency tests still green, and a read failure still returning
+  an empty store instead of failing the turn.
+- Tests: to add with the change.
+
+### What the review could not verify
+
+The tracker's own open manual list stands unchanged: P2's non-Linux failure,
+P3's installer run, a live MCP/external server, the live Android reconnect, a
+live `bedrock-sonic` call, and every GNOME/Noctalia panel and voice check. No
+panel path was exercised by this review, so the UI half of A6, A7, D1 and D3
+remains proven only by unit tests of the card text and protocol.
