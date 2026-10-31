@@ -686,9 +686,12 @@ produced 531 tokens`.
 
 ## M3 — Consolidation
 
-- Status: open · Wave 3 · Size: medium
-- Depends on: M1
-- Evidence: `src/tools/memory.rs`
+- Status: done 2026-10-31 · Wave 3 · Size: medium
+- Commit: `2df4ec0`
+- Depends on: M1 (planned M1 only; it also uses M2's vectors and G1's scope/topic)
+- Evidence: confirmed before the change at `src/tools/memory.rs` (no pass existed:
+  the store only grew, and every entry kept its confidence forever) and
+  `src/main.rs` (no background memory work at startup)
 
 **Problem.** Duplicates accumulate, stale entries never decay, and there is no
 episodic layer above individual notes.
@@ -700,16 +703,83 @@ cancellable.
 
 **Acceptance criteria**
 
-- [ ] Duplicates merge without losing the newer text.
-- [ ] Superseded entries stop appearing in retrieval.
-- [ ] A backup is written before any removal.
-- [ ] The job respects cancellation and a time budget.
+- [x] Duplicates merge without losing the newer text
+  (`duplicates_merge_without_losing_the_newer_text`).
+- [x] Superseded entries stop appearing in retrieval (the same test asserts the
+  merged duplicate is not returned by `hybrid_entries`; M2 already excludes a
+  `superseded_by` row).
+- [x] A backup is written before any removal
+  (`the_backup_is_written_before_the_store_changes`: the copy is owner-only and
+  holds the pre-pass store; the pass itself never removes an entry).
+- [x] The job respects cancellation and a time budget
+  (`the_pass_stops_when_cancelled`, `a_cancelled_pass_leaves_the_database_untouched`,
+  `the_pass_stops_at_its_time_budget`).
 
 **Tests**
 
-- [ ] Fixture with duplicates, supersession, and cancellation.
+- [x] Fixture with duplicates, supersession, and cancellation: seven tests
+  (merge, the kind/scope/topic guard, decay, cancellation, the budget, the
+  backup, and the untouched database after a cancelled pass).
 
-**Files.** `src/tools/memory.rs`, `src/agent/runtime.rs` (scheduling).
+**Files.** `src/tools/memory.rs`, `src/main.rs`, `docs/tools.md`,
+`.env.example`, `README.md`, `AGENTS.md`.
+
+**Notes (2026-10-31).** `consolidate` is a pure pass over the store; `consolidate_at`
+loads one database, runs it, backs the file up when something changed, and saves.
+The worker (`start_consolidation_worker`) runs it once at startup and then on
+`HYUSK_MEMORY_CONSOLIDATE_INTERVAL_SECS` (default 21600, clamped to
+300-86400), off the async workers via `spawn_blocking`, with a canceller that
+`stop_consolidation` trips at shutdown (called from the composition root just
+before the persistence flush).
+
+Rules:
+
+- **Merge by vector, guard by identity.** Two entries merge only when they share
+  kind, scope, project, and topic *and* their local vectors reach
+  `HYUSK_MEMORY_MERGE_SIMILARITY` (default 0.90). The newer entry keeps its own
+  text and gains the older one's tags; the older entry gets `superseded_by` and a
+  fresh `updated_unix`. Nothing is deleted, so the tombstone explains the merge
+  and the backup can restore it.
+- **Decay is confidence, not deletion.** An entry idle for
+  `HYUSK_MEMORY_CONSOLIDATE_STALE_DAYS` (default 180) loses 15% confidence per
+  pass, floored at 0.1; retrieval already weighs confidence, so it ranks lower
+  rather than vanishing. Because the pass stamps `updated_unix`, an entry decays
+  at most once per stale window. "Idle" is `max(last_used_unix, updated_unix)`,
+  since recall does not write `last_used_unix` yet (M2 left that read-only).
+- **Bounded and cancellable.** The token and the budget
+  (`HYUSK_MEMORY_CONSOLIDATE_BUDGET_MS`, default 2000, clamped 50-30000) are
+  checked before every entry; a cancelled pass returns without saving, which a
+  test asserts by re-reading the database.
+- **One previous backup.** `memory-before-consolidation-<unix>.db`, owner-only,
+  with older copies of that name removed so the directory cannot grow without
+  bound. `HYUSK_MEMORY_CONSOLIDATE=0` disables the whole pass.
+
+Deviations and follow-ups, recorded rather than implied:
+
+- **The episodic summary is not implemented.** The decision names "summarises
+  completed episodes with the selected model"; that needs a provider call from
+  the memory path, and the tool has no client (the runtime holds the model).
+  `MemoryKind::Episode` and its injection exist since M1, so the remaining work
+  is the summariser and a caller; it is left for a follow-up instead of
+  half-wiring a model into the memory tool here.
+- **The worker runs in the composition root, not `runtime.rs`.** The issue's
+  Files list suggested `runtime.rs` for scheduling; `main` already starts the
+  persistence writer there, so the pass follows that precedent and `runtime.rs`
+  needed no change.
+- **No `last_used_unix` write on recall.** It would turn prompt construction
+  into a write; the pass therefore uses the later of the used and updated stamps.
+
+**Verification.** `cargo fmt --all -- --check`, `cargo check --all-targets
+--offline`, and `cargo clippy --all-targets --offline` are clean apart from the
+three pre-existing `result_large_err` warnings. The default suite is 444 passing,
+6 ignored (437 before; seven new tests), and the feature suite 449 passing, 7
+ignored. Probes, each backed up with `cp` and restored in the same bash call
+(markers re-checked, fmt re-checked): raising the merge threshold above any
+similarity failed the merge test (`merged: 0`); removing the backup call failed
+the backup test; disabling the cancellation check failed
+`the_pass_stops_when_cancelled`. Two tests were corrected while writing them:
+they compared raw database bytes across an open, which the WAL checkpoint
+rewrites, so they now compare the stored entries.
 
 ## M4 — Explain and Obsidian export
 
