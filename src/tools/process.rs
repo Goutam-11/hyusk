@@ -8,6 +8,7 @@ use tokio::process::{Child, Command};
 use tokio::time::sleep;
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
 
 pub struct ProcessTool;
 
@@ -110,35 +111,16 @@ fn reap_child(mut child: Child) -> tokio::task::JoinHandle<()> {
 
 #[async_trait]
 impl Tool for ProcessTool {
-    fn name(&self) -> &str {
-        "process"
-    }
-
-    fn description(&self) -> &str {
-        "Launch a local application or process by name without         going through the shell. Use this for browsers, GUI apps,         editors, music players, and any long-running program. The         action is `launch`. The process does not block the agent."
-    }
-
-    fn input_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["launch"],
-                    "description": "What to do with the program. Currently only 'launch'."
-                },
-                "program": {
-                    "type": "string",
-                    "description": "Prefer friendly app aliases: 'brave', 'chrome', 'firefox', 'terminal', 'files'. Aliases resolve Flatpak packaging automatically; do not probe guessed browser executable names. A spawn failure means launch failed, not that permission is needed."
-                },
-                "args": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional command-line arguments."
-                }
-            },
-            "required": ["action", "program"]
-        })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "process",
+            version: CORE_VERSION,
+            description: "Launch a local application or process by name without going through the shell. Use this for browsers, GUI apps, editors, music players, and any long-running program. The action is `launch`. The process does not block the agent.",
+            schema: process_schema,
+            risk: &[RiskClass::Execute, RiskClass::System],
+            capabilities: &[],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -152,6 +134,29 @@ impl Tool for ProcessTool {
             ProcessAction::Launch => Self::launch(&input.program, &input.args).await,
         }
     }
+}
+
+fn process_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["launch"],
+                "description": "What to do with the program. Currently only 'launch'."
+            },
+            "program": {
+                "type": "string",
+                "description": "Prefer friendly app aliases: 'brave', 'chrome', 'firefox', 'terminal', 'files'. Aliases resolve Flatpak packaging automatically; do not probe guessed browser executable names. A spawn failure means launch failed, not that permission is needed."
+            },
+            "args": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Optional command-line arguments."
+            }
+        },
+        "required": ["action", "program"]
+    })
 }
 
 #[cfg(test)]

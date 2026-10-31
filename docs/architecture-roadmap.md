@@ -1,8 +1,9 @@
 # Architecture roadmap
 
-Status: agreed on 2026-10-29; Wave 1 began on 2026-10-31 with P1, P2, and P3.
-Work is tracked in [issues/ARCHITECTURE_ISSUE.md](../issues/ARCHITECTURE_ISSUE.md);
-this document records the direction and the reasoning, not individual tasks.
+Status: agreed on 2026-10-29. Wave 1 (P1, P2, P3, T1) was completed on
+2026-10-31. Work is tracked in
+[issues/ARCHITECTURE_ISSUE.md](../issues/ARCHITECTURE_ISSUE.md); this document
+records the direction and the reasoning, not individual tasks.
 
 This roadmap starts after the permission Phase 1 work in
 [issues/README.md](../issues/README.md). It does not change the permission

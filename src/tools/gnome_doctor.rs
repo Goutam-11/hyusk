@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Level {
@@ -468,16 +469,16 @@ impl Default for GnomeDoctorTool {
 
 #[async_trait]
 impl Tool for GnomeDoctorTool {
-    fn name(&self) -> &str {
-        "gnome_doctor"
-    }
-
-    fn description(&self) -> &str {
-        "Run read-only checks for GNOME computer-use readiness: session type, Python/AT-SPI, toolkit accessibility, the Hyusk shell extension, RemoteDesktop portal, optional Tesseract OCR, and the local .env file mode. Does not request permissions or change settings."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({ "type": "object", "properties": {}, "additionalProperties": false })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "gnome_doctor",
+            version: CORE_VERSION,
+            description: "Run read-only checks for GNOME computer-use readiness: session type, Python/AT-SPI, toolkit accessibility, the Hyusk shell extension, RemoteDesktop portal, optional Tesseract OCR, and the local .env file mode. Does not request permissions or change settings.",
+            schema: gnome_doctor_schema,
+            risk: &[RiskClass::Read],
+            capabilities: &[],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -489,6 +490,10 @@ impl Tool for GnomeDoctorTool {
             &diagnostics().await,
         ))?))
     }
+}
+
+fn gnome_doctor_schema() -> Value {
+    json!({ "type": "object", "properties": {}, "additionalProperties": false })
 }
 
 #[cfg(test)]

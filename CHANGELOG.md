@@ -4,6 +4,19 @@
 
 ### Added
 
+- Every tool now declares a manifest (T1): name, version, description, JSON
+  schema, risk classes, capability needs, and source (`core` for the built-in
+  tools). `Tool::manifest` has no default, so a tool without one does not
+  compile; `ToolRegistry::register` validates the declaration at startup and
+  panics with one message on an empty name, a version that is not
+  `major.minor.patch`, an empty or oversized description, a schema that is not an
+  object schema, a `required` entry `properties` does not declare, no risk
+  class, a name that disagrees with the tool, a duplicate, or an external
+  source. The model-facing specs are generated from the manifests, and
+  `conformance()` ties them to the approval policy table: every registered tool
+  needs a policy row, and the `input` capability must match the row's declared
+  input paths. A tool can self-test its declaration with
+  `manifest().conformance()`. The per-action gate is unchanged.
 - The agent declares Linux as its only supported target. `src/main.rs` fails any
   other build with one explicit `compile_error!` instead of a pile of missing
   symbols, and the macOS and Windows branches are gone: the `open`/`cmd`

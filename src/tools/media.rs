@@ -7,6 +7,7 @@ use tokio::process::Command;
 const PLAYERCTL_TIMEOUT: Duration = Duration::from_secs(3);
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
 
 pub struct MediaTool;
 
@@ -125,46 +126,16 @@ impl MediaTool {
 
 #[async_trait]
 impl Tool for MediaTool {
-    fn name(&self) -> &str {
-        "media"
-    }
-
-    fn description(&self) -> &str {
-        "Control media playback on the local desktop via MPRIS.         Works with Spotify, YouTube Music in a browser, VLC, mpv,         and any other MPRIS player. Requires `playerctl` to be         installed. `status` returns the current track (artist, title,         album) and whether it is playing; `position` returns the playback         position; `shuffle`, `repeat`, and `seek` adjust playback."
-    }
-
-    fn input_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": [
-                        "play", "pause", "play_pause", "next",
-                        "previous", "stop", "status", "volume",
-                        "volume_up", "volume_down", "shuffle", "repeat",
-                        "seek", "position"
-                    ],
-                    "description": "What to do."
-                },
-                "level": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 100,
-                    "description": "Volume level 0-100. Only used when action is 'volume'."
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["off", "one", "all"],
-                    "description": "Repeat mode for the `repeat` action."
-                },
-                "offset": {
-                    "type": "string",
-                    "description": "Seek '+10' or '-5' seconds relative to now; unsigned values are absolute seconds. Trailing-sign playerctl notation ('10+', '5-') is also accepted."
-                }
-            },
-            "required": ["action"]
-        })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "media",
+            version: CORE_VERSION,
+            description: "Control media playback on the local desktop via MPRIS. Works with Spotify, YouTube Music in a browser, VLC, mpv, and any other MPRIS player. Requires `playerctl` to be installed. `status` returns the current track (artist, title, album) and whether it is playing; `position` returns the playback position; `shuffle`, `repeat`, and `seek` adjust playback.",
+            schema: media_schema,
+            risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Execute],
+            capabilities: &[],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -238,6 +209,40 @@ impl Tool for MediaTool {
             MediaAction::Position => Self::run(&["position"]).await,
         }
     }
+}
+
+fn media_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": [
+                    "play", "pause", "play_pause", "next",
+                    "previous", "stop", "status", "volume",
+                    "volume_up", "volume_down", "shuffle", "repeat",
+                    "seek", "position"
+                ],
+                "description": "What to do."
+            },
+            "level": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "Volume level 0-100. Only used when action is 'volume'."
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["off", "one", "all"],
+                "description": "Repeat mode for the `repeat` action."
+            },
+            "offset": {
+                "type": "string",
+                "description": "Seek '+10' or '-5' seconds relative to now; unsigned values are absolute seconds. Trailing-sign playerctl notation ('10+', '5-') is also accepted."
+            }
+        },
+        "required": ["action"]
+    })
 }
 
 /// playerctl uses trailing signs for relative seeks. Passing the documented

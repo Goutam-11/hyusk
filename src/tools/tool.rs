@@ -1,6 +1,6 @@
+use super::manifest::ToolManifest;
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::{json, Value};
 
 #[derive(Debug)]
 pub struct ToolResult {
@@ -40,16 +40,21 @@ impl ToolResult {
 
 #[async_trait]
 pub trait Tool: Send + Sync {
-    fn name(&self) -> &str;
-
-    fn description(&self) -> &str;
-
-    /// JSON Schema describing the arguments this tool accepts.
-    /// Defaults to a permissive empty object so existing tools
-    /// keep compiling without overrides.
-    fn input_schema(&self) -> Value {
-        json!({ "type": "object" })
-    }
+    /// The tool's declaration (T1): name, version, description, schema, risk
+    /// classes, capability needs, and source.
+    ///
+    /// There is no default, so a tool cannot compile without one. The registry
+    /// checks it when the tool registers, and the name, description, and schema
+    /// the model sees are read back from here rather than declared twice.
+    fn manifest(&self) -> ToolManifest;
 
     async fn execute(&self, input: &str) -> Result<ToolResult>;
+
+    fn name(&self) -> &str {
+        self.manifest().name
+    }
+
+    fn description(&self) -> &str {
+        self.manifest().description
+    }
 }

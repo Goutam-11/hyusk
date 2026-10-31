@@ -19,6 +19,7 @@ use tokio::process::Command;
 use tokio::time::sleep;
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{Capability, RiskClass, Source, ToolManifest, CORE_VERSION};
 
 const MAX_TEXT_BYTES: usize = 100_000;
 const MAX_CLICKS: u32 = 20;
@@ -2226,165 +2227,31 @@ async fn wait(milliseconds: u64) -> Result<ToolResult> {
 
 #[async_trait]
 impl Tool for ComputerTool {
-    fn name(&self) -> &str {
-        "computer"
-    }
-
-    fn description(&self) -> &str {
-        "Control the local desktop: inspect the screen with screenshots/OCR, \
-         combine a full-desktop screenshot with the active window's bounded \
-         AT-SPI tree using `app_state`, locate labeled UI elements with find_text, \
-         click them with click_text, \
-         read the pointer with cursor, move and click the mouse, drag, scroll, \
-         type text, press keys, and wait. Coordinates are global screen pixels \
-         with the origin at the top-left. When MODEL_VISION=1, a `screenshot` is \
-         attached to the conversation as an image; inspect it directly instead \
-         of calling `ocr`. This tool can affect the user's real desktop; use it \
-         only for actions the user asked for."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": [
-                        "status",
-                        "screens",
-                        "cursor",
-                        "find_text",
-                        "click_text",
-                        "batch",
-                        "clipboard_set",
-                        "clipboard_get",
-                        "clipboard_clear",
-                        "open_url",
-                        "focus_window",
-                        "screenshot",
-                        "app_state",
-                        "ocr",
-                        "mouse_move",
-                        "mouse_click",
-                        "mouse_drag",
-                        "scroll",
-                        "type_text",
-                        "key_press",
-                        "key_combo",
-                        "wait"
-                    ],
-                    "description": "The desktop action to perform."
-                },
-                "x": {
-                    "type": "integer",
-                    "description": "Absolute X coordinate in screen pixels, or relative X offset when `relative` is true. Required for `mouse_move`; optional for `mouse_click` and `scroll`."
-                },
-                "y": {
-                    "type": "integer",
-                    "description": "Absolute Y coordinate in screen pixels, or relative Y offset when `relative` is true. Required for `mouse_move`; optional for `mouse_click` and `scroll`."
-                },
-                "relative": {
-                    "type": "boolean",
-                    "description": "For `mouse_move`, move by the given offset instead of to an absolute position. Defaults to false."
-                },
-                "button": {
-                    "type": "string",
-                    "enum": ["left", "right", "middle", "back", "forward"],
-                    "description": "Mouse button. Defaults to left."
-                },
-                "count": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 20,
-                    "description": "Number of clicks or key repetitions. Defaults to 1."
-                },
-                "from": {
-                    "type": "object",
-                    "description": "Start point for `mouse_drag`.",
-                    "properties": {
-                        "x": { "type": "integer" },
-                        "y": { "type": "integer" }
-                    },
-                    "required": ["x", "y"]
-                },
-                "to": {
-                    "type": "object",
-                    "description": "End point for `mouse_drag`.",
-                    "properties": {
-                        "x": { "type": "integer" },
-                        "y": { "type": "integer" }
-                    },
-                    "required": ["x", "y"]
-                },
-                "axis": {
-                    "type": "string",
-                    "enum": ["vertical", "horizontal"],
-                    "description": "Scroll axis for `scroll`. Defaults to vertical."
-                },
-                "amount": {
-                    "type": "integer",
-                    "description": "Scroll direction and distance. Positive scrolls down/right, negative scrolls up/left. Required for `scroll`."
-                },
-                "text": {
-                    "type": "string",
-                    "description": "Text to type for `type_text`."
-                },
-                "key": {
-                    "type": "string",
-                    "description": "A single character or named key such as 'enter', 'escape', 'tab', 'ctrl', 'f1', or 'numpad7'. Required for `key_press`."
-                },
-                "keys": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Ordered key names for `key_combo`, for example [\"ctrl\", \"l\"] or [\"ctrl\", \"shift\", \"t\"]."
-                },
-                "region": {
-                    "type": "object",
-                    "description": "Optional screenshot region in global screen pixels.",
-                    "properties": {
-                        "x": { "type": "integer" },
-                        "y": { "type": "integer" },
-                        "width": { "type": "integer", "minimum": 1 },
-                        "height": { "type": "integer", "minimum": 1 }
-                    },
-                    "required": ["x", "y", "width", "height"]
-                },
-                "include_cursor": {
-                    "type": "boolean",
-                    "description": "Include the cursor in screenshots when the backend supports it. Defaults to false."
-                },
-                "inline_image": {
-                    "type": "boolean",
-                    "description": "Only used when MODEL_VISION=0. When vision is enabled, screenshots are attached to the model automatically regardless of this flag."
-                },
-                "max_depth": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Maximum active-window AT-SPI tree depth for `app_state` (default 5)." },
-                "max_nodes": { "type": "integer", "minimum": 1, "maximum": 2000, "description": "Maximum active-window AT-SPI nodes for `app_state` (default 2000)." },
-                "path": {
-                    "type": "string",
-                    "description": "Existing image path for `ocr`, `find_text`, or `click_text`. When omitted, a fresh screenshot is taken."
-                },
-                "steps": {
-                    "type": "array",
-                    "description": "Ordered computer actions for `batch`. Each entry is a normal computer action. At most 50 steps.",
-                    "items": { "type": "object" }
-                },
-                "url": {
-                    "type": "string",
-                    "description": "URL to open with the desktop default browser for `open_url`."
-                },
-                "title": {
-                    "type": "string",
-                    "description": "Window title substring to focus for `focus_window`."
-                },
-                "milliseconds": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 30000,
-                    "description": "Wait duration for `wait`. Defaults to 1000 ms."
-                }
-            },
-            "required": ["action"]
-        })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "computer",
+            version: CORE_VERSION,
+            description: "Control the local desktop: inspect the screen with screenshots/OCR, \
+            combine a full-desktop screenshot with the active window's bounded \
+            AT-SPI tree using `app_state`, locate labeled UI elements with find_text, \
+            click them with click_text, \
+            read the pointer with cursor, move and click the mouse, drag, scroll, \
+            type text, press keys, and wait. Coordinates are global screen pixels \
+            with the origin at the top-left. When MODEL_VISION=1, a `screenshot` is \
+            attached to the conversation as an image; inspect it directly instead \
+            of calling `ocr`. This tool can affect the user's real desktop; use it \
+            only for actions the user asked for.",
+            schema: computer_schema,
+            risk: &[
+                RiskClass::Read,
+                RiskClass::Mutate,
+                RiskClass::Input,
+                RiskClass::Execute,
+                RiskClass::System,
+            ],
+            capabilities: &[Capability::Input, Capability::Screenshot],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -2415,6 +2282,150 @@ impl Tool for ComputerTool {
         }
         result
     }
+}
+
+fn computer_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": [
+                    "status",
+                    "screens",
+                    "cursor",
+                    "find_text",
+                    "click_text",
+                    "batch",
+                    "clipboard_set",
+                    "clipboard_get",
+                    "clipboard_clear",
+                    "open_url",
+                    "focus_window",
+                    "screenshot",
+                    "app_state",
+                    "ocr",
+                    "mouse_move",
+                    "mouse_click",
+                    "mouse_drag",
+                    "scroll",
+                    "type_text",
+                    "key_press",
+                    "key_combo",
+                    "wait"
+                ],
+                "description": "The desktop action to perform."
+            },
+            "x": {
+                "type": "integer",
+                "description": "Absolute X coordinate in screen pixels, or relative X offset when `relative` is true. Required for `mouse_move`; optional for `mouse_click` and `scroll`."
+            },
+            "y": {
+                "type": "integer",
+                "description": "Absolute Y coordinate in screen pixels, or relative Y offset when `relative` is true. Required for `mouse_move`; optional for `mouse_click` and `scroll`."
+            },
+            "relative": {
+                "type": "boolean",
+                "description": "For `mouse_move`, move by the given offset instead of to an absolute position. Defaults to false."
+            },
+            "button": {
+                "type": "string",
+                "enum": ["left", "right", "middle", "back", "forward"],
+                "description": "Mouse button. Defaults to left."
+            },
+            "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "description": "Number of clicks or key repetitions. Defaults to 1."
+            },
+            "from": {
+                "type": "object",
+                "description": "Start point for `mouse_drag`.",
+                "properties": {
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" }
+                },
+                "required": ["x", "y"]
+            },
+            "to": {
+                "type": "object",
+                "description": "End point for `mouse_drag`.",
+                "properties": {
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" }
+                },
+                "required": ["x", "y"]
+            },
+            "axis": {
+                "type": "string",
+                "enum": ["vertical", "horizontal"],
+                "description": "Scroll axis for `scroll`. Defaults to vertical."
+            },
+            "amount": {
+                "type": "integer",
+                "description": "Scroll direction and distance. Positive scrolls down/right, negative scrolls up/left. Required for `scroll`."
+            },
+            "text": {
+                "type": "string",
+                "description": "Text to type for `type_text`."
+            },
+            "key": {
+                "type": "string",
+                "description": "A single character or named key such as 'enter', 'escape', 'tab', 'ctrl', 'f1', or 'numpad7'. Required for `key_press`."
+            },
+            "keys": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Ordered key names for `key_combo`, for example [\"ctrl\", \"l\"] or [\"ctrl\", \"shift\", \"t\"]."
+            },
+            "region": {
+                "type": "object",
+                "description": "Optional screenshot region in global screen pixels.",
+                "properties": {
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" },
+                    "width": { "type": "integer", "minimum": 1 },
+                    "height": { "type": "integer", "minimum": 1 }
+                },
+                "required": ["x", "y", "width", "height"]
+            },
+            "include_cursor": {
+                "type": "boolean",
+                "description": "Include the cursor in screenshots when the backend supports it. Defaults to false."
+            },
+            "inline_image": {
+                "type": "boolean",
+                "description": "Only used when MODEL_VISION=0. When vision is enabled, screenshots are attached to the model automatically regardless of this flag."
+            },
+            "max_depth": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Maximum active-window AT-SPI tree depth for `app_state` (default 5)." },
+            "max_nodes": { "type": "integer", "minimum": 1, "maximum": 2000, "description": "Maximum active-window AT-SPI nodes for `app_state` (default 2000)." },
+            "path": {
+                "type": "string",
+                "description": "Existing image path for `ocr`, `find_text`, or `click_text`. When omitted, a fresh screenshot is taken."
+            },
+            "steps": {
+                "type": "array",
+                "description": "Ordered computer actions for `batch`. Each entry is a normal computer action. At most 50 steps.",
+                "items": { "type": "object" }
+            },
+            "url": {
+                "type": "string",
+                "description": "URL to open with the desktop default browser for `open_url`."
+            },
+            "title": {
+                "type": "string",
+                "description": "Window title substring to focus for `focus_window`."
+            },
+            "milliseconds": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 30000,
+                "description": "Wait duration for `wait`. Defaults to 1000 ms."
+            }
+        },
+        "required": ["action"]
+    })
 }
 
 impl ComputerTool {
@@ -2836,7 +2847,7 @@ mod tests {
 
     #[test]
     fn schema_advertises_all_actions() {
-        let schema = ComputerTool::new().input_schema();
+        let schema = computer_schema();
         let actions = schema["properties"]["action"]["enum"]
             .as_array()
             .expect("action enum");

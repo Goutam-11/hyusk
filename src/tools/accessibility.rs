@@ -13,6 +13,7 @@ use tokio::{
 };
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{Capability, RiskClass, Source, ToolManifest, CORE_VERSION};
 
 /*
  * Walking a large AT-SPI tree is slow (every node is a D-Bus round trip);
@@ -220,102 +221,28 @@ fn pretty(response: &Value) -> String {
 
 #[async_trait]
 impl Tool for AccessibilityTool {
-    fn name(&self) -> &str {
-        "accessibility"
-    }
-
-    fn description(&self) -> &str {
-        "Control and read GUI applications natively through Linux AT-SPI2 \
-         accessibility -- the fastest and most reliable way to drive the \
-         desktop, no screenshots needed. Start with `active` to see the focused \
-         window and element, then `windows`/`apps` to list them. `tree` \
-         inspects one, `find` locates an element by name/role/text, and `read` \
-         dumps the visible text content of an app (the native replacement for \
-         screenshot+OCR). Act on returned paths with `click` (optionally \
-         `action_name`); if the element has bounds but no clickable AT-SPI action, \
-         `click` falls back to a desktop mouse click at its center. Use `focus`, \
-         `set_text`, or `get_text` for other interactions. Some apps \
-         (Chromium/Electron, or any app while toolkit-accessibility is off) \
-         expose no tree; responses include `warnings` when that is the case, \
-         and you should then fall back to the `computer` tool."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": [
-                        "active",
-                        "apps",
-                        "windows",
-                        "tree",
-                        "find",
-                        "read",
-                        "click",
-                        "focus",
-                        "set_text",
-                        "get_text"
-                    ],
-                    "description": "Accessibility operation. `active` reports the focused window and element."
-                },
-                "action_name": {
-                    "type": "string",
-                    "description": "Optional exact AT-SPI action name for `click` (e.g. 'press', 'open'). Without it, click/press/activate/toggle actions are selected; if none exists and bounds are available, the tool uses a computer mouse click at the element center."
-                },
-                "read": {
-                    "type": "boolean",
-                    "description": "For `active`, also return the active window's visible text lines (like `read`)."
-                },
-                "max_chars": {
-                    "type": "integer",
-                    "minimum": 200,
-                    "maximum": 20000,
-                    "description": "Maximum text characters returned by `read`. Defaults to 4000."
-                },
-                "app": {
-                    "type": "integer",
-                    "description": "Application index from `apps`."
-                },
-                "name": {
-                    "type": "string",
-                    "description": "Element name substring for `find`/`click`/`focus`/`set_text`."
-                },
-                "role": {
-                    "type": "string",
-                    "description": "Element role substring, e.g. 'push button', 'entry', 'link'."
-                },
-                "path": {
-                    "type": "array",
-                    "items": { "type": "integer" },
-                    "description": "Exact accessibility path returned by `find`/`tree`."
-                },
-                "text": {
-                    "type": "string",
-                    "description": "For `find`/`click`/`focus`: match the element's visible text (useful when the name is empty). For `set_text`: the text to write into the field."
-                },
-                "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 200,
-                    "description": "Maximum results. Defaults to 20 for `find`."
-                },
-                "max_depth": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 12,
-                    "description": "Maximum tree depth. Defaults to 5."
-                },
-                "max_nodes": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 20000,
-                    "description": "Maximum nodes to visit. Defaults to 2000 for `tree`."
-                }
-            },
-            "required": ["action"]
-        })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "accessibility",
+            version: CORE_VERSION,
+            description: "Control and read GUI applications natively through Linux AT-SPI2 \
+            accessibility -- the fastest and most reliable way to drive the \
+            desktop, no screenshots needed. Start with `active` to see the focused \
+            window and element, then `windows`/`apps` to list them. `tree` \
+            inspects one, `find` locates an element by name/role/text, and `read` \
+            dumps the visible text content of an app (the native replacement for \
+            screenshot+OCR). Act on returned paths with `click` (optionally \
+            `action_name`); if the element has bounds but no clickable AT-SPI action, \
+            `click` falls back to a desktop mouse click at its center. Use `focus`, \
+            `set_text`, or `get_text` for other interactions. Some apps \
+            (Chromium/Electron, or any app while toolkit-accessibility is off) \
+            expose no tree; responses include `warnings` when that is the case, \
+            and you should then fall back to the `computer` tool.",
+            schema: accessibility_schema,
+            risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Input],
+            capabilities: &[Capability::Input, Capability::Accessibility],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -383,6 +310,84 @@ impl Tool for AccessibilityTool {
 
         Ok(ToolResult::success(pretty(&response)))
     }
+}
+
+fn accessibility_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": [
+                    "active",
+                    "apps",
+                    "windows",
+                    "tree",
+                    "find",
+                    "read",
+                    "click",
+                    "focus",
+                    "set_text",
+                    "get_text"
+                ],
+                "description": "Accessibility operation. `active` reports the focused window and element."
+            },
+            "action_name": {
+                "type": "string",
+                "description": "Optional exact AT-SPI action name for `click` (e.g. 'press', 'open'). Without it, click/press/activate/toggle actions are selected; if none exists and bounds are available, the tool uses a computer mouse click at the element center."
+            },
+            "read": {
+                "type": "boolean",
+                "description": "For `active`, also return the active window's visible text lines (like `read`)."
+            },
+            "max_chars": {
+                "type": "integer",
+                "minimum": 200,
+                "maximum": 20000,
+                "description": "Maximum text characters returned by `read`. Defaults to 4000."
+            },
+            "app": {
+                "type": "integer",
+                "description": "Application index from `apps`."
+            },
+            "name": {
+                "type": "string",
+                "description": "Element name substring for `find`/`click`/`focus`/`set_text`."
+            },
+            "role": {
+                "type": "string",
+                "description": "Element role substring, e.g. 'push button', 'entry', 'link'."
+            },
+            "path": {
+                "type": "array",
+                "items": { "type": "integer" },
+                "description": "Exact accessibility path returned by `find`/`tree`."
+            },
+            "text": {
+                "type": "string",
+                "description": "For `find`/`click`/`focus`: match the element's visible text (useful when the name is empty). For `set_text`: the text to write into the field."
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "description": "Maximum results. Defaults to 20 for `find`."
+            },
+            "max_depth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 12,
+                "description": "Maximum tree depth. Defaults to 5."
+            },
+            "max_nodes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20000,
+                "description": "Maximum nodes to visit. Defaults to 2000 for `tree`."
+            }
+        },
+        "required": ["action"]
+    })
 }
 
 #[cfg(test)]

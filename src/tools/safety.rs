@@ -129,6 +129,12 @@ pub const TOOLS_WITHOUT_INPUT_PATHS: &[ToolName] = &[
 
 impl ToolName {
     /// Every tool the policy knows, in name order.
+    ///
+    /// T1 ties this list to the tool manifests: `ToolRegistry::conformance`
+    /// fails when a registered tool has no row here, and when a manifest
+    /// declares the `input` capability while its row declares no input paths.
+    /// The per-action decisions stay in this file, because they are rules over
+    /// the call's arguments that a risk class cannot express.
     pub const ALL: &'static [ToolName] = &[
         ToolName::Accessibility,
         ToolName::Browser,

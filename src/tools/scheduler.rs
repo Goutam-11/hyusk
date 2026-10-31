@@ -24,6 +24,7 @@ use tokio::{
 use crate::types::HyuskEvent;
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
 
 const MAX_SCHEDULES: usize = 500;
 const MAX_REMINDER_CHARS: usize = 500;
@@ -181,39 +182,16 @@ impl SchedulerTool {
 
 #[async_trait]
 impl Tool for SchedulerTool {
-    fn name(&self) -> &str {
-        "scheduler"
-    }
-
-    fn description(&self) -> &str {
-        "Schedule one-time reminders, named deterministic workflows, or an LLM agent task, persist them across restarts, list schedules, and cancel them. Use after_seconds or a Unix timestamp at_unix."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "action": { "type": "string", "enum": ["schedule", "list", "cancel"] },
-                "type": { "type": "string", "enum": ["reminder", "workflow", "agent_task"] },
-                "text": { "type": "string", "description": "Reminder text." },
-                "workflow": { "type": "string", "description": "Name of a configured deterministic workflow." },
-                "prompt": { "type": "string", "description": "Self-contained instruction for a scheduled model-driven task." },
-                "after_seconds": {
-                    "type": "integer",
-                    "minimum": 1,
-                    // L4: a longer wait would overflow the timer deadline.
-                    "maximum": super::MAX_WAIT_SECONDS,
-                    "description": "At most 30 days (2592000 seconds)."
-                },
-                "at_unix": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "A Unix timestamp at most 30 days from now."
-                },
-                "id": { "type": "integer", "minimum": 1 }
-            },
-            "required": ["action"]
-        })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "scheduler",
+            version: CORE_VERSION,
+            description: "Schedule one-time reminders, named deterministic workflows, or an LLM agent task, persist them across restarts, list schedules, and cancel them. Use after_seconds or a Unix timestamp at_unix.",
+            schema: scheduler_schema,
+            risk: &[RiskClass::Read, RiskClass::Mutate],
+            capabilities: &[],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -373,6 +351,33 @@ impl Tool for SchedulerTool {
             }
         }
     }
+}
+
+fn scheduler_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": { "type": "string", "enum": ["schedule", "list", "cancel"] },
+            "type": { "type": "string", "enum": ["reminder", "workflow", "agent_task"] },
+            "text": { "type": "string", "description": "Reminder text." },
+            "workflow": { "type": "string", "description": "Name of a configured deterministic workflow." },
+            "prompt": { "type": "string", "description": "Self-contained instruction for a scheduled model-driven task." },
+            "after_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                // L4: a longer wait would overflow the timer deadline.
+                "maximum": super::MAX_WAIT_SECONDS,
+                "description": "At most 30 days (2592000 seconds)."
+            },
+            "at_unix": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "A Unix timestamp at most 30 days from now."
+            },
+            "id": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["action"]
+    })
 }
 
 async fn fire(id: u64, action: ScheduledAction, events: Sender<HyuskEvent>) {
@@ -611,7 +616,7 @@ mod tests {
             .expect("result");
         assert!(result.success, "an at_unix inside the window is accepted");
 
-        let schema = tool.input_schema();
+        let schema = scheduler_schema();
         assert_eq!(
             schema["properties"]["after_seconds"]["maximum"],
             serde_json::json!(max),

@@ -1601,12 +1601,8 @@ mod tests {
 
     #[async_trait]
     impl Tool for HangingTool {
-        fn name(&self) -> &str {
-            "media"
-        }
-
-        fn description(&self) -> &str {
-            "Test media action."
+        fn manifest(&self) -> crate::tools::manifest::ToolManifest {
+            crate::tools::manifest::stub("media")
         }
 
         async fn execute(&self, _input: &str) -> Result<ToolResult> {
@@ -1725,12 +1721,8 @@ mod tests {
 
     #[async_trait]
     impl Tool for CountingTool {
-        fn name(&self) -> &str {
-            "media"
-        }
-
-        fn description(&self) -> &str {
-            "Test media action."
+        fn manifest(&self) -> crate::tools::manifest::ToolManifest {
+            crate::tools::manifest::stub("media")
         }
 
         async fn execute(&self, _input: &str) -> Result<ToolResult> {
@@ -1950,12 +1942,8 @@ mod tests {
 
     #[async_trait]
     impl Tool for ShellStub {
-        fn name(&self) -> &str {
-            "shell"
-        }
-
-        fn description(&self) -> &str {
-            "Test shell action."
+        fn manifest(&self) -> crate::tools::manifest::ToolManifest {
+            crate::tools::manifest::stub("shell")
         }
 
         async fn execute(&self, _input: &str) -> Result<ToolResult> {
@@ -2084,12 +2072,8 @@ mod tests {
 
     #[async_trait]
     impl Tool for ComputerStub {
-        fn name(&self) -> &str {
-            "computer"
-        }
-
-        fn description(&self) -> &str {
-            "Test desktop input."
+        fn manifest(&self) -> crate::tools::manifest::ToolManifest {
+            crate::tools::manifest::stub("computer")
         }
 
         async fn execute(&self, _input: &str) -> Result<ToolResult> {
@@ -2171,12 +2155,8 @@ mod tests {
 
     #[async_trait]
     impl Tool for LeakyTool {
-        fn name(&self) -> &str {
-            "leaky"
-        }
-
-        fn description(&self) -> &str {
-            "Returns a credential for the redaction test."
+        fn manifest(&self) -> crate::tools::manifest::ToolManifest {
+            crate::tools::manifest::stub("leaky")
         }
 
         async fn execute(&self, _input: &str) -> Result<ToolResult> {
@@ -2878,12 +2858,8 @@ mod tests {
 
     #[async_trait]
     impl Tool for BrowserStub {
-        fn name(&self) -> &str {
-            "browser"
-        }
-
-        fn description(&self) -> &str {
-            "Test browser mutation."
+        fn manifest(&self) -> crate::tools::manifest::ToolManifest {
+            crate::tools::manifest::stub("browser")
         }
 
         async fn execute(&self, _input: &str) -> Result<ToolResult> {

@@ -9,6 +9,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{Capability, RiskClass, Source, ToolManifest, CORE_VERSION};
 
 const DEFAULT_CDP_URL: &str = "http://127.0.0.1:9222";
 const CDP_TIMEOUT: Duration = Duration::from_secs(12);
@@ -460,23 +461,16 @@ const SNAPSHOT_SCRIPT: &str = r#"(() => {
 
 #[async_trait]
 impl Tool for BrowserTool {
-    fn name(&self) -> &str {
-        "browser"
-    }
-
-    fn description(&self) -> &str {
-        "Control the separate Hyusk browser profile over local CDP. Use status to diagnose, start to open/reuse the managed automation browser, and new_tab to recover from an unresponsive page without closing existing tabs. Read DOM, navigate, click, fill, and press keys. Never kill browser processes with shell commands."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({"type":"object","properties":{
-            "action":{"type":"string","enum":["status","start","new_tab","tabs","read","navigate","click","fill","press_key"]},
-            "target_id":{"type":"string","minLength":1,"description":"Non-empty ID returned by tabs or new_tab; required for read, navigate, click, fill and press_key."},
-            "url":{"type":"string","format":"uri","minLength":1,"description":"Absolute http:// or https:// URL for navigate."},
-            "selector":{"type":"string","minLength":1,"description":"Non-empty CSS selector for click or fill."},
-            "text":{"type":"string","description":"Text to place into an input, textarea, or editable region."},
-            "key":{"type":"string","enum":["Enter","Tab","Escape","Backspace","Delete","ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Home","End","PageUp","PageDown","Ctrl+A"]}
-        },"required":["action"]})
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "browser",
+            version: CORE_VERSION,
+            description: "Control the separate Hyusk browser profile over local CDP. Use status to diagnose, start to open/reuse the managed automation browser, and new_tab to recover from an unresponsive page without closing existing tabs. Read DOM, navigate, click, fill, and press keys. Never kill browser processes with shell commands.",
+            schema: browser_schema,
+            risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Input],
+            capabilities: &[Capability::Input],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -539,6 +533,17 @@ impl Tool for BrowserTool {
         };
         Ok(ToolResult::success(result))
     }
+}
+
+fn browser_schema() -> Value {
+    json!({"type":"object","properties":{
+        "action":{"type":"string","enum":["status","start","new_tab","tabs","read","navigate","click","fill","press_key"]},
+        "target_id":{"type":"string","minLength":1,"description":"Non-empty ID returned by tabs or new_tab; required for read, navigate, click, fill and press_key."},
+        "url":{"type":"string","format":"uri","minLength":1,"description":"Absolute http:// or https:// URL for navigate."},
+        "selector":{"type":"string","minLength":1,"description":"Non-empty CSS selector for click or fill."},
+        "text":{"type":"string","description":"Text to place into an input, textarea, or editable region."},
+        "key":{"type":"string","enum":["Enter","Tab","Escape","Backspace","Delete","ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Home","End","PageUp","PageDown","Ctrl+A"]}
+    },"required":["action"]})
 }
 
 fn require_non_empty(field: &str, value: &str) -> Result<()> {
@@ -677,11 +682,7 @@ mod tests {
 
     #[test]
     fn advertised_actions_match_decodable_action_samples() {
-        let tool = BrowserTool {
-            client: Client::new(),
-            endpoint: Url::parse(DEFAULT_CDP_URL).unwrap(),
-        };
-        let schema = tool.input_schema();
+        let schema = browser_schema();
         let advertised = schema["properties"]["action"]["enum"].as_array().unwrap();
         let samples = [
             json!({"action":"status"}),

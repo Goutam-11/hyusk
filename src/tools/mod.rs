@@ -5,6 +5,7 @@ pub mod capabilities;
 pub mod computer;
 #[cfg(target_os = "linux")]
 pub mod gnome_doctor;
+pub mod manifest;
 pub mod media;
 pub mod memory;
 pub mod mobile;

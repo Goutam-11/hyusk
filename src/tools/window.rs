@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
 
 const SERVICE: &str = "org.hyusk.Shell";
 const PATH: &str = "/org/hyusk/Shell";
@@ -388,38 +389,24 @@ impl Default for WindowTool {
 
 #[async_trait]
 impl Tool for WindowTool {
-    fn name(&self) -> &str {
-        "window"
-    }
-
-    fn description(&self) -> &str {
-        "List, inspect, switch, and close desktop windows natively through the \
-         running compositor: niri IPC on niri, the Hyusk shell extension on \
-         GNOME. Use `list` for open windows (app, title, stable ID, focused \
-         flag), `active` for the focused window, `activate` with a `query` \
-         (prefer `id:<number>` from `list`; app name or title substring also \
-         works) to raise a window, and `close` (empty `query` closes the \
-         focused window). This is the reliable way to manage windows on \
-         Wayland; prefer it over blind alt+tab or accessibility, which cannot \
-         raise windows."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["list", "active", "activate", "close"],
-                    "description": "Window operation."
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Prefer an exact `id:<number>` from `list` for `activate`/`close`; app name or window-title substring also works. Empty closes the focused window."
-                }
-            },
-            "required": ["action"]
-        })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "window",
+            version: CORE_VERSION,
+            description: "List, inspect, switch, and close desktop windows natively through the \
+            running compositor: niri IPC on niri, the Hyusk shell extension on \
+            GNOME. Use `list` for open windows (app, title, stable ID, focused \
+            flag), `active` for the focused window, `activate` with a `query` \
+            (prefer `id:<number>` from `list`; app name or title substring also \
+            works) to raise a window, and `close` (empty `query` closes the \
+            focused window). This is the reliable way to manage windows on \
+            Wayland; prefer it over blind alt+tab or accessibility, which cannot \
+            raise windows.",
+            schema: window_schema,
+            risk: &[RiskClass::Read, RiskClass::Mutate],
+            capabilities: &[],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -560,6 +547,24 @@ impl Tool for WindowTool {
             }
         }
     }
+}
+
+fn window_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["list", "active", "activate", "close"],
+                "description": "Window operation."
+            },
+            "query": {
+                "type": "string",
+                "description": "Prefer an exact `id:<number>` from `list` for `activate`/`close`; app name or window-title substring also works. Empty closes the focused window."
+            }
+        },
+        "required": ["action"]
+    })
 }
 
 #[cfg(test)]

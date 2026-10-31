@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use crate::link::LinkServer;
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
 
 pub struct MobileTool {
     server: Arc<LinkServer>,
@@ -34,26 +35,16 @@ struct Input {
 
 #[async_trait]
 impl Tool for MobileTool {
-    fn name(&self) -> &str {
-        "mobile"
-    }
-
-    fn description(&self) -> &str {
-        "List paired Android devices or invoke one structured phone action. The phone enforces local confirmation for consequential actions. Never place raw shell in arguments."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "action": { "type": "string", "enum": ["list", "invoke"] },
-                "device_id": { "type": "string" },
-                "phone_action": { "type": "string", "description": "For example apps.launch, url.open, ui.click, timer.create, or device.status" },
-                "arguments": { "type": "object" },
-                "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 60000 }
-            },
-            "required": ["action"]
-        })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "mobile",
+            version: CORE_VERSION,
+            description: "List paired Android devices or invoke one structured phone action. The phone enforces local confirmation for consequential actions. Never place raw shell in arguments.",
+            schema: mobile_schema,
+            risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Network],
+            capabilities: &[],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -117,6 +108,20 @@ impl Tool for MobileTool {
             _ => Ok(ToolResult::failure("Unknown mobile action")),
         }
     }
+}
+
+fn mobile_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": { "type": "string", "enum": ["list", "invoke"] },
+            "device_id": { "type": "string" },
+            "phone_action": { "type": "string", "description": "For example apps.launch, url.open, ui.click, timer.create, or device.status" },
+            "arguments": { "type": "object" },
+            "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 60000 }
+        },
+        "required": ["action"]
+    })
 }
 
 fn remote_action_requires_confirmation(action: &str) -> bool {

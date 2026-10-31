@@ -15,6 +15,7 @@ use tokio::{process::Command, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
 
 pub struct TimerTool {
     timers: Arc<Mutex<HashMap<String, ActiveTimer>>>,
@@ -45,30 +46,17 @@ struct Input {
 
 #[async_trait]
 impl Tool for TimerTool {
-    fn name(&self) -> &str {
-        "timer"
-    }
-
-    fn description(&self) -> &str {
-        "Set, cancel, or list Hyusk timers. A finished timer shows a desktop notification."
-    }
-
-    fn input_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "action": { "type": "string", "enum": ["set", "cancel", "list", "show_time"] },
-                "seconds": {
-                    "type": "integer",
-                    "minimum": 1,
-                    // L4: a longer wait would overflow the timer deadline.
-                    "maximum": super::MAX_WAIT_SECONDS,
-                    "description": "At most 30 days (2592000 seconds)."
-                },
-                "label": { "type": "string" }
-            },
-            "required": ["action"]
-        })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "timer",
+            version: CORE_VERSION,
+            description:
+                "Set, cancel, or list Hyusk timers. A finished timer shows a desktop notification.",
+            schema: timer_schema,
+            risk: &[RiskClass::Mutate],
+            capabilities: &[],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -209,6 +197,24 @@ impl Tool for TimerTool {
     }
 }
 
+fn timer_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "action": { "type": "string", "enum": ["set", "cancel", "list", "show_time"] },
+            "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                // L4: a longer wait would overflow the timer deadline.
+                "maximum": super::MAX_WAIT_SECONDS,
+                "description": "At most 30 days (2592000 seconds)."
+            },
+            "label": { "type": "string" }
+        },
+        "required": ["action"]
+    })
+}
+
 async fn run_bounded_command(command: &str, args: &[&str], limit: Duration) -> bool {
     matches!(
         timeout(
@@ -245,7 +251,7 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{run_bounded_command, TimerTool};
+    use super::{run_bounded_command, timer_schema, TimerTool};
     use crate::tools::{Tool, ToolResult};
     use std::time::Duration;
 
@@ -315,7 +321,7 @@ mod tests {
         }
 
         // The maximum is part of the model-facing schema.
-        let schema = tool.input_schema();
+        let schema = timer_schema();
         assert_eq!(
             schema["properties"]["seconds"]["maximum"],
             serde_json::json!(max),

@@ -8,6 +8,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
 
 /// Cap tool output so a chatty command cannot blow up the model context.
 fn truncate_output(text: &str) -> String {
@@ -175,30 +176,16 @@ fn reap_child(mut child: Child) -> tokio::task::JoinHandle<()> {
 
 #[async_trait]
 impl Tool for ShellTool {
-    fn name(&self) -> &str {
-        "shell"
-    }
-
-    fn description(&self) -> &str {
-        "Run a shell command. Pass the command as the `command`         argument. Use mode `foreground` (default) to wait for         completion, or `detached` to launch a GUI app, browser,         editor, or long-running server and return its PID without         waiting."
-    }
-
-    fn input_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "The shell command to run, e.g. 'ls -la' or 'firefox'."
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["foreground", "detached"],
-                    "description": "foreground waits and returns output; detached returns the PID and does not wait."
-                }
-            },
-            "required": ["command"]
-        })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "shell",
+            version: CORE_VERSION,
+            description: "Run a shell command. Pass the command as the `command` argument. Use mode `foreground` (default) to wait for completion, or `detached` to launch a GUI app, browser, editor, or long-running server and return its PID without waiting.",
+            schema: shell_schema,
+            risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Execute, RiskClass::System],
+            capabilities: &[],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -214,6 +201,24 @@ impl Tool for ShellTool {
             ExecutionMode::Detached => Self::run_detached(&input.command).await,
         }
     }
+}
+
+fn shell_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "The shell command to run, e.g. 'ls -la' or 'firefox'."
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["foreground", "detached"],
+                "description": "foreground waits and returns output; detached returns the PID and does not wait."
+            }
+        },
+        "required": ["command"]
+    })
 }
 
 #[cfg(test)]

@@ -1790,7 +1790,6 @@ mod tests {
     };
     use anyhow::Result;
     use async_trait::async_trait;
-    use serde_json::{json, Value};
     use std::collections::VecDeque;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -1834,14 +1833,8 @@ mod tests {
 
     #[async_trait]
     impl Tool for CountingTool {
-        fn name(&self) -> &str {
-            "memory"
-        }
-        fn description(&self) -> &str {
-            "test tool"
-        }
-        fn input_schema(&self) -> Value {
-            json!({"type":"object"})
+        fn manifest(&self) -> crate::tools::manifest::ToolManifest {
+            crate::tools::manifest::stub("memory")
         }
         async fn execute(&self, _input: &str) -> Result<ToolResult> {
             self.0.fetch_add(1, Ordering::Relaxed);
@@ -2512,14 +2505,8 @@ mod tests {
 
     #[async_trait]
     impl Tool for ShellStub {
-        fn name(&self) -> &str {
-            "shell"
-        }
-        fn description(&self) -> &str {
-            "Test shell action."
-        }
-        fn input_schema(&self) -> Value {
-            json!({"type": "object"})
+        fn manifest(&self) -> crate::tools::manifest::ToolManifest {
+            crate::tools::manifest::stub("shell")
         }
         async fn execute(&self, _input: &str) -> Result<ToolResult> {
             self.0.fetch_add(1, Ordering::Relaxed);

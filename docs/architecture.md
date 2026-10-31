@@ -97,8 +97,9 @@ for the microphone at the same time.
 | `model/openrouter.rs` | Sends OpenAI-compatible HTTP requests, handles model catalogs and retry policy. |
 | `model/openrouter/protocol.rs` | Validates message roles, tool-call arguments, IDs, and complete result batches. |
 | `model/openrouter/stream.rs` | Decodes SSE text/tool deltas, preserves stream errors and refusals, and bounds response memory. |
-| `tools/tool.rs` | Defines the async `Tool` trait and `ToolResult`. |
-| `tools/registry.rs` | Stores tools as `Arc<dyn Tool>` and exposes them by name. |
+| `tools/tool.rs` | Defines the async `Tool` trait and `ToolResult`; the trait requires a manifest. |
+| `tools/manifest.rs` | Declares the per-tool manifest (name, version, description, schema, risk classes, capability needs, source) and validates it. |
+| `tools/registry.rs` | Stores each tool with its validated manifest, exposes the manifests, generates the model-facing specs from them, and checks the policy tie (T1). |
 | `tools/computer.rs` | Controls the GUI with the portal/enigo backends, screenshots, OCR, and key/mouse helpers. |
 | `tools/portal.rs` | Linux-only XDG RemoteDesktop and Screenshot portal integration. |
 | `tools/browser.rs` | Controls a dedicated browser profile over CDP instead of screenshots. |

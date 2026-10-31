@@ -18,6 +18,7 @@ use crate::{
 };
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
 
 const MAX_PENDING_TASKS: usize = 16;
 
@@ -210,28 +211,16 @@ async fn claim_completion(
 
 #[async_trait]
 impl Tool for TaskTool {
-    fn name(&self) -> &str {
-        "task"
-    }
-
-    fn description(&self) -> &str {
-        "Delegate, list, or cancel background work. `research` is read-only. `workspace` lets an installed Codex CLI inspect and edit one approved project directory in workspace-write sandbox mode, without desktop or personal-data access. The main assistant remains available and announces completion."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "action": { "type": "string", "enum": ["delegate", "list", "cancel"] },
-                "task": { "type": "string", "description": "A self-contained task. Keep research tasks read-only; workspace tasks may edit only their approved project root." },
-                "label": { "type": "string", "description": "Short completion label." },
-                "profile": { "type": "string", "enum": ["research", "workspace"] },
-                "workspace": { "type": "string", "description": "Required project root for workspace coding." },
-                "timeout_seconds": { "type": "integer", "minimum": 30, "maximum": 3600, "description": "Optional execution limit. Defaults to three minutes for research and fifteen minutes for workspace tasks." },
-                "id": { "type": "integer", "minimum": 1, "description": "Task number to cancel." }
-            },
-            "required": ["action"]
-        })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "task",
+            version: CORE_VERSION,
+            description: "Delegate, list, or cancel background work. `research` is read-only. `workspace` lets an installed Codex CLI inspect and edit one approved project directory in workspace-write sandbox mode, without desktop or personal-data access. The main assistant remains available and announces completion.",
+            schema: task_schema,
+            risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Execute, RiskClass::Network],
+            capabilities: &[],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -424,6 +413,22 @@ impl Tool for TaskTool {
             "Delegated {label} as background task #{id}. I will announce its completion."
         )))
     }
+}
+
+fn task_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": { "type": "string", "enum": ["delegate", "list", "cancel"] },
+            "task": { "type": "string", "description": "A self-contained task. Keep research tasks read-only; workspace tasks may edit only their approved project root." },
+            "label": { "type": "string", "description": "Short completion label." },
+            "profile": { "type": "string", "enum": ["research", "workspace"] },
+            "workspace": { "type": "string", "description": "Required project root for workspace coding." },
+            "timeout_seconds": { "type": "integer", "minimum": 30, "maximum": 3600, "description": "Optional execution limit. Defaults to three minutes for research and fifteen minutes for workspace tasks." },
+            "id": { "type": "integer", "minimum": 1, "description": "Task number to cancel." }
+        },
+        "required": ["action"]
+    })
 }
 
 fn truncate(text: &str) -> String {

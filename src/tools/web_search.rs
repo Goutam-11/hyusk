@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
 
 const BRAVE_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
 const DUCKDUCKGO_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
@@ -143,36 +144,16 @@ impl WebSearchTool {
 
 #[async_trait]
 impl Tool for WebSearchTool {
-    fn name(&self) -> &str {
-        "web_search"
-    }
-
-    fn description(&self) -> &str {
-        "Search the live web directly without opening or controlling a browser. Use this for current events, changing facts, online documentation, recommendations, and source-backed answers. Results contain titles, URLs, and snippets; mention source names in the answer."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Focused web search query, at most 600 characters."
-                },
-                "count": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 10,
-                    "default": 5
-                },
-                "freshness": {
-                    "type": "string",
-                    "enum": ["day", "week", "month", "year"],
-                    "description": "Optional recency filter. Supported when Brave Search is configured."
-                }
-            },
-            "required": ["query"]
-        })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "web_search",
+            version: CORE_VERSION,
+            description: "Search the live web directly without opening or controlling a browser. Use this for current events, changing facts, online documentation, recommendations, and source-backed answers. Results contain titles, URLs, and snippets; mention source names in the answer.",
+            schema: web_search_schema,
+            risk: &[RiskClass::Read, RiskClass::Network],
+            capabilities: &[],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -237,6 +218,30 @@ impl Tool for WebSearchTool {
 
         Ok(ToolResult::success(output))
     }
+}
+
+fn web_search_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Focused web search query, at most 600 characters."
+            },
+            "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "default": 5
+            },
+            "freshness": {
+                "type": "string",
+                "enum": ["day", "week", "month", "year"],
+                "description": "Optional recency filter. Supported when Brave Search is configured."
+            }
+        },
+        "required": ["query"]
+    })
 }
 
 fn brave_freshness(value: Option<&str>) -> Option<&'static str> {

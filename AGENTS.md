@@ -55,9 +55,9 @@ cargo check --all-targets --offline --features workflow-editor
 cargo test --all-targets --offline --features workflow-editor -- --test-threads=4
 ```
 
-Current baseline: **404 tests passing, 6 ignored** for the default suite; the
+Current baseline: **418 tests passing, 6 ignored** for the default suite; the
 workflow editor adds five tests (one ignored) under `--features
-workflow-editor`, for **409 passing, 7 ignored**. Clippy is clean except three
+workflow-editor`, for **423 passing, 7 ignored**. Clippy is clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, the default tests, and that one feature build on Ubuntu.
 
@@ -92,10 +92,19 @@ tests live in `#[cfg(test)]` modules beside the code.
 
 - `src/tools/safety.rs::requires_approval` is the central gate, driven by the
   explicit per-tool table in the same file; unknown tools and unknown shapes
-  fail closed. A workspace `task` delegation asks once with its canonical root
+  fail closed. The table's name set is tied to the tool manifests: see the T1
+  bullet below. A workspace `task` delegation asks once with its canonical root
   pinned and is preflighted before any card is published; a research delegation
   is free because it is one read-only model call with no tools or filesystem
   access (A2), so keep it that way. `mobile` invocations follow the policy there.
+- Tool manifests (T1): every tool implements `Tool::manifest` (there is no
+  default, so a tool cannot compile without one) and `ToolRegistry::register`
+  validates it - name, version, description, JSON schema, risk classes,
+  capability needs, source. The registry generates the model-facing specs from
+  the manifests, and `ToolRegistry::conformance()` fails when a registered tool
+  has no policy row above or declares the `input` capability without input
+  paths. Do not add a tool without a manifest and a policy row; the per-action
+  decisions stay in `safety.rs` because a risk class cannot express them.
 - The model-facing `mobile` schema exposes only `list`/`invoke`. Pairing codes
   belong to the GNOME/Noctalia indicators (`hyusk-pairing.json`, `pair_phone`),
   never to a model tool result or session history.
@@ -260,10 +269,11 @@ Do not add new bullets here — open an issue file instead.
 
 Architecture work (prune and feature-gate, tool manifests and the MCP boundary,
 memory v2, preferences) is tracked in `issues/ARCHITECTURE_ISSUE.md` and
-designed in `docs/architecture-roadmap.md`. Wave 1 is in progress: P1 (the
-experimental shell agent), P2 (macOS branches and the Linux declaration), and P3
-(the `workflow-editor` feature) are closed; T1 (tool manifests) remains and
-changes the tool boundary, so ask before starting it.
+designed in `docs/architecture-roadmap.md`. Wave 1 is complete: P1 (the
+experimental shell agent), P2 (macOS branches and the Linux declaration), P3
+(the `workflow-editor` feature), and T1 (tool manifests) are closed. Wave 2
+(the orb feature, the mobile feature, memory v2, the external tool host) is
+next.
 
 ## Memory and session notes
 

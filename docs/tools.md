@@ -1,22 +1,21 @@
 # Tool platform
 
-Tools are asynchronous capabilities registered by name. The model sees a JSON
-Schema for each tool, while the implementation receives the raw JSON argument
-string and decides how to validate it.
+Tools are asynchronous capabilities registered by name. Each declares a
+manifest, and the model sees a JSON Schema taken from that manifest, while the
+implementation receives the raw JSON argument string and decides how to
+validate it.
 
 ## Tool contract
 
 ```rust
 #[async_trait]
 pub trait Tool: Send + Sync {
+    fn manifest(&self) -> ToolManifest;
+    async fn execute(&self, input: &str) -> Result<ToolResult>;
+
+    // Defaults, read back from the manifest:
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-
-    fn input_schema(&self) -> Value {
-        json!({ "type": "object" })
-    }
-
-    async fn execute(&self, input: &str) -> Result<ToolResult>;
 }
 ```
 
@@ -25,8 +24,41 @@ pub trait Tool: Send + Sync {
 message. A Rust error from `execute` is converted into a failed `ToolResult` by
 the agent runner, so one bad tool does not terminate the agent task.
 
-`ToolRegistry` stores `Arc<dyn Tool>` values in a `HashMap`. It supports
-registration, lookup by name, and iteration for building model tool specs.
+`ToolRegistry` stores the tool and its manifest in a `HashMap`. It supports
+registration, lookup by name, iteration, the validated manifests, and
+`specs()`, which generates the model-facing tool specifications (T1).
+
+## Tool manifests
+
+Every tool implements `manifest()`; there is no default, so a tool without one
+does not compile. A `ToolManifest` carries:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | The name a model call uses; it must equal `Tool::name`. |
+| `version` | A `major.minor.patch` declaration version (`CORE_VERSION` for the built-in tools). |
+| `description` | The model-facing description, and the first line of the prompt's tool guide. |
+| `schema` | A function that builds the JSON Schema for the arguments. |
+| `risk` | At least one of `read`, `mutate`, `input`, `execute`, `network`, `system`. |
+| `capabilities` | The OS capabilities the tool needs, from the D3 vocabulary: `input`, `screenshot`, `accessibility`. |
+| `source` | `core` for the tools in this binary; `external` is reserved for T2 and cannot register yet, because it has no approval policy row. |
+
+The registry validates each manifest when the tool registers and panics with one
+message on a programmer error: an empty name, a version that is not
+`major.minor.patch`, an empty or oversized description, a schema that is not an
+object schema, a `required` entry that `properties` does not declare, or no
+risk class. `register` also refuses a manifest whose name disagrees with the
+tool, a duplicate name, and an external source.
+
+`ToolRegistry::conformance()` runs the set-level checks at startup and in the
+tests: every registered tool needs an approval policy row, and a tool that
+declares the `input` capability must declare input paths in that row, exactly
+when the capability is present (D6). The per-action decisions stay in
+`src/tools/safety.rs`; a risk class cannot express "this command stays inside
+the project root".
+
+A tool can self-test its declaration in its own tests with
+`manifest().conformance()`.
 
 ## Computer
 
@@ -595,9 +627,11 @@ never returns them. See [Android companion](android-agent.md) and the
 ## Adding a tool
 
 1. Add a module under `src/tools/`.
-2. Implement `Tool`, including a precise `input_schema()`.
+2. Implement `Tool`: a manifest with a precise schema, and `execute`.
 3. Export the module from `src/tools/mod.rs`.
-4. Register an instance in `main.rs`.
+4. Register an instance in `main.rs` and add a row to the policy table in
+   `src/tools/safety.rs`; startup fails (and the coverage test fails) without
+   one.
 
 A minimal implementation looks like this:
 
@@ -607,6 +641,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use super::manifest::{Capability, CORE_VERSION, RiskClass, Source, ToolManifest};
 use super::{Tool, ToolResult};
 
 pub struct Ping;
@@ -616,22 +651,28 @@ struct PingInput {
     message: String,
 }
 
+fn ping_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "message": { "type": "string" }
+        },
+        "required": ["message"]
+    })
+}
+
 #[async_trait]
 impl Tool for Ping {
-    fn name(&self) -> &str { "ping" }
-
-    fn description(&self) -> &str {
-        "Echo a short message without touching the host."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "message": { "type": "string" }
-            },
-            "required": ["message"]
-        })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "ping",
+            version: CORE_VERSION,
+            description: "Echo a short message without touching the host.",
+            schema: ping_schema,
+            risk: &[RiskClass::Read],
+            capabilities: &[],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -642,8 +683,10 @@ impl Tool for Ping {
 ```
 
 Then add `pub mod ping;` to `tools/mod.rs` and call
-`tools.register(Ping);` during startup. Restart the binary so the new spec is
-sent to the model.
+`tools.register(Ping);` during startup. A tool that types text or presses keys
+declares `Capability::Input` in its manifest and its actions in the policy
+row's `input_paths`; `conformance()` fails if only one of the two is present.
+Restart the binary so the new spec is sent to the model.
 
 ## Security model
 

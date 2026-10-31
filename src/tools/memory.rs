@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
 
 use super::{Tool, ToolResult};
+use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
 
 const MAX_ENTRIES: usize = 5_000;
 const MAX_GRAPH: usize = 5_000;
@@ -816,53 +817,20 @@ enum MemoryAction {
 
 #[async_trait]
 impl Tool for MemoryTool {
-    fn name(&self) -> &str {
-        "memory"
-    }
-
-    fn description(&self) -> &str {
-        "Persistent local memory. Use `remember` to save a note or preference, \
-         `search` to find relevant notes, `graph_add`/`graph_query` for \
-         subject-relation-object facts, `list` for recent notes, and `forget` \
-         to delete a note by id. The SQLite store survives restarts and a \
-         readable Markdown view is generated under the user's data directory."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["remember", "search", "graph_add", "graph_query", "list", "forget"],
-                    "description": "Memory operation."
-                },
-                "text": {
-                    "type": "string",
-                    "description": "Note text for `remember`."
-                },
-                "tags": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional tags for `remember`."
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Search query for `search`."
-                },
-                "subject": { "type": "string", "description": "Graph subject." },
-                "relation": { "type": "string", "description": "Graph relation." },
-                "object": { "type": "string", "description": "Graph object." },
-                "id": { "type": "integer", "description": "Entry id for `forget`." },
-                "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 50,
-                    "description": "Maximum results. Defaults to 8."
-                }
-            },
-            "required": ["action"]
-        })
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "memory",
+            version: CORE_VERSION,
+            description: "Persistent local memory. Use `remember` to save a note or preference, \
+            `search` to find relevant notes, `graph_add`/`graph_query` for \
+            subject-relation-object facts, `list` for recent notes, and `forget` \
+            to delete a note by id. The SQLite store survives restarts and a \
+            readable Markdown view is generated under the user's data directory.",
+            schema: memory_schema,
+            risk: &[RiskClass::Read, RiskClass::Mutate],
+            capabilities: &[],
+            source: Source::Core,
+        }
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -1077,6 +1045,43 @@ impl Tool for MemoryTool {
             }
         }
     }
+}
+
+fn memory_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["remember", "search", "graph_add", "graph_query", "list", "forget"],
+                "description": "Memory operation."
+            },
+            "text": {
+                "type": "string",
+                "description": "Note text for `remember`."
+            },
+            "tags": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Optional tags for `remember`."
+            },
+            "query": {
+                "type": "string",
+                "description": "Search query for `search`."
+            },
+            "subject": { "type": "string", "description": "Graph subject." },
+            "relation": { "type": "string", "description": "Graph relation." },
+            "object": { "type": "string", "description": "Graph object." },
+            "id": { "type": "integer", "description": "Entry id for `forget`." },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "description": "Maximum results. Defaults to 8."
+            }
+        },
+        "required": ["action"]
+    })
 }
 
 #[cfg(test)]

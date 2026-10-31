@@ -678,6 +678,18 @@ fn build_tools(setup: ToolSetup<'_>) -> ToolRegistry {
     tools.register(tools::scheduler::SchedulerTool::new(events.clone()));
     tools.register(tools::task::TaskTool::new(events.clone(), active_model));
 
+    // Validate the declaration set at startup (T1): every registered tool must
+    // have a conformant manifest and an approval policy row, and a tool that
+    // declares the input capability must declare input paths in its row. A
+    // violation is a build-time mistake, so it fails here rather than at the
+    // first call.
+    if let Err(problems) = tools.conformance() {
+        panic!(
+            "the tool registry is inconsistent:\n  {}",
+            problems.join("\n  ")
+        );
+    }
+
     tools
 }
 
@@ -1621,6 +1633,60 @@ mod tool_policy_tests {
         for name in ["accessibility", "gnome_doctor", "window"] {
             assert!(tools.get(name).is_some(), "{name} was not registered");
         }
+    }
+
+    /// T1: every registered tool declares a conformant manifest, the model
+    /// specs are generated from those manifests, and the manifest set agrees
+    /// with the approval policy table (A8) and the input-path rule (D6).
+    #[tokio::test]
+    async fn every_registered_tool_declares_a_conformant_manifest() {
+        let tools = test_tools();
+
+        if let Err(problems) = tools.conformance() {
+            panic!("the tool registry is inconsistent: {problems:#?}");
+        }
+
+        for tool in tools.iter() {
+            let manifest = tool.manifest();
+            assert_eq!(
+                manifest.conformance(),
+                Ok(()),
+                "{} has an unusable manifest",
+                tool.name()
+            );
+            assert_eq!(manifest.name, tool.name());
+            assert_eq!(manifest.version, tools::manifest::CORE_VERSION);
+            assert_eq!(manifest.source, tools::manifest::Source::Core);
+            assert!(
+                !manifest.risk.is_empty(),
+                "{} declares no risk",
+                tool.name()
+            );
+            assert!(
+                tools::safety::policy_for(tool.name()).is_some(),
+                "{} has no approval policy row",
+                tool.name()
+            );
+        }
+
+        // The spec the model is given is the manifest, so the name, description
+        // and schema cannot be a second copy.
+        let specs = tools.specs();
+        let manifests = tools.manifests();
+        assert_eq!(specs.len(), manifests.len());
+        for (spec, manifest) in specs.iter().zip(manifests.iter()) {
+            assert_eq!(spec["type"], "function");
+            assert_eq!(spec["function"]["name"], manifest.name);
+            assert_eq!(spec["function"]["description"], manifest.description);
+            assert_eq!(spec["function"]["parameters"], (manifest.schema)());
+        }
+
+        // The version is visible in the registry without building the tool.
+        assert!(tools
+            .manifests()
+            .iter()
+            .any(|manifest| manifest.name == "shell"
+                && manifest.version == tools::manifest::CORE_VERSION));
     }
 
     /// `mobile` is registered only while the opt-in link server runs, so it
