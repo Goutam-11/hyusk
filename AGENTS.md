@@ -60,10 +60,10 @@ cargo check --all-targets --offline --features mobile
 cargo test --all-targets --offline --features mobile -- --test-threads=4
 ```
 
-Current baseline: **463 tests passing, 6 ignored** for the default suite;
-`--features mobile` restores the link (476 passing, 6 ignored). The workflow
+Current baseline: **469 tests passing, 6 ignored** for the default suite;
+`--features mobile` restores the link (482 passing, 6 ignored). The workflow
 editor adds five tests (one ignored) under `--features workflow-editor`, for
-**468 passing, 7 ignored**; both features together are **481 passing, 7
+**474 passing, 7 ignored**; both features together are **487 passing, 7
 ignored**. Default clippy is clean (the three pre-existing `result_large_err`
 warnings live behind `mobile` in `src/link/server.rs` and reappear with that
 feature). CI runs fmt, clippy, the default tests, and the feature builds on
@@ -145,7 +145,11 @@ tests live in `#[cfg(test)]` modules beside the code.
   tools. A watcher deactivates a server removed from the file, and the runner
   rebuilds the model specs per turn, so its tools disappear without a restart
   (adding one still needs a restart). `HYUSK_MCP=0` must keep registering
-  nothing.
+  nothing, and removing the file is the live kill switch. The trust model,
+  residual risks, and operator checklist are the "External providers" section
+  of `docs/tools.md`, and `src/tools/contract_tests.rs` runs the same contract
+  (namespaced conformant manifests, an always-ask gate, a refused malformed
+  call, a working call, reaped children) against the local and MCP fixtures.
 - Approved calls execute the stored arguments, not a fresh model call. Task
   delegation pins the canonical workspace root via `approval_arguments`.
 - Workflows execute deterministic `Action` steps from `src/agent/commands.rs`;
@@ -353,11 +357,11 @@ experimental shell agent), P2 (macOS branches and the Linux declaration), P3
 (the `workflow-editor` feature), and T1 (tool manifests) are closed. Wave 2 is
 under way: M1 (memory schema v2), M2 (hybrid retrieval), G1 (preference notes),
 M3 (consolidation), M4 (explain and export), T2 (the external tool host), P5
-(the mobile feature), and T3 (the MCP provider) are closed. The remaining work
-is P6 (Nova Sonic), T4 (the MCP trust model and kill switch, which builds on
-T3), and G2 (the propose-diff loop). P4 (the orb feature) is deferred, because
-this installation uses the GNOME extension and the Noctalia widget rather than
-the orb.
+(the mobile feature), T3 (the MCP provider), and T4 (the provider trust model,
+kill switch, and contract tests) are closed. The remaining work is P6 (Nova
+Sonic) and G2 (the propose-diff loop). P4 (the orb feature) is deferred,
+because this installation uses the GNOME extension and the Noctalia widget
+rather than the orb.
 
 ## Memory and session notes
 

@@ -809,8 +809,9 @@ and reaps every child, because the agent exits through `std::process::exit` and
 would otherwise leave them behind.
 
 The test fixture at `tests/fixtures/external_server.sh` exercises the happy
-path, redaction, crashes, idle death, timeouts, oversized output, and shutdown;
-T4 adds the operator-facing threat model and the kill switch.
+path, redaction, crashes, idle death, timeouts, oversized output, and shutdown.
+The trust boundary and the kill switch are in
+[External providers](#external-providers).
 
 ## MCP provider (T3)
 
@@ -870,7 +871,122 @@ deactivates every server.
 The fixture at `tests/fixtures/mcp_server.sh` speaks both eras and returns a
 hostile tool that claims to be read-only; the tests cover discovery in both
 eras, curated descriptions, the ignored annotation, a call, the allowlist,
-configuration validation, the kill switch, and both removal paths.
+configuration validation, the kill switch, and both removal paths. The trust
+boundary and the operator checklist are in
+[External providers](#external-providers).
+
+## External providers
+
+A provider is a process the agent did not compile: a local server
+(`HYUSK_EXTERNAL_SERVERS`, T2) or an MCP server (`mcp.json`, T3). Both cross the
+same trust boundary, so the same rules apply. This section is the threat model
+an operator needs before adding one; T2 and T3 describe the wire protocols.
+
+### Assets
+
+The agent process holds provider API keys, the saved session, the memory store,
+the approved call, and the approval audit. It runs with the user's desktop,
+filesystem, and network privileges. A server that can reach any of those can
+exfiltrate or change them.
+
+### What crosses the boundary
+
+Into the server:
+
+- the configured command and arguments;
+- the environment: a local server inherits the agent's environment, while an MCP
+  server gets `PATH` plus only the names in its `env` allowlist;
+- JSON-RPC requests whose arguments the host validated against the declared
+  schema and capped at 64 KiB.
+
+Out of the server:
+
+- handshake metadata and the tool list (names, descriptions, JSON schemas,
+  annotations);
+- call results (text content blocks) and errors;
+- nothing else: there is no callback into the agent, no handle to the session,
+  the memory store, the approval state, or another server's namespace.
+
+### Who writes what
+
+- **MCP descriptions are written by the host** from the tool name, its
+  read/write verb, and the argument names in the schema. The server's text and
+  its `readOnlyHint`/`destructiveHint` annotations are ignored.
+- **Local-server descriptions are the server's own text**, collapsed to one
+  bounded line. They are shown so an operator's plugin is understandable, but
+  they are still untrusted prose: a local server is code the operator chose to
+  run, not an ecosystem download.
+- Names are constrained to `[A-Za-z0-9_-]`, the namespace is
+  `ext.<server>.<tool>`, and a server must name itself exactly as configured,
+  so one server cannot impersonate another's namespace.
+- Schemas are checked for the manifest shape and used for a bounded argument
+  subset (`type`, `enum`, `required`, `additionalProperties`, `items`); an
+  unknown declared type fails closed.
+
+### What the host enforces
+
+| Rule | Effect |
+| --- | --- |
+| One `ext.` policy row | Every external call asks; a turn grant cannot cover one, and the server's claims are never read. |
+| Argument validation | A malformed call is refused before it reaches the server. |
+| Result handling | Text is truncated at 20,000 characters and passes the same secret redaction as a core tool's output. |
+| Deadlines | Per-call and startup deadlines are clamped; a timeout kills the process and the next call restarts it. |
+| Crash containment | A server that dies is logged and restarted; the agent and other tools keep running. |
+| Environment allowlist (MCP) | A child sees `PATH` and only the variables the operator listed. |
+| Tool grant (MCP) | An `allow` list narrows the offered tools; it cannot widen approval. |
+| Shutdown | Children are killed and reaped, so no server outlives the agent. |
+| Audit | A resolved external confirmation is recorded in `approvals.jsonl` under its namespaced tool name. |
+
+### What a server can still do
+
+The host does not sandbox the process. An approved call runs a program with the
+user's privileges, and the program can do anything the user can: read or change
+files, open network connections, start other processes, read the clipboard or
+the screen with its own code (the D3 capability gate only governs the agent's
+built-in tools), and keep state after shutdown. Its result text can contain
+prompt-injection prose; the agent treats results as data, not instructions, but
+a model can still be influenced, so review what a server returns.
+
+A local server's inherited environment may include provider keys. Only run local
+plugins you wrote or reviewed, or start the agent with a cleaned environment;
+MCP servers should always use the allowlist.
+
+### The kill switch
+
+- **MCP, live:** remove the server's entry from `mcp.json` (or delete the file).
+  The watcher (`HYUSK_MCP_REFRESH_SECS`, default 30) stops the process and its
+  tools disappear from the next turn's specs. This is the tested switch.
+- **MCP, on restart:** set `HYUSK_MCP=0`. Nothing is read or started.
+- **Local servers:** unset `HYUSK_EXTERNAL_SERVERS` (or set it empty) and
+  restart; the startup is the only time that variable is read.
+- **Everything:** stop the agent; shutdown kills and reaps every child.
+  `pkill -f <configured command>` is the last resort for a wedged server.
+
+The kill switch stops future calls; it does not retract a confirmation already
+armed, remove results already in the session, or undo side effects a server
+already performed. Review `approvals.jsonl` after disabling a server.
+
+### Before adding a server
+
+1. Read the server's source or package and pin the version or commit.
+2. Know what it reads and writes: filesystem paths, network endpoints, and
+   credentials.
+3. Run it as the least-privileged user or container that works, not necessarily
+   as your desktop user.
+4. Grant the minimum: the `env` allowlist and, when the server offers more than
+   you need, the `allow` tool list.
+5. Treat its descriptions, annotations, and results as untrusted, even when they
+   say "read-only" or "safe".
+6. Start with read-only servers (the `git`, `filesystem`, and `fetch` MCP
+   servers are the documented seed), and watch the approval cards and
+   `approvals.jsonl` before widening a grant.
+7. Keep the kill switch within reach, and prefer a restart after a suspicious
+   result.
+
+`src/tools/contract_tests.rs` runs the same guarantees against the local and
+MCP fixture servers: namespaced conformant manifests, an always-ask gate, a
+refused malformed call that the server never sees, a working call, and reaped
+children.
 
 ## Adding a tool
 
@@ -985,8 +1101,9 @@ The tool platform has guardrails but no sandbox:
   annotations are never shown or trusted (the host writes a curated
   description), their environment is an explicit allowlist, and every call is
   gated by the same `ext.` row. A server removed from the configuration stops
-  being offered on the next turn; T4 adds the operator-facing threat model and
-  the kill switch documentation.
+  being offered on the next turn. The full threat model, residual risks, kill
+  switch, and operator checklist are in
+  [External providers](#external-providers).
 - A denied or unsupported OS capability (portal input, screen capture, AT-SPI)
   returns a capability error before arming a card; the state is one line in the
   per-turn context and in `gnome_doctor`.

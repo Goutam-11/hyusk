@@ -139,6 +139,18 @@ impl McpProvider {
         Some(Arc::new(Self { path, host }))
     }
 
+    /// Start only when the kill switch allows it (T4).
+    ///
+    /// `enabled` is the parsed `HYUSK_MCP` value, passed in so the
+    /// composition root decides once and a test can exercise the switch
+    /// without mutating the process environment.
+    pub async fn start_if_enabled(path: PathBuf, enabled: bool) -> Option<Arc<Self>> {
+        if !enabled {
+            return None;
+        }
+        Self::start_at(path).await
+    }
+
     /// Register every discovered tool under its namespaced name.
     pub fn register_into(&self, registry: &mut ToolRegistry) {
         self.host.register_into(registry);
@@ -451,6 +463,30 @@ mod tests {
         ] {
             assert!(!enabled_from(value), "{value:?} disables the provider");
         }
+    }
+
+    #[tokio::test]
+    async fn the_kill_switch_starts_nothing() {
+        let dir = scratch("kill");
+        let config = dir.join("mcp.json");
+        write_config(&config, &[server_json("fixture", "modern", &dir)]);
+
+        assert!(
+            McpProvider::start_if_enabled(config.clone(), false)
+                .await
+                .is_none(),
+            "a disabled provider must not start"
+        );
+        assert!(
+            !dir.join("fixture.pid").exists(),
+            "a disabled provider must not spawn a server"
+        );
+
+        let provider = McpProvider::start_if_enabled(config, true)
+            .await
+            .expect("an enabled provider starts");
+        assert!(provider.tool_count() > 0);
+        provider.shutdown().await;
     }
 
     #[test]

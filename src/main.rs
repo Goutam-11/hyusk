@@ -981,13 +981,9 @@ async fn main() -> Result<()> {
     // The MCP provider reads `~/.config/hyusk/mcp.json` unless HYUSK_MCP=0
     // (T3). Its watcher stops offering a server removed from the file; a
     // malformed or missing file leaves the assistant running.
-    let mcp_provider = if tools::mcp::enabled() {
-        match tools::mcp::config_path() {
-            Some(path) => tools::mcp::McpProvider::start_at(path).await,
-            None => None,
-        }
-    } else {
-        None
+    let mcp_provider = match tools::mcp::config_path() {
+        Some(path) => tools::mcp::McpProvider::start_if_enabled(path, tools::mcp::enabled()).await,
+        None => None,
     };
     if let Some(provider) = mcp_provider.as_ref() {
         println!(

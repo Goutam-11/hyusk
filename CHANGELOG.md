@@ -4,6 +4,18 @@
 
 ### Added
 
+- External providers now have a written trust model (T4). "External providers"
+  in `docs/tools.md` covers the assets at risk, what crosses the host boundary,
+  who writes descriptions (the host for MCP, the server's sanitised text for a
+  local plugin), what the host enforces, what a server can still do after
+  approval, the kill switch (`HYUSK_MCP=0`, live file removal, an unset
+  `HYUSK_EXTERNAL_SERVERS`, or shutdown), and the checklist an operator should
+  follow before adding a server. A kill-switch test proves a disabled provider
+  reads nothing and starts no process, and `src/tools/contract_tests.rs` runs
+  the same five guarantees against the local and MCP fixture servers:
+  namespaced conformant manifests, an always-ask gate with no turn grant, a
+  malformed call refused before the server sees it, a working call, and reaped
+  children on shutdown.
 - MCP servers are a new tool provider (T3). `$XDG_CONFIG_HOME/hyusk/mcp.json`
   lists allowlisted servers with a command, arguments, an environment allowlist,
   and an optional tool grant; `HYUSK_MCP=0` disables the provider. The host

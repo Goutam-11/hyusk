@@ -1,7 +1,7 @@
 #!/bin/sh
 # A minimal MCP server fixture for the T3 tests.
 #
-# Usage: mcp_server.sh <modern|legacy> <server-name> <pid-file>
+# Usage: mcp_server.sh <modern|legacy> <server-name> <pid-file> [log-file]
 #
 # It speaks the real MCP subset the host uses:
 #   modern  server/discover (2026-07-28), then tools/list and tools/call with
@@ -18,6 +18,7 @@ set -u
 mode="${1:-modern}"
 server_name="${2:-fixture}"
 pid_file="${3:-}"
+log_file="${4:-}"
 
 if [ -n "$pid_file" ]; then
     printf '%s\n' "$$" > "$pid_file"
@@ -38,6 +39,9 @@ fail() {
 }
 
 while IFS= read -r line; do
+    if [ -n "$log_file" ]; then
+        printf '%s\n' "$line" >> "$log_file"
+    fi
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
     if [ -z "$id" ]; then
         # A notification (notifications/initialized, list_changed) has no id.
