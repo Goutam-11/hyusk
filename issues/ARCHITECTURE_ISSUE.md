@@ -410,9 +410,16 @@ restored in the same call (marker re-checked, fmt clean).
 
 ## T2 — External tool host
 
-- Status: open · Wave 2 · Size: large
-- Depends on: T1
-- Evidence: new module; `src/tools/registry.rs`, `src/main.rs`
+- Status: done 2026-10-31 · Wave 2 · Size: large
+- Commit: `b03482d`
+- Depends on: T1 (closed)
+- Evidence: confirmed before the change at `src/tools/registry.rs:52-57`
+  (`register` refused every `Source::External` tool with a message naming T2),
+  `src/main.rs:631` (`build_tools` was synchronous and registered only the
+  compiled set), and `src/tools/manifest.rs:98` (`schema: fn() -> Value`, which
+  could not hold a schema received at run time). The issue listed only the new
+  module, the registry, `main.rs`, and `safety.rs`; the manifest and the tool
+  modules also had to change - see the notes.
 
 **Problem.** Every tool is Rust and built into the binary. Adding a capability
 means editing the crate, recompiling, and shipping a new binary.
@@ -425,17 +432,134 @@ truncated and redacted like core tool output.
 
 **Acceptance criteria**
 
-- [ ] A fixture server exposes a tool that the model can call.
-- [ ] A crashing server does not take down the agent.
-- [ ] Every external call passes through the host approval policy.
-- [ ] Shutdown leaves no orphan processes.
+- [x] A fixture server exposes a tool that the model can call
+  (`a_fixture_server_exposes_a_tool_the_agent_can_call`: the registered
+  `ext.fixture.echo` manifest and spec come from the handshake and the call
+  returns the fixture's text).
+- [x] A crashing server does not take down the agent
+  (`a_crashing_server_does_not_take_down_the_agent`,
+  `a_crashed_server_is_restarted_on_the_next_call`).
+- [x] Every external call passes through the host approval policy
+  (`requires_approval("ext.fixture.echo", …)` is true; the namespace row is the
+  only row, and `external_tools_always_ask_and_cannot_be_granted_for_a_turn`
+  also shows no turn grant can cover one).
+- [x] Shutdown leaves no orphan processes
+  (`shutdown_leaves_no_orphan_process` reads the fixture's pid and polls
+  `/proc` after shutdown).
 
 **Tests**
 
-- [ ] Fixture server: happy path, crash, timeout, oversized output.
+- [x] Fixture server: happy path, crash, timeout, oversized output
+  (`a_fixture_server_exposes_a_tool_the_agent_can_call`,
+  `a_crashing_server_does_not_take_down_the_agent`,
+  `a_slow_server_times_out_and_is_restarted`,
+  `an_oversized_result_is_truncated`), plus redaction, argument validation,
+  idle death, restart after a crash, failed startup, the handshake name check,
+  config bounds, and shutdown: twelve tests in `tools::external::tests`.
+- [x] Registry and policy tie: an external tool registers in its namespace and
+  conforms, an external tool outside it is refused, a core tool may not use it,
+  and the gate always asks (two `registry` tests replace the old
+  "cannot register yet" one; one `safety` test is new).
 
-**Files.** `src/tools/external.rs` (new), `src/tools/registry.rs`,
-`src/main.rs`, `src/tools/safety.rs`.
+**Files.** `src/tools/external.rs` (new), `tests/fixtures/external_server.sh`
+(new), `src/tools/manifest.rs` and the fourteen core tool modules,
+`src/tools/registry.rs`, `src/tools/mod.rs`, `src/tools/safety.rs`,
+`src/main.rs`, `docs/tools.md`, `docs/architecture.md`,
+`docs/architecture-roadmap.md`, `docs/development.md`, `AGENTS.md`,
+`README.md`, `.env.example`, `CHANGELOG.md`, `issues/README.md`.
+
+**Notes (2026-10-31).** `ExternalHost` starts from
+`HYUSK_EXTERNAL_SERVERS` (inline JSON or a file path, at most 16 servers),
+probes each server once at startup, and registers its tools under
+`ext.<server>.<tool>`. `main` starts the host before `build_tools` (now async)
+and keeps the handle for shutdown, because the agent exits through
+`std::process::exit`, which skips destructors.
+
+Protocol and policy:
+
+- **Handshake.** Newline-delimited JSON-RPC 2.0 on stdin/stdout, stderr
+  discarded. `initialize` carries `protocolVersion: "1.0"` and the client;
+  the result carries `server: {name, version}` and the tool list. The server
+  must name itself exactly as configured, so one server cannot impersonate
+  another's namespace. `tools/call` returns MCP-shaped text content.
+- **Manifest.** The handshake supplies the description, the version, and the
+  `inputSchema`; the host collapses the description to one bounded line,
+  normalises the version to `major.minor.patch` (else `0.0.0`), assigns
+  `RiskClass::Execute`, and declares no OS capability - a server cannot claim
+  the D3/D6 grants.
+- **Approval.** One `ext.` namespace row in `safety.rs` with an always-ask
+  classifier. It has no `ToolName` variant, because the set of external tools
+  is not known at compile time; `policy_for` recognises the prefix, the
+  guidance gains one `ext.<server>.<tool>` line, and `grant_key` returns `None`
+  so "allow for this turn" cannot blanket an external tool. A server's own
+  risk claim is never read.
+- **Arguments.** A small subset validator (top-level object, `type`, `enum`,
+  `required`, `additionalProperties: false`, `items`, depth 8) refuses a bad
+  call before it leaves the host; an unknown declared type fails closed, and
+  arguments over 64 KiB are refused.
+- **Results.** Truncated at 20,000 characters and passed through
+  `redact::redact`; `execute_tool` runs the same pass again, and the marker it
+  writes does not re-match, so the second pass is a no-op.
+- **Failure.** Per-call deadline 10 s (clamped 100 ms-120 s), startup deadline
+  5 s (clamped 100 ms-30 s). A timeout or crash kills the process and reports a
+  failed result; the next call starts a fresh one, and `exited()` notices a
+  server that died between calls before the host writes to it. A server that
+  will not start, or that names itself differently, is logged (redacted) and
+  skipped. `Connection::terminate` kills and then waits, so shutdown reaps
+  rather than leaving zombies.
+
+Decisions and deviations the issue did not settle:
+
+- **The manifest's schema became `Schema::{Fn, Owned}`.** A T1 manifest held
+  `schema: fn() -> Value`, which cannot carry a handshake schema. The enum
+  keeps `ToolManifest` `Copy`; each of the fourteen core tools changed one
+  literal to `Schema::Fn(<tool>_schema)` plus its import. The name, version,
+  and description stay `&'static str`, so the host leaks one bounded string per
+  handshake field once at startup (`MAX_SERVERS` x `MAX_TOOLS_PER_SERVER`);
+  changing them to owned would have forced `Tool::name` to return an owned
+  value and touched every tool.
+- **Configuration is an environment variable, not a file.** T3 introduces
+  `~/.config/hyusk/mcp.json`; inventing a second config file here would be
+  replaced, so `HYUSK_EXTERNAL_SERVERS` takes inline JSON or a path and T3 can
+  reuse `load_specs`.
+- **Discovery is in the handshake, not `tools/list`.** T3's MCP provider will
+  add the separate list call; T2 documents its own protocol, and the call
+  result is already MCP-shaped.
+- **Servers inherit the agent's environment.** T3's config is the place for the
+  environment allowlist, as its decision line says.
+
+Drift: the Evidence lines are from before the change, as usual; the issue's
+`Files` list did not mention `manifest.rs`, the fourteen tool modules, the
+fixture, or the documentation updates. The acceptance "redacted like core tool
+output" is met by the same `redact::redact` pass; it is a code path rather than
+a separate redaction engine.
+
+**Verification.** `cargo fmt --all -- --check`, `cargo check --all-targets
+--offline`, and `cargo clippy --all-targets --offline` are clean apart from the
+three pre-existing `result_large_err` warnings in `src/link/server.rs`. The
+default suite is 465 passing, 6 ignored (450 before; T2 adds fifteen tests: the
+twelve external ones, one safety test, and two registry tests net), and the
+feature suite 470 passing, 7 ignored. Fail-before-fix probes, each backed up
+with `cp` and restored in the same bash call (marker re-checked, `cmp`
+re-checked, fmt re-checked):
+
+- making `validate_arguments` return `Ok(())` failed
+  `arguments_are_validated_before_the_server_sees_them` - the server then
+  received a call the schema refused;
+- forcing `Connection::exited` to `false` failed
+  `a_server_that_died_while_idle_is_restarted` at
+  `writing to the external server: Broken pipe`.
+
+The first attempt at the second probe forced `exited` to `false` and ran
+`a_crashed_server_is_restarted_on_the_next_call`, which still passed: that path
+restarts through the call's error branch, not through `exited`, so the
+between-calls death was untested. The `idle-once` fixture mode and its test were
+added for that case, and the probe then failed as intended. A third probe made
+`ExternalHost::shutdown` a no-op, which failed
+`shutdown_leaves_no_orphan_process`.
+
+Manual check still open: a real external server (the fixture is the only server
+this session ran).
 
 ## T3 — MCP provider
 
