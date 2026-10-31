@@ -149,10 +149,12 @@ non-Linux host through its `gtk4` dependency before reaching the gate.
 
 ## P3 — Feature-gate the GTK workflow editor
 
-- Status: open · Wave 1 · Size: small
+- Status: done 2026-10-31 · Wave 1 · Size: small
+- Commit: `d167b63`
 - Depends on: —
-- Evidence: `src/bin/hyusk-workflows.rs` (1,829 lines), `Cargo.toml`
-  (gtk4 and libadwaita)
+- Evidence: confirmed exactly before the change: `src/bin/hyusk-workflows.rs` is
+  1,829 lines, and `Cargo.toml:61-62` declared `gtk4` and `libadwaita` as
+  unconditional Linux dependencies for the whole package
 
 **Problem.** The editor is a separate binary but shares the package's
 dependencies, so gtk4 and libadwaita are built for every agent build. That is
@@ -164,17 +166,58 @@ Keep one crate, as agreed. The installer builds with the feature.
 
 **Acceptance criteria**
 
-- [ ] Default `cargo build` does not compile gtk4 or libadwaita.
-- [ ] `cargo build --features workflow-editor --bin hyusk-workflows` builds.
-- [ ] `scripts/install-workflow-app.sh` installs the feature-enabled build.
-- [ ] README and the desktop entry are unchanged for users who install it.
+- [x] Default `cargo build` does not compile gtk4 or libadwaita.
+- [x] `cargo build --features workflow-editor --bin hyusk-workflows` builds.
+- [ ] `scripts/install-workflow-app.sh` installs the feature-enabled build. The
+  script now builds with `--features workflow-editor` and passes `bash -n`; the
+  install itself writes into `~/.local/bin` and `~/.local/share/applications`,
+  so it was not run from this session.
+- [x] README and the desktop entry are unchanged for users who install it.
 
 **Tests**
 
-- [ ] CI: default build plus one feature-enabled build.
+- [x] CI: default build plus one feature-enabled build. `.github/workflows/ci.yml`
+  now runs `cargo check --all-targets --features workflow-editor` and
+  `cargo test --bin hyusk-workflows --features workflow-editor` after the default
+  clippy and test steps; both commands were run locally, GitHub CI itself has not
+  executed this workflow yet.
 
-**Files.** `Cargo.toml`, `src/bin/hyusk-workflows.rs`,
-`scripts/install-workflow-app.sh`, `README.md`.
+**Files.** `Cargo.toml`, `src/main.rs` (guard test),
+`scripts/install-workflow-app.sh`, `.github/workflows/ci.yml`, `README.md`,
+`docs/development.md`, `docs/architecture-roadmap.md`, `AGENTS.md`,
+`CHANGELOG.md`.
+
+**Notes (2026-10-31).** `[features]` now holds `default = []` and
+`workflow-editor = ["dep:gtk4", "dep:libadwaita"]`; `gtk4` and `libadwaita`
+became `optional = true` in the Linux dependency table, and the
+`hyusk-workflows` bin carries `required-features = ["workflow-editor"]`. Using
+`dep:` keeps one public feature instead of two implicit per-dependency features,
+so a typo in a feature name cannot silently enable half the toolkit.
+
+Verified rather than assumed: `cargo tree -e normal` has no `gtk4` or
+`libadwaita` line by default and both appear with `--features workflow-editor`;
+a default `cargo build` compiles only `hyusk_agent`; the feature build and the
+editor's five tests pass.
+
+Decisions the issue did not settle:
+
+- **The editor's tests move with the feature.** `cargo test --all-targets`
+  skips the bin, so the default suite is 404 passing, 6 ignored and the
+  feature-enabled suite is 409 passing, 7 ignored. Both numbers are recorded in
+  `AGENTS.md` and `docs/development.md` rather than pretending one is the whole
+  truth.
+- **One CI job, extra steps.** The feature build is two steps in the existing
+  job instead of a second job, because the native packages and the cache are
+  already there; a second job would rebuild GTK4 from scratch.
+- **The guard is a manifest test.** `platform_tests::the_workflow_editor_is_behind_its_feature`
+  in `src/main.rs` asserts the feature, the two `dep:` entries, the bin's
+  `required-features`, and `optional = true`. It cannot prove the compiler skips
+  a crate; `cargo tree` does that, and the test keeps the wiring from drifting.
+
+Drift: the issue's `Files` list did not mention `.github/workflows/ci.yml`,
+`docs/development.md`, `AGENTS.md`, or the guard test in `src/main.rs`. Nothing
+else in the repository referenced the bin's build: `data/io.github.hyusk.Workflows.desktop`
+runs the installed `hyusk-workflows`, which the installer still provides.
 
 ## P4 — Feature-gate the orb overlay
 
