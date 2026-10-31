@@ -256,9 +256,18 @@ and egui stay unconditional until someone takes this item.
 
 ## P5 — Feature-gate the mobile link
 
-- Status: open · Wave 2 · Size: medium
-- Depends on: P4
-- Evidence: `src/link/`, `src/tools/mobile.rs`, `src/main.rs` (link startup)
+- Status: done 2026-10-31 · Wave 2 · Size: medium
+- Commit: `12c2df8`
+- Depends on: P4 (deferred; the dependency was only the `Cargo.toml` area, so
+  this item did not wait for the orb)
+- Evidence: confirmed before the change at `src/main.rs:12` (`mod link;`
+  unconditional), `src/tools/mod.rs:12` (`pub mod mobile;`), `src/main.rs:820-908`
+  (the link startup block), `168-193` (`pairing_path`/`publish_pairing`),
+  `1153` (the `pair_phone` control arm), and `Cargo.toml:48-53` (unconditional
+  `tokio-rustls`, `rustls`, `hmac`, `sha2`, `rand`). The issue's "polled in
+  every run" was inexact: the daemon never polled the pairing file - it removed
+  a stale one at startup and published on demand; the Noctalia widget is what
+  reads it.
 
 **Problem.** The link server, pairing file, mobile tool, and TLS/WebSocket stack
 are compiled and polled in every run even when no phone is paired. The
@@ -272,18 +281,108 @@ Decide separately whether the two sync stubs are implemented or removed.
 
 **Acceptance criteria**
 
-- [ ] Default build excludes the link server and the model-facing mobile tool.
-- [ ] `--features mobile` restores current behaviour.
-- [ ] The daemon does not poll for a pairing file when the feature is off.
-- [ ] Docs say how to build with the feature.
+- [x] Default build excludes the link server and the model-facing mobile tool
+  (`cargo tree -e normal --depth 1` has none of the link's direct dependencies;
+  the default suite drops the thirteen link/mobile tests, and
+  `tool_policy_tests::every_registered_tool_has_an_explicit_policy` asserts
+  `mobile` is not registered in a default build).
+- [x] `--features mobile` restores current behaviour (466 passing tests,
+  including the link auth/protocol/server and mobile tool suites; the startup,
+  pairing, and control paths are the previous code, moved into
+  `start_mobile_link`).
+- [x] The daemon does not poll for a pairing file when the feature is off: all
+  three pairing-file sites (`pairing_path`, `publish_pairing`, the shutdown
+  cleanup) and the startup removal are inside the feature, so a default build
+  never reads, writes, or removes `hyusk-pairing.json`.
+- [x] Docs say how to build with the feature (`README.md`'s Android section,
+  `docs/mobile-link-protocol.md`, `.env.example`, and
+  `scripts/install-autostart.sh --features mobile`). The installer now passes
+  the feature list through, because its default build would otherwise overwrite
+  a mobile binary.
 
 **Tests**
 
-- [ ] Link and mobile tests run under the feature.
-- [ ] Default build check.
+- [x] Link and mobile tests run under the feature: the main suite with
+  `--features mobile` is 466 passing, 6 ignored (thirteen more than the default
+  453), and CI gains a `cargo check --all-targets --features mobile` plus
+  `cargo test --bin hyusk_agent --features mobile` step.
+- [x] Default build check: `cargo check --all-targets --offline` and the
+  default suite pass; a new
+  `platform_tests::the_mobile_link_is_behind_its_feature` guards the feature,
+  its optional dependencies, and the module and pairing gates.
 
-**Files.** `Cargo.toml`, `src/main.rs`, `src/link/`, `src/tools/mobile.rs`,
-`docs/mobile-link-protocol.md`, `README.md`.
+**Files.** `Cargo.toml`, `src/main.rs`, `src/status.rs`, `src/tools/mod.rs`,
+`src/link/` (unchanged, now feature-compiled), `src/tools/mobile.rs`
+(unchanged, now feature-compiled), `docs/mobile-link-protocol.md`,
+`docs/development.md`, `docs/architecture.md`, `docs/architecture-roadmap.md`,
+`README.md`, `.env.example`, `AGENTS.md`, `CHANGELOG.md`, `issues/README.md`,
+`scripts/install-autostart.sh`, `scripts/setup-mobile-link.sh`,
+`.github/workflows/ci.yml`.
+
+**Notes (2026-10-31).** `[features]` gains
+`mobile = ["dep:rustls", "dep:tokio-rustls", "dep:hmac", "dep:sha2",
+"dep:rand"]`, and those five dependencies become optional; `tokio-tungstenite`
+stays unconditional because the browser tool speaks CDP with it. The gate is
+carried by:
+
+- `#[cfg(feature = "mobile")] mod link;` in `main.rs`;
+- the `MobileTool` import and registration, and the `ToolSetup::link_server`
+  field (so a default build has no type to register);
+- `pairing_path`, `publish_pairing`, and a new `start_mobile_link` function
+  that holds the whole startup block (including the status fan-out and command
+  loop), which keeps `main` readable and the code out of a default build;
+- the `control_link` binding and the `pair_phone` arm. A default build keeps a
+  `pair_phone` arm that shows one status card ("This build has no mobile link.
+  Rebuild with --features mobile."), so a panel button is answered instead of
+  being silently ignored;
+- the shutdown link-server and pairing-file cleanup;
+- `status::subscribe`, whose only subscriber is the link (otherwise a default
+  build reports it as dead code), and `tools/mod.rs`'s `mobile` module.
+
+Decisions and deviations:
+
+- **The sync stubs stay.** The issue left the two "merge support is pending"
+  branches to decide separately. They are part of the versioned wire protocol
+  (`memory.sync`/`workflow.sync`, documented as reserved in v1) and the Android
+  app still sends them, so removing the branches would turn a reserved method
+  into an error. They are now behind the feature, so a default build contains
+  neither the branch nor the log line.
+- **The installer grew a `--features` flag.** The issue's Files list did not
+  mention the scripts, but `install-autostart.sh` always ran `cargo build
+  --release`; installing after a mobile build would have replaced it with a
+  default one. `--features mobile` is passed through, and the link setup script
+  repeats the requirement in its output.
+- **A control action without the link is answered, not ignored.** The panels
+  send `pair_phone` regardless of how the daemon was built; a card explaining
+  the build is the only way the user learns why no code appears.
+- **The three pre-existing clippy warnings moved behind the feature.** They are
+  `result_large_err` in `src/link/server.rs`; default clippy is now clean, and
+  `--features mobile` reports them. They were not fixed because boxing the
+  error changes the public `LinkServerError` shape and is outside P5.
+
+Drift: the issue's `Files` list did not mention `status.rs`, `tools/mod.rs`, the
+two scripts, the CI workflow, or the documentation counts. Its "polled" wording
+is corrected above: the daemon touched the pairing file at startup and on
+demand, and the widget reads it.
+
+**Verification.** `cargo fmt --all -- --check` clean; `cargo check --all-targets
+--offline` and the default suite (453 passing, 6 ignored) clean; `cargo check
+--all-targets --offline --features mobile` and the mobile suite (466 passing, 6
+ignored) clean; `--features workflow-editor` (458 passing, 7 ignored) and both
+features together (471 passing, 7 ignored) clean. `cargo clippy --all-targets
+--offline` is clean; `--features mobile` reports only the three pre-existing
+`result_large_err` warnings. Probes, each backed up with `cp` and restored in
+the same bash call (`cmp` and fmt re-checked):
+
+- removing the `#[cfg(feature = "mobile")]` gate on `mod link;` made the
+  default `cargo check` fail with unresolved `rand`, `hmac`, `sha2`, and
+  `rustls`, which is the proof that the gate is what keeps the transport out;
+- removing `"dep:sha2"` from the mobile feature failed
+  `platform_tests::the_mobile_link_is_behind_its_feature`.
+
+Manual check still open: a live Android reconnect against a `--features mobile`
+build (the link's own tests are unit tests, and L5's live reconnect was already
+on the manual list).
 
 ## P6 — Feature-gate Nova Sonic
 

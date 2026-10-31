@@ -113,7 +113,7 @@ for the microphone at the same time.
 | `tools/task.rs` | Bounded research and Codex workspace workers. |
 | `tools/timer.rs` | In-process countdown timers with desktop notifications. |
 | `tools/web_search.rs` | Brave or keyless DuckDuckGo search without a browser. |
-| `tools/mobile.rs` | Forwards typed actions to the paired Android phone. |
+| `tools/mobile.rs` | Forwards typed actions to the paired Android phone; compiled only with the `mobile` feature (P5). |
 | `tools/shell.rs` | Executes commands through `sh -c`, with foreground and detached modes. |
 | `tools/process.rs` | Spawns an executable directly and reports immediate failures. |
 | `tools/media.rs` | Delegates MPRIS control to `playerctl`. |

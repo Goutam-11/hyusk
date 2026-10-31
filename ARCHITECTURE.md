@@ -34,9 +34,10 @@ main.rs
 - `tools/` contains the tool trait, registry, and every local tool (desktop,
   shell, media, memory, scheduling, background tasks, and optional backends).
 - `speech/`, `wake/`, and `ui/` are audio and desktop refinement components.
-- `link/` is an opt-in TLS-only mobile transport. It feeds authenticated phone
-  turns into the same event loop, exposes the phone as the `mobile` tool, and
-  broadcasts status and approval events to the companion.
+- `link/` is an opt-in TLS-only mobile transport, compiled only with the
+  `mobile` feature. It feeds authenticated phone turns into the same event
+  loop, exposes the phone as the `mobile` tool, and broadcasts status and
+  approval events to the companion.
 
 The voice path is connected when the wake model and Whisper model are available:
 `WakeWordDetector` pauses after `WakeWordDetected`, `run_agent_task` records and

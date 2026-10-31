@@ -798,7 +798,7 @@ hyusk_agent/
 └── src/
     ├── agent/       # Agent loop, runner modules, and MPSC runtime task
     ├── bin/         # hyusk-workflows entry point (the GTK workflow editor)
-    ├── link/        # Opt-in TLS mobile link server
+    ├── link/        # Opt-in TLS mobile link server (mobile feature)
     ├── model/       # OpenRouter-compatible clients, Nova Sonic, Codex
     ├── speech/      # Whisper STT and local TTS adapters
     ├── tools/       # Tool trait, registry, and all local tools
