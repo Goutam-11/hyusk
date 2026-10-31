@@ -414,6 +414,20 @@ $XDG_DATA_HOME/hyusk/memory.md     (generated human-readable view)
 $XDG_DATA_HOME/hyusk/memory.json   (legacy backup after automatic migration)
 ```
 
+The store is schema version 2 (M1). Entries carry provenance (`source`,
+`session_id`), a `kind` (`note`, `fact`, `preference`, `episode`), a
+`confidence`, `last_used_unix`, `superseded_by`, and both `created_unix` and
+`updated_unix`. A `memory_embeddings` table holds one vector per entry for the
+hybrid retrieval work (M2); forgetting an entry drops its row.
+
+The schema is additive and migrated on open: a v1 database gains the missing
+columns with their defaults, then the backfill gives each v1 row `import` as its
+source, the half-way confidence, and the row's own `created_unix` as its updated
+and last-used stamps. The migration is idempotent, records `schema_version` in
+`memory_meta`, and the legacy `memory.json` import still runs once after it.
+`memory.json` is an import format only; `memory.md` is the export, and it shows
+an entry's kind and a `(superseded by #N)` marker when they apply.
+
 ```json
 { "action": "remember", "text": "User prefers dark mode", "tags": ["preference"] }
 { "action": "search", "query": "dark mode" }
@@ -425,7 +439,7 @@ $XDG_DATA_HOME/hyusk/memory.json   (legacy backup after automatic migration)
 
 | Action | Input | Notes |
 | --- | --- | --- |
-| `remember` | `text`, optional `tags` | Transactionally adds a note to SQLite and refreshes `memory.md`. Duplicate notes are rejected. |
+| `remember` | `text`, optional `tags` | Transactionally adds a note to SQLite (kind `note`, source `assistant`, confidence `1.0`) and refreshes `memory.md`. Duplicate notes are rejected. |
 | `search` | `query`, optional `limit` | Uses SQLite FTS5 plus tag and recency signals. |
 | `graph_add` | `subject`, `relation`, `object` | Adds a knowledge-graph triple. Duplicate triples are rejected. |
 | `graph_query` | optional `subject`, `relation`, `object` | Filters triples by substring. |

@@ -4,6 +4,21 @@
 
 ### Added
 
+- The memory store gains a versioned, additive schema (M1). Entries now carry
+  provenance (`source`, `session_id`), a `kind` (`note`, `fact`, `preference`,
+  `episode`), a `confidence`, `last_used_unix`, `superseded_by`, and
+  `created_unix` plus `updated_unix`; a `memory_embeddings` table holds one
+  vector per entry, and forgetting an entry drops its row. The schema is
+  migrated when the database opens - a v1 file gains the columns with their
+  defaults and the backfill gives each old row `import` as its source, the
+  half-way confidence, and its own `created_unix` as the updated and last-used
+  stamps. The migration is idempotent, records `schema_version` in
+  `memory_meta`, keeps the one-shot legacy `memory.json` import after it, and
+  the `memory.md` export still renders (now showing an entry's kind and a
+  `(superseded by #N)` marker). Retrieval is unchanged; the scoring work is
+  M2. Tests cover a v1 fixture opening, reading and writing, the idempotent
+  second open, the new fields round-tripping, the export, the legacy import,
+  and the embedding cleanup.
 - Every tool now declares a manifest (T1): name, version, description, JSON
   schema, risk classes, capability needs, and source (`core` for the built-in
   tools). `Tool::manifest` has no default, so a tool without one does not

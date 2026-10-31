@@ -106,7 +106,7 @@ for the microphone at the same time.
 | `tools/accessibility.rs` | Drives AT-SPI2 through the `pyatspi` bridge. |
 | `tools/window.rs` | Lists and activates windows over niri IPC or the extension's D-Bus. |
 | `tools/gnome_doctor.rs` | Read-only checks for GNOME window, accessibility, and capture support. |
-| `tools/memory.rs` | SQLite memory, FTS search, and knowledge-graph triples; the database is `0600` in an owner-only directory and stored text is redacted. |
+| `tools/memory.rs` | SQLite memory (schema v2: provenance, kind, confidence, supersession, an embeddings table, and an idempotent additive migration), FTS search, and knowledge-graph triples; the database is `0600` in an owner-only directory and stored text is redacted. |
 | `tools/safety.rs` | Holds the explicit per-tool approval table (unknown names ask), classifies risky calls, and arms one-shot confirmations that expire. |
 | `tools/scheduler.rs` | Persists one-shot reminders, workflows, and agent tasks. |
 | `tools/task.rs` | Bounded research and Codex workspace workers. |

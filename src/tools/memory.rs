@@ -18,14 +18,97 @@ const MAX_ENTRIES: usize = 5_000;
 const MAX_GRAPH: usize = 5_000;
 const DEFAULT_LIMIT: usize = 8;
 
+/// What a memory entry is, so recall and supersession can tell a preference
+/// from a passing note (M1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryKind {
+    #[default]
+    Note,
+    Fact,
+    Preference,
+    Episode,
+}
+
+impl MemoryKind {
+    /// The stored spelling, shared by the database and the Markdown export.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MemoryKind::Note => "note",
+            MemoryKind::Fact => "fact",
+            MemoryKind::Preference => "preference",
+            MemoryKind::Episode => "episode",
+        }
+    }
+
+    /// Parse a stored value; an unknown kind is a note, never an error, because
+    /// a row written by a newer version must stay readable.
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "fact" => MemoryKind::Fact,
+            "preference" => MemoryKind::Preference,
+            "episode" => MemoryKind::Episode,
+            _ => MemoryKind::Note,
+        }
+    }
+}
+
+/// The confidence a row gets when it predates provenance (M1).
+pub const BACKFILLED_CONFIDENCE: f32 = 0.5;
+
+fn backfilled_confidence() -> f32 {
+    BACKFILLED_CONFIDENCE
+}
+
 /// One remembered fact or note.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// The schema is additive (M1): v1 files carried `id`, `text`, `tags`, and
+/// `created_unix`, and every other field has a safe default so an old row or an
+/// old `memory.json` keeps reading.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryEntry {
     pub id: u64,
     pub text: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub kind: MemoryKind,
+    #[serde(default = "backfilled_confidence")]
+    pub confidence: f32,
+    /// Where the entry came from: `assistant` for a note the agent saved,
+    /// `import` for a v1 file, empty when unknown.
+    #[serde(default)]
+    pub source: String,
+    /// The session that wrote it, when the writer knows one.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// The entry that replaced this one, if any (G1/M3).
+    #[serde(default)]
+    pub superseded_by: Option<u64>,
     pub created_unix: u64,
+    #[serde(default)]
+    pub updated_unix: u64,
+    /// When recall last used the entry; M2 scores with it.
+    #[serde(default)]
+    pub last_used_unix: u64,
+}
+
+impl Default for MemoryEntry {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            text: String::new(),
+            tags: Vec::new(),
+            kind: MemoryKind::Note,
+            confidence: BACKFILLED_CONFIDENCE,
+            source: String::new(),
+            session_id: None,
+            superseded_by: None,
+            created_unix: 0,
+            updated_unix: 0,
+            last_used_unix: 0,
+        }
+    }
 }
 
 /// A knowledge-graph triple.
@@ -59,20 +142,49 @@ fn memory_json_path() -> PathBuf {
     memory_dir().join("memory.json")
 }
 
-fn memory_md_path() -> PathBuf {
-    memory_dir().join("memory.md")
+/// The Markdown mirror that belongs to one database file, so a test can point
+/// the whole store at a scratch directory instead of the real data directory.
+fn markdown_path_for(db: &std::path::Path) -> PathBuf {
+    db.parent()
+        .map(|parent| parent.join("memory.md"))
+        .unwrap_or_else(|| PathBuf::from("memory.md"))
 }
 
 fn memory_db_path() -> PathBuf {
     memory_dir().join("memory.db")
 }
 
+/// The schema version this build writes into `memory_meta` (M1).
+pub const SCHEMA_VERSION: &str = "2";
+
+/// Columns added after v1, with the definition used for an existing database.
+///
+/// `ALTER TABLE … ADD COLUMN` is the migration: SQLite fills existing rows from
+/// the `DEFAULT`, and the backfill below then replaces a zero/empty default
+/// with the row's own `created_unix` where that makes sense.
+const ADDED_COLUMNS: &[(&str, &str)] = &[
+    ("updated_unix", "INTEGER NOT NULL DEFAULT 0"),
+    ("last_used_unix", "INTEGER NOT NULL DEFAULT 0"),
+    ("source", "TEXT NOT NULL DEFAULT ''"),
+    ("session_id", "TEXT"),
+    ("kind", "TEXT NOT NULL DEFAULT 'note'"),
+    ("confidence", "REAL NOT NULL DEFAULT 0.5"),
+    ("superseded_by", "INTEGER"),
+];
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS memory_entries (
     id INTEGER PRIMARY KEY,
     text TEXT NOT NULL,
     tags_json TEXT NOT NULL,
-    created_unix INTEGER NOT NULL
+    created_unix INTEGER NOT NULL,
+    updated_unix INTEGER NOT NULL DEFAULT 0,
+    last_used_unix INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT '',
+    session_id TEXT,
+    kind TEXT NOT NULL DEFAULT 'note',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    superseded_by INTEGER
 );
 CREATE TABLE IF NOT EXISTS memory_graph (
     subject TEXT NOT NULL,
@@ -83,6 +195,13 @@ CREATE TABLE IF NOT EXISTS memory_graph (
 CREATE TABLE IF NOT EXISTS memory_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+    entry_id INTEGER PRIMARY KEY,
+    model TEXT NOT NULL,
+    dims INTEGER NOT NULL,
+    vector BLOB NOT NULL,
+    created_unix INTEGER NOT NULL
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_entries_fts USING fts5(
     id UNINDEXED,
@@ -154,6 +273,7 @@ where
 
 async fn initialize_db(pool: &SqlitePool) -> Result<()> {
     create_schema(pool).await?;
+    migrate_schema(pool).await?;
 
     let marker: Option<String> =
         sqlx::query_scalar("SELECT value FROM memory_meta WHERE key = 'legacy_json_migrated'")
@@ -175,6 +295,59 @@ async fn create_schema(pool: &SqlitePool) -> Result<()> {
             .await
             .context("Failed to initialize memory database schema")?;
     }
+
+    Ok(())
+}
+
+/// Bring a v1 database up to the current schema (M1).
+///
+/// Additive and idempotent: an existing table keeps its columns and gains the
+/// missing ones with their defaults, then the backfill gives a v1 row the
+/// provenance it never recorded - `import` as the source, `note` as the kind,
+/// the half-way confidence, and `created_unix` for both the updated and
+/// last-used stamps. Running it again finds every column present and every
+/// backfill already satisfied, so it changes nothing.
+async fn migrate_schema(pool: &SqlitePool) -> Result<()> {
+    let rows = sqlx::query("PRAGMA table_info(memory_entries)")
+        .fetch_all(pool)
+        .await
+        .context("Failed to inspect the memory schema")?;
+    let existing: Vec<String> = rows
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect();
+
+    for (name, definition) in ADDED_COLUMNS {
+        if existing.iter().any(|column| column == name) {
+            continue;
+        }
+
+        // The name and definition are constants from ADDED_COLUMNS, never user
+        // input, so the statement is fixed.
+        sqlx::query(&format!(
+            "ALTER TABLE memory_entries ADD COLUMN {name} {definition}"
+        ))
+        .execute(pool)
+        .await
+        .with_context(|| format!("Failed to add the memory column {name}"))?;
+    }
+
+    for statement in [
+        "UPDATE memory_entries SET updated_unix = created_unix WHERE updated_unix = 0",
+        "UPDATE memory_entries SET last_used_unix = created_unix WHERE last_used_unix = 0",
+        "UPDATE memory_entries SET source = 'import' WHERE source = ''",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .context("Failed to backfill the memory schema")?;
+    }
+
+    sqlx::query("INSERT OR REPLACE INTO memory_meta (key, value) VALUES ('schema_version', ?)")
+        .bind(SCHEMA_VERSION)
+        .execute(pool)
+        .await
+        .context("Failed to record the memory schema version")?;
 
     Ok(())
 }
@@ -234,12 +407,21 @@ async fn migrate_legacy_json_from(pool: &SqlitePool, path: &std::path::Path) -> 
                 let tags = serde_json::to_string(&entry.tags)?;
                 sqlx::query(
                     "INSERT OR IGNORE INTO memory_entries
-                     (id, text, tags_json, created_unix) VALUES (?, ?, ?, ?)",
+                     (id, text, tags_json, created_unix, updated_unix, last_used_unix,
+                      source, session_id, kind, confidence, superseded_by)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(entry.id as i64)
                 .bind(&entry.text)
                 .bind(tags)
                 .bind(entry.created_unix as i64)
+                .bind(entry.created_unix as i64)
+                .bind(entry.created_unix as i64)
+                .bind("import")
+                .bind(Option::<String>::None)
+                .bind(entry.kind.as_str())
+                .bind(entry.confidence as f64)
+                .bind(entry.superseded_by.map(|id| id as i64))
                 .execute(&mut *transaction)
                 .await
                 .context("Failed to migrate memory entry")?;
@@ -282,22 +464,35 @@ async fn migrate_legacy_json_from(pool: &SqlitePool, path: &std::path::Path) -> 
 }
 
 async fn read_store(pool: &SqlitePool) -> Result<MemoryStore> {
-    let entries =
-        sqlx::query("SELECT id, text, tags_json, created_unix FROM memory_entries ORDER BY id")
-            .fetch_all(pool)
-            .await
-            .context("Failed to read memory entries")?
-            .into_iter()
-            .map(|row| {
-                let tags_json: String = row.try_get("tags_json")?;
-                Ok(MemoryEntry {
-                    id: row.try_get::<i64, _>("id")? as u64,
-                    text: row.try_get("text")?,
-                    tags: serde_json::from_str(&tags_json).unwrap_or_default(),
-                    created_unix: row.try_get::<i64, _>("created_unix")? as u64,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+    let entries = sqlx::query(
+        "SELECT id, text, tags_json, kind, confidence, source, session_id, superseded_by,
+                created_unix, updated_unix, last_used_unix
+         FROM memory_entries ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await
+    .context("Failed to read memory entries")?
+    .into_iter()
+    .map(|row| {
+        let tags_json: String = row.try_get("tags_json")?;
+        let created_unix = row.try_get::<i64, _>("created_unix")? as u64;
+        Ok(MemoryEntry {
+            id: row.try_get::<i64, _>("id")? as u64,
+            text: row.try_get("text")?,
+            tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+            kind: MemoryKind::from_str(&row.try_get::<String, _>("kind")?),
+            confidence: row.try_get::<f64, _>("confidence")? as f32,
+            source: row.try_get("source")?,
+            session_id: row.try_get("session_id")?,
+            superseded_by: row
+                .try_get::<Option<i64>, _>("superseded_by")?
+                .map(|id| id as u64),
+            created_unix,
+            updated_unix: row.try_get::<i64, _>("updated_unix")? as u64,
+            last_used_unix: row.try_get::<i64, _>("last_used_unix")? as u64,
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
 
     let graph = sqlx::query("SELECT subject, relation, object FROM memory_graph")
         .fetch_all(pool)
@@ -335,12 +530,21 @@ async fn read_store(pool: &SqlitePool) -> Result<MemoryStore> {
 }
 
 pub fn load_store() -> MemoryStore {
-    match run_db(|pool| Box::pin(async move { read_store(&pool).await })) {
+    load_store_at(&memory_db_path())
+}
+
+/// Load and mirror one database file, so a test never touches the real store.
+fn load_store_at(db: &std::path::Path) -> MemoryStore {
+    let markdown = markdown_path_for(db);
+
+    match run_db_at(db.to_path_buf(), |pool| {
+        Box::pin(async move { read_store(&pool).await })
+    }) {
         Ok(store) => {
-            if let Err(error) = std::fs::write(memory_md_path(), render_markdown(&store)) {
+            if let Err(error) = std::fs::write(&markdown, render_markdown(&store)) {
                 eprintln!("[Memory] Could not generate memory.md: {error}");
             }
-            crate::paths::restrict_file(&memory_md_path());
+            crate::paths::restrict_file(&markdown);
             store
         }
         Err(error) => {
@@ -360,8 +564,15 @@ fn stored_text(text: &str) -> String {
 }
 
 fn save_store(store: &MemoryStore) -> Result<()> {
+    save_store_at(&memory_db_path(), store)
+}
+
+/// Write one database file and its Markdown mirror, so a test never touches the
+/// real store.
+fn save_store_at(db: &std::path::Path, store: &MemoryStore) -> Result<()> {
     let store = store.clone();
-    run_db(move |pool| {
+    let markdown = markdown_path_for(db);
+    run_db_at(db.to_path_buf(), move |pool| {
         Box::pin(async move {
             let mut transaction = pool.begin().await.context("Failed to begin memory write")?;
 
@@ -382,13 +593,22 @@ fn save_store(store: &MemoryStore) -> Result<()> {
                 let tags = serde_json::to_string(&entry.tags)
                     .context("Failed to serialize memory tags")?;
                 sqlx::query(
-                    "INSERT INTO memory_entries (id, text, tags_json, created_unix)
-                     VALUES (?, ?, ?, ?)",
+                    "INSERT INTO memory_entries
+                     (id, text, tags_json, created_unix, updated_unix, last_used_unix,
+                      source, session_id, kind, confidence, superseded_by)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(entry.id as i64)
                 .bind(&entry.text)
                 .bind(tags)
                 .bind(entry.created_unix as i64)
+                .bind(entry.updated_unix as i64)
+                .bind(entry.last_used_unix as i64)
+                .bind(&entry.source)
+                .bind(&entry.session_id)
+                .bind(entry.kind.as_str())
+                .bind(entry.confidence as f64)
+                .bind(entry.superseded_by.map(|id| id as i64))
                 .execute(&mut *transaction)
                 .await
                 .context("Failed to write memory entry")?;
@@ -414,6 +634,14 @@ fn save_store(store: &MemoryStore) -> Result<()> {
                 .context("Failed to write graph fact")?;
             }
 
+            // An embedding belongs to an entry; forgetting the entry forgets it.
+            sqlx::query(
+                "DELETE FROM memory_embeddings WHERE entry_id NOT IN (SELECT id FROM memory_entries)",
+            )
+            .execute(&mut *transaction)
+            .await
+            .context("Failed to drop orphaned memory embeddings")?;
+
             sqlx::query("INSERT OR REPLACE INTO memory_meta (key, value) VALUES ('next_id', ?)")
                 .bind(store.next_id.to_string())
                 .execute(&mut *transaction)
@@ -425,10 +653,10 @@ fn save_store(store: &MemoryStore) -> Result<()> {
                 .await
                 .context("Failed to commit memory write")?;
 
-            if let Err(error) = std::fs::write(memory_md_path(), render_markdown(&store)) {
+            if let Err(error) = std::fs::write(&markdown, render_markdown(&store)) {
                 eprintln!("[Memory] Database saved, but memory.md export failed: {error}");
             }
-            crate::paths::restrict_file(&memory_md_path());
+            crate::paths::restrict_file(&markdown);
             Ok(())
         })
     })
@@ -448,8 +676,18 @@ fn render_markdown(store: &MemoryStore) -> String {
             } else {
                 format!(" `{}`", entry.tags.join("`, `"))
             };
+            let mut line = format!("- [#{}]{} {}", entry.id, tags, entry.text);
 
-            output.push_str(&format!("- [#{}]{} {}\n", entry.id, tags, entry.text));
+            if entry.kind != MemoryKind::Note {
+                line.push_str(&format!(" [{}]", entry.kind.as_str()));
+            }
+
+            if let Some(id) = entry.superseded_by {
+                line.push_str(&format!(" (superseded by #{id})"));
+            }
+
+            output.push_str(&line);
+            output.push('\n');
         }
     }
 
@@ -862,6 +1100,7 @@ impl Tool for MemoryTool {
 
                 store.next_id += 1;
 
+                let now = now_unix();
                 let entry = MemoryEntry {
                     id: store.next_id,
                     text,
@@ -871,7 +1110,14 @@ impl Tool for MemoryTool {
                         .filter(|tag| !tag.is_empty())
                         .take(8)
                         .collect(),
-                    created_unix: now_unix(),
+                    kind: MemoryKind::Note,
+                    confidence: 1.0,
+                    source: "assistant".to_string(),
+                    session_id: None,
+                    superseded_by: None,
+                    created_unix: now,
+                    updated_unix: now,
+                    last_used_unix: now,
                 };
 
                 store.entries.push(entry.clone());
@@ -1215,13 +1461,12 @@ mod tests {
                 id: 1,
                 text: "The user prefers dark mode".to_string(),
                 tags: vec!["ui".to_string()],
-                created_unix: 0,
+                ..MemoryEntry::default()
             },
             MemoryEntry {
                 id: 2,
                 text: "unrelated fan speed".to_string(),
-                tags: vec![],
-                created_unix: 0,
+                ..MemoryEntry::default()
             },
         ];
 
@@ -1239,13 +1484,12 @@ mod tests {
                 id: 1,
                 text: "the meeting moved".to_string(),
                 tags: vec!["calendar".to_string()],
-                created_unix: 0,
+                ..MemoryEntry::default()
             },
             MemoryEntry {
                 id: 2,
                 text: "calendar notes".to_string(),
-                tags: vec![],
-                created_unix: 0,
+                ..MemoryEntry::default()
             },
         ];
 
@@ -1255,6 +1499,313 @@ mod tests {
         assert_eq!(ranked[0].0.id, 1);
     }
 
+    /// The v1 table, exactly as an earlier build created it.
+    const V1_SCHEMA: &str = "
+CREATE TABLE memory_entries (
+    id INTEGER PRIMARY KEY,
+    text TEXT NOT NULL,
+    tags_json TEXT NOT NULL,
+    created_unix INTEGER NOT NULL
+);
+CREATE TABLE memory_graph (
+    subject TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    object TEXT NOT NULL,
+    UNIQUE(subject COLLATE NOCASE, relation COLLATE NOCASE, object COLLATE NOCASE)
+);
+CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+";
+
+    fn scratch(label: &str) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "hyusk-memory-{label}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&directory).expect("scratch directory");
+        directory
+    }
+
+    async fn write_v1_database(path: &std::path::Path) -> Result<()> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(path)
+                    .create_if_missing(true),
+            )
+            .await?;
+
+        for statement in V1_SCHEMA
+            .split(';')
+            .map(str::trim)
+            .filter(|statement| !statement.is_empty())
+        {
+            sqlx::query(statement).execute(&pool).await?;
+        }
+
+        for (id, text, created) in [
+            (1_i64, "old note one", 1_700_000_000_i64),
+            (2, "old note two", 1_700_000_100),
+        ] {
+            sqlx::query(
+                "INSERT INTO memory_entries (id, text, tags_json, created_unix) \
+                 VALUES (?, ?, '[]', ?)",
+            )
+            .bind(id)
+            .bind(text)
+            .bind(created)
+            .execute(&pool)
+            .await?;
+        }
+
+        sqlx::query("INSERT INTO memory_graph (subject, relation, object) VALUES ('a', 'b', 'c')")
+            .execute(&pool)
+            .await?;
+
+        pool.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_v1_database_opens_with_backfilled_provenance() -> Result<()> {
+        let directory = scratch("v1-open");
+        let path = directory.join("memory.db");
+        write_v1_database(&path).await?;
+
+        let opened = run_db_at(path.clone(), move |pool| {
+            Box::pin(async move {
+                initialize_db(&pool).await?;
+                read_store(&pool).await
+            })
+        })?;
+
+        assert_eq!(opened.entries.len(), 2);
+        let first = &opened.entries[0];
+        assert_eq!(first.id, 1);
+        assert_eq!(first.text, "old note one");
+        assert_eq!(first.created_unix, 1_700_000_000);
+        // Backfilled, never invented: a v1 row recorded no provenance.
+        assert_eq!(first.kind, MemoryKind::Note);
+        assert_eq!(first.confidence, BACKFILLED_CONFIDENCE);
+        assert_eq!(first.source, "import");
+        assert_eq!(first.superseded_by, None);
+        assert_eq!(first.updated_unix, first.created_unix);
+        assert_eq!(first.last_used_unix, first.created_unix);
+        assert_eq!(opened.graph.len(), 1, "the graph survived the migration");
+        assert_eq!(opened.graph[0].subject, "a");
+
+        // The write leg: a v1 store must accept a new entry without losing the
+        // rows the migration just adopted.
+        let mut written = opened.clone();
+        written.next_id += 1;
+        written.entries.push(MemoryEntry {
+            id: written.next_id,
+            text: "a v2 note".to_string(),
+            kind: MemoryKind::Fact,
+            source: "assistant".to_string(),
+            confidence: 1.0,
+            ..MemoryEntry::default()
+        });
+        save_store_at(&path, &written)?;
+
+        let reread = run_db_at(path.clone(), |pool| {
+            Box::pin(async move { read_store(&pool).await })
+        })?;
+        assert_eq!(reread.entries.len(), 3);
+        assert_eq!(reread.entries[0].text, "old note one");
+        assert_eq!(reread.entries[0].source, "import");
+        assert_eq!(reread.entries[2].kind, MemoryKind::Fact);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_schema_migration_is_idempotent() -> Result<()> {
+        let directory = scratch("v1-idempotent");
+        let path = directory.join("memory.db");
+        write_v1_database(&path).await?;
+
+        for _ in 0..2 {
+            let store = run_db_at(path.clone(), |pool| {
+                Box::pin(async move { read_store(&pool).await })
+            })?;
+            assert_eq!(store.entries.len(), 2, "a second open kept every row");
+            assert_eq!(store.entries[1].last_used_unix, 1_700_000_100);
+        }
+
+        let version: String = run_db_at(path.clone(), |pool| {
+            Box::pin(async move {
+                sqlx::query_scalar("SELECT value FROM memory_meta WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(anyhow::Error::from)
+            })
+        })?;
+        assert_eq!(version, SCHEMA_VERSION);
+        Ok(())
+    }
+
+    #[test]
+    fn the_new_fields_round_trip_through_the_database() -> Result<()> {
+        let directory = scratch("roundtrip");
+        let path = directory.join("memory.db");
+        let entry = MemoryEntry {
+            id: 7,
+            text: "prefer pnpm over npm".to_string(),
+            tags: vec!["tooling".to_string()],
+            kind: MemoryKind::Preference,
+            confidence: 0.9,
+            source: "assistant".to_string(),
+            session_id: Some("session-7".to_string()),
+            superseded_by: Some(9),
+            created_unix: 1_700_000_000,
+            updated_unix: 1_700_000_500,
+            last_used_unix: 1_700_000_600,
+        };
+        let store = MemoryStore {
+            entries: vec![entry.clone()],
+            graph: vec![],
+            next_id: 7,
+        };
+
+        save_store_at(&path, &store)?;
+        let loaded = run_db_at(path.clone(), |pool| {
+            Box::pin(async move { read_store(&pool).await })
+        })?;
+
+        assert_eq!(loaded.entries, vec![entry]);
+        assert_eq!(loaded.next_id, 7);
+        Ok(())
+    }
+
+    #[test]
+    fn the_markdown_mirror_shows_kind_and_supersession() {
+        let store = MemoryStore {
+            entries: vec![
+                MemoryEntry {
+                    id: 1,
+                    text: "plain note".to_string(),
+                    ..MemoryEntry::default()
+                },
+                MemoryEntry {
+                    id: 2,
+                    text: "prefers dark mode".to_string(),
+                    kind: MemoryKind::Preference,
+                    superseded_by: Some(3),
+                    ..MemoryEntry::default()
+                },
+            ],
+            graph: vec![],
+            next_id: 3,
+        };
+
+        let markdown = render_markdown(&store);
+
+        assert!(markdown.contains("- [#1] plain note"), "{markdown}");
+        assert!(
+            markdown.contains("- [#2] prefers dark mode [preference] (superseded by #3)"),
+            "{markdown}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_legacy_memory_json_still_imports() -> Result<()> {
+        let directory = scratch("legacy-json");
+        let json_path = directory.join("memory.json");
+        std::fs::write(
+            &json_path,
+            r#"{"entries":[{"id":4,"text":"legacy note","tags":["old"],"created_unix":1700000000}],"graph":[{"subject":"x","relation":"y","object":"z"}],"next_id":4}"#,
+        )?;
+        let db_path = directory.join("memory.db");
+
+        // A raw pool: `run_db_at` would run the real open path, whose legacy
+        // import already claims the one-shot marker before the fixture is read.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&db_path)
+                    .create_if_missing(true),
+            )
+            .await?;
+        create_schema(&pool).await?;
+        migrate_schema(&pool).await?;
+        migrate_legacy_json_from(&pool, &json_path).await?;
+        let imported = read_store(&pool).await?;
+        pool.close().await;
+
+        assert_eq!(imported.entries.len(), 1);
+        let entry = &imported.entries[0];
+        assert_eq!(entry.text, "legacy note");
+        assert_eq!(entry.tags, vec!["old".to_string()]);
+        assert_eq!(entry.source, "import");
+        assert_eq!(entry.kind, MemoryKind::Note);
+        assert_eq!(entry.updated_unix, 1_700_000_000);
+        assert_eq!(imported.graph.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn forgetting_an_entry_drops_its_embedding() -> Result<()> {
+        let directory = scratch("embeddings");
+        let path = directory.join("memory.db");
+        let store = MemoryStore {
+            entries: vec![
+                MemoryEntry {
+                    id: 1,
+                    text: "keep me".to_string(),
+                    ..MemoryEntry::default()
+                },
+                MemoryEntry {
+                    id: 2,
+                    text: "forget me".to_string(),
+                    ..MemoryEntry::default()
+                },
+            ],
+            graph: vec![],
+            next_id: 2,
+        };
+        save_store_at(&path, &store)?;
+
+        run_db_at(path.clone(), |pool| {
+            Box::pin(async move {
+                for id in [1_i64, 2] {
+                    sqlx::query(
+                        "INSERT INTO memory_embeddings (entry_id, model, dims, vector, created_unix) \
+                         VALUES (?, 'fixture', 3, x'010203', 0)",
+                    )
+                    .bind(id)
+                    .execute(&pool)
+                    .await?;
+                }
+                Ok(())
+            })
+        })?;
+
+        let kept = MemoryStore {
+            entries: vec![MemoryEntry {
+                id: 1,
+                text: "keep me".to_string(),
+                ..MemoryEntry::default()
+            }],
+            graph: vec![],
+            next_id: 2,
+        };
+        save_store_at(&path, &kept)?;
+
+        let ids: Vec<i64> = run_db_at(path.clone(), |pool| {
+            Box::pin(async move {
+                sqlx::query_scalar("SELECT entry_id FROM memory_embeddings ORDER BY entry_id")
+                    .fetch_all(&pool)
+                    .await
+                    .map_err(anyhow::Error::from)
+            })
+        })?;
+        assert_eq!(ids, vec![1], "the forgotten entry's embedding is gone");
+        Ok(())
+    }
+
     #[test]
     fn renders_markdown() {
         let store = MemoryStore {
@@ -1262,7 +1813,7 @@ mod tests {
                 id: 1,
                 text: "hello".to_string(),
                 tags: vec!["tag".to_string()],
-                created_unix: 0,
+                ..MemoryEntry::default()
             }],
             graph: vec![GraphTriple {
                 subject: "a".to_string(),
