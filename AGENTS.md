@@ -55,9 +55,9 @@ cargo check --all-targets --offline --features workflow-editor
 cargo test --all-targets --offline --features workflow-editor -- --test-threads=4
 ```
 
-Current baseline: **431 tests passing, 6 ignored** for the default suite; the
+Current baseline: **437 tests passing, 6 ignored** for the default suite; the
 workflow editor adds five tests (one ignored) under `--features
-workflow-editor`, for **436 passing, 7 ignored**. Clippy is clean except three
+workflow-editor`, for **442 passing, 7 ignored**. Clippy is clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, the default tests, and that one feature build on Ubuntu.
 
@@ -244,6 +244,15 @@ tests live in `#[cfg(test)]` modules beside the code.
   fallback. `context_for` renders inside `HYUSK_MEMORY_PROMPT_TOKENS` (four
   characters per token, whole notes only), so a retrieval change must keep the
   budget test green and must not add a provider call.
+- Preferences (G1): a preference is a `preference`-kind entry with a `scope`
+  (global, or project tied to the shell policy's root) and a `topic`; a newer
+  preference on the same topic and scope sets the older one's `superseded_by`,
+  and `preferences_for_prompt` injects only the active ones, as a block separate
+  from retrieved notes. `memory_requires_approval` lets an ordinary preference
+  through and asks for one that touches privacy, spending, or cross-application
+  behaviour (`PREFERENCE_CONSENT_WORDS`); the check reads the stored `kind`, so
+  a note is never gated by it. `forget` is immediate and the `preferences`
+  action is the review list.
 - Wake defaults: `WAKE_CLAP_ENABLED` and `WAKE_WORD_DENOISE` are off unless set;
   `.env.example` documents both.
 - Never print `.env` contents or API keys. Keys are keyring-first, then
@@ -288,10 +297,10 @@ memory v2, preferences) is tracked in `issues/ARCHITECTURE_ISSUE.md` and
 designed in `docs/architecture-roadmap.md`. Wave 1 is complete: P1 (the
 experimental shell agent), P2 (macOS branches and the Linux declaration), P3
 (the `workflow-editor` feature), and T1 (tool manifests) are closed. Wave 2 is
-under way: M1 (memory schema v2) is closed, M2 (hybrid retrieval) followed from
-Wave 3, and P5 (the mobile feature) and T2 (the external tool host) remain; P4
-(the orb feature) is deferred, because this installation uses the GNOME
-extension and the Noctalia widget rather than the orb.
+under way: M1 (memory schema v2), M2 (hybrid retrieval), and G1 (preference
+notes) are closed, and P5 (the mobile feature) and T2 (the external tool host)
+remain; P4 (the orb feature) is deferred, because this installation uses the
+GNOME extension and the Noctalia widget rather than the orb.
 
 ## Memory and session notes
 

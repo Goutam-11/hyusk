@@ -74,6 +74,37 @@ impl MemoryKind {
     }
 }
 
+/// Where a preference applies (G1).
+///
+/// A global preference is about the user or the service itself ("call me
+/// Sir"); a project preference is about one workspace and is only honoured
+/// while the agent runs in that project.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryScope {
+    #[default]
+    Global,
+    Project,
+}
+
+impl MemoryScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MemoryScope::Global => "global",
+            MemoryScope::Project => "project",
+        }
+    }
+
+    /// An unknown stored value is global, never an error: a row from a newer
+    /// build must stay readable.
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "project" => MemoryScope::Project,
+            _ => MemoryScope::Global,
+        }
+    }
+}
+
 /// The confidence a row gets when it predates provenance (M1).
 pub const BACKFILLED_CONFIDENCE: f32 = 0.5;
 
@@ -106,6 +137,16 @@ pub struct MemoryEntry {
     /// The entry that replaced this one, if any (G1/M3).
     #[serde(default)]
     pub superseded_by: Option<u64>,
+    /// Where a preference applies (G1); harmless on other kinds.
+    #[serde(default)]
+    pub scope: MemoryScope,
+    /// The project root a project-scoped preference belongs to.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// What a preference is about ("package manager"), so a newer statement on
+    /// the same topic can replace it (G1).
+    #[serde(default)]
+    pub topic: Option<String>,
     pub created_unix: u64,
     #[serde(default)]
     pub updated_unix: u64,
@@ -125,6 +166,9 @@ impl Default for MemoryEntry {
             source: String::new(),
             session_id: None,
             superseded_by: None,
+            scope: MemoryScope::Global,
+            project: None,
+            topic: None,
             created_unix: 0,
             updated_unix: 0,
             last_used_unix: 0,
@@ -180,7 +224,7 @@ fn memory_db_path() -> PathBuf {
 }
 
 /// The schema version this build writes into `memory_meta` (M1).
-pub const SCHEMA_VERSION: &str = "2";
+pub const SCHEMA_VERSION: &str = "3";
 
 /// Columns added after v1, with the definition used for an existing database.
 ///
@@ -195,6 +239,9 @@ const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("kind", "TEXT NOT NULL DEFAULT 'note'"),
     ("confidence", "REAL NOT NULL DEFAULT 0.5"),
     ("superseded_by", "INTEGER"),
+    ("scope", "TEXT NOT NULL DEFAULT 'global'"),
+    ("project", "TEXT"),
+    ("topic", "TEXT"),
 ];
 
 const SCHEMA: &str = r#"
@@ -209,7 +256,10 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     session_id TEXT,
     kind TEXT NOT NULL DEFAULT 'note',
     confidence REAL NOT NULL DEFAULT 0.5,
-    superseded_by INTEGER
+    superseded_by INTEGER,
+    scope TEXT NOT NULL DEFAULT 'global',
+    project TEXT,
+    topic TEXT
 );
 CREATE TABLE IF NOT EXISTS memory_graph (
     subject TEXT NOT NULL,
@@ -433,8 +483,9 @@ async fn migrate_legacy_json_from(pool: &SqlitePool, path: &std::path::Path) -> 
                 sqlx::query(
                     "INSERT OR IGNORE INTO memory_entries
                      (id, text, tags_json, created_unix, updated_unix, last_used_unix,
-                      source, session_id, kind, confidence, superseded_by)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      source, session_id, kind, confidence, superseded_by,
+                      scope, project, topic)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(entry.id as i64)
                 .bind(&entry.text)
@@ -447,6 +498,9 @@ async fn migrate_legacy_json_from(pool: &SqlitePool, path: &std::path::Path) -> 
                 .bind(entry.kind.as_str())
                 .bind(entry.confidence as f64)
                 .bind(entry.superseded_by.map(|id| id as i64))
+                .bind(entry.scope.as_str())
+                .bind(&entry.project)
+                .bind(&entry.topic)
                 .execute(&mut *transaction)
                 .await
                 .context("Failed to migrate memory entry")?;
@@ -491,7 +545,7 @@ async fn migrate_legacy_json_from(pool: &SqlitePool, path: &std::path::Path) -> 
 async fn read_store(pool: &SqlitePool) -> Result<MemoryStore> {
     let entries = sqlx::query(
         "SELECT id, text, tags_json, kind, confidence, source, session_id, superseded_by,
-                created_unix, updated_unix, last_used_unix
+                scope, project, topic, created_unix, updated_unix, last_used_unix
          FROM memory_entries ORDER BY id",
     )
     .fetch_all(pool)
@@ -512,6 +566,9 @@ async fn read_store(pool: &SqlitePool) -> Result<MemoryStore> {
             superseded_by: row
                 .try_get::<Option<i64>, _>("superseded_by")?
                 .map(|id| id as u64),
+            scope: MemoryScope::from_str(&row.try_get::<String, _>("scope")?),
+            project: row.try_get("project")?,
+            topic: row.try_get("topic")?,
             created_unix,
             updated_unix: row.try_get::<i64, _>("updated_unix")? as u64,
             last_used_unix: row.try_get::<i64, _>("last_used_unix")? as u64,
@@ -662,8 +719,9 @@ fn save_store_at(db: &std::path::Path, store: &MemoryStore) -> Result<()> {
                 sqlx::query(
                     "INSERT INTO memory_entries
                      (id, text, tags_json, created_unix, updated_unix, last_used_unix,
-                      source, session_id, kind, confidence, superseded_by)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      source, session_id, kind, confidence, superseded_by,
+                      scope, project, topic)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(entry.id as i64)
                 .bind(&entry.text)
@@ -676,6 +734,9 @@ fn save_store_at(db: &std::path::Path, store: &MemoryStore) -> Result<()> {
                 .bind(entry.kind.as_str())
                 .bind(entry.confidence as f64)
                 .bind(entry.superseded_by.map(|id| id as i64))
+                .bind(entry.scope.as_str())
+                .bind(&entry.project)
+                .bind(&entry.topic)
                 .execute(&mut *transaction)
                 .await
                 .context("Failed to write memory entry")?;
@@ -1213,6 +1274,106 @@ fn search_entries<'a>(
 /// nothing matches, no note is injected. Graph facts are filtered by the
 /// current query as well, preventing stale or unrelated context from
 /// distracting the current request.
+/// Active preferences that apply where the agent is running (G1).
+///
+/// Global preferences always apply; a project preference applies only while the
+/// working directory is the project it was saved in. Newest first, and one per
+/// topic, so a replaced statement can never shadow its replacement.
+fn active_preferences<'a>(store: &'a MemoryStore, project: Option<&str>) -> Vec<&'a MemoryEntry> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut chosen = Vec::new();
+
+    for entry in store.entries.iter().rev() {
+        if entry.kind != MemoryKind::Preference || entry.superseded_by.is_some() {
+            continue;
+        }
+
+        let applies = match entry.scope {
+            MemoryScope::Global => true,
+            MemoryScope::Project => project.is_some() && entry.project.as_deref() == project,
+        };
+
+        if !applies {
+            continue;
+        }
+
+        let key = match &entry.topic {
+            Some(topic) => format!("{}|{topic}", entry.scope.as_str()),
+            None => format!("{}|{}", entry.scope.as_str(), entry.text.to_lowercase()),
+        };
+
+        if seen.contains(&key) {
+            continue;
+        }
+
+        seen.push(key);
+        chosen.push(entry);
+    }
+
+    chosen
+}
+
+/// The standing-preference block injected into the system prompt (G1).
+pub fn preferences_for_prompt() -> String {
+    let project =
+        crate::tools::safety::current_project_root().map(|root| root.display().to_string());
+    let store = load_store();
+    let preferences = active_preferences(&store, project.as_deref());
+
+    render_preferences(&preferences)
+}
+
+/// The standing-preference block: one line per preference with its scope, so a
+/// project rule cannot be mistaken for a global one.
+fn render_preferences(preferences: &[&MemoryEntry]) -> String {
+    if preferences.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::from(
+        "The user stated these preferences. Honour them unless the user changes them, \
+         and do not ask again about what they already decided.\n",
+    );
+
+    for entry in preferences {
+        let scope = if entry.project.is_some() {
+            "project"
+        } else {
+            "global"
+        };
+
+        output.push_str(&format!("- ({scope}) {}\n", safe_context_text(&entry.text)));
+    }
+
+    output
+}
+
+/// The review list shown by the `preferences` action: scope, age, and topic.
+fn render_preference_list(preferences: &[&MemoryEntry], now: u64) -> String {
+    let mut lines = vec![format!("Preferences ({}):", preferences.len())];
+
+    for entry in preferences {
+        let scope = if entry.project.is_some() {
+            "project"
+        } else {
+            "global"
+        };
+        let age = now.saturating_sub(entry.created_unix) / 86_400;
+        let topic = entry
+            .topic
+            .as_deref()
+            .map(|topic| format!("{topic}: "))
+            .unwrap_or_default();
+
+        lines.push(format!(
+            "- [#{}] ({scope}, {age}d) {topic}{}",
+            entry.id, entry.text
+        ));
+    }
+
+    lines.join("\n")
+}
+
 pub fn context_for(query: &str, limit: usize) -> String {
     let embedder = LocalEmbedder::new();
     let embedder: Option<&dyn Embedder> = embeddings_enabled().then_some(&embedder);
@@ -1343,6 +1504,93 @@ fn safe_context_text(text: &str) -> String {
         .collect()
 }
 
+/// What a `remember` call did to the store.
+enum RememberResult {
+    Saved(MemoryEntry),
+    /// The same text is already stored for this kind.
+    Duplicate(u64),
+}
+
+/// Add one entry to the store, replacing older preferences on the same topic
+/// (G1).
+///
+/// Pure over the store so the rules - deduplication, supersession by topic and
+/// scope, the entry limits - are testable without a database. The caller redacts
+/// the text and resolves the project, then saves.
+fn remember_entry(
+    store: &mut MemoryStore,
+    text: String,
+    tags: Vec<String>,
+    kind: MemoryKind,
+    scope: MemoryScope,
+    topic: Option<String>,
+    project: Option<String>,
+) -> RememberResult {
+    if let Some(existing) = store
+        .entries
+        .iter()
+        .find(|entry| entry.kind == kind && entry.text.eq_ignore_ascii_case(&text))
+    {
+        return RememberResult::Duplicate(existing.id);
+    }
+
+    store.next_id += 1;
+    let id = store.next_id;
+    let now = now_unix();
+
+    if kind == MemoryKind::Preference {
+        if let Some(topic) = &topic {
+            for older in store.entries.iter_mut() {
+                let same_topic = older
+                    .topic
+                    .as_deref()
+                    .is_some_and(|known| known.eq_ignore_ascii_case(topic));
+
+                if older.kind == MemoryKind::Preference
+                    && older.superseded_by.is_none()
+                    && same_topic
+                    && older.scope == scope
+                    && older.project == project
+                {
+                    older.superseded_by = Some(id);
+                    older.updated_unix = now;
+                }
+            }
+        }
+    }
+
+    let entry = MemoryEntry {
+        id,
+        text,
+        tags: tags
+            .into_iter()
+            .map(|tag| tag.trim().to_string())
+            .filter(|tag| !tag.is_empty())
+            .take(8)
+            .collect(),
+        kind,
+        confidence: 1.0,
+        source: "assistant".to_string(),
+        session_id: None,
+        superseded_by: None,
+        scope,
+        project,
+        topic,
+        created_unix: now,
+        updated_unix: now,
+        last_used_unix: now,
+    };
+
+    store.entries.push(entry.clone());
+
+    if store.entries.len() > MAX_ENTRIES {
+        let excess = store.entries.len() - MAX_ENTRIES;
+        store.entries.drain(0..excess);
+    }
+
+    RememberResult::Saved(entry)
+}
+
 pub struct MemoryTool {
     state: tokio::sync::Mutex<MemoryStore>,
 }
@@ -1368,6 +1616,12 @@ enum MemoryAction {
         text: String,
         #[serde(default)]
         tags: Vec<String>,
+        #[serde(default)]
+        kind: MemoryKind,
+        #[serde(default)]
+        scope: MemoryScope,
+        #[serde(default)]
+        topic: Option<String>,
     },
 
     Search {
@@ -1401,6 +1655,9 @@ enum MemoryAction {
     Forget {
         id: u64,
     },
+
+    /// The review list: active preferences with their scope and age.
+    Preferences,
 }
 
 #[async_trait]
@@ -1409,11 +1666,13 @@ impl Tool for MemoryTool {
         ToolManifest {
             name: "memory",
             version: CORE_VERSION,
-            description: "Persistent local memory. Use `remember` to save a note or preference, \
-            `search` to find relevant notes, `graph_add`/`graph_query` for \
-            subject-relation-object facts, `list` for recent notes, and `forget` \
-            to delete a note by id. The SQLite store survives restarts and a \
-            readable Markdown view is generated under the user's data directory.",
+            description: "Persistent local memory. Use `remember` to save a note, a fact, or a \
+            preference (a standing instruction with a `topic`; a newer preference on the \
+            same topic replaces the older one), `search` to find relevant notes, \
+            `graph_add`/`graph_query` for subject-relation-object facts, `list` for recent \
+            notes, `preferences` for the review list, and `forget` to delete an entry by id. \
+            The SQLite store survives restarts and a readable Markdown view is generated \
+            under the user's data directory.",
             schema: memory_schema,
             risk: &[RiskClass::Read, RiskClass::Mutate],
             capabilities: &[],
@@ -1428,61 +1687,77 @@ impl Tool for MemoryTool {
         let mut store = self.state.lock().await;
 
         match action {
-            MemoryAction::Remember { text, tags } => {
+            MemoryAction::Remember {
+                text,
+                tags,
+                kind,
+                scope,
+                topic,
+            } => {
                 let text = stored_text(&text);
 
                 if text.trim().is_empty() {
                     return Ok(ToolResult::failure("Memory text must not be empty."));
                 }
 
-                // Do not store the same note twice; repeated tool calls are
-                // common when the model "remembers" a fact it already saved.
-                if let Some(existing) = store
-                    .entries
-                    .iter()
-                    .find(|entry| entry.text.eq_ignore_ascii_case(&text))
-                {
-                    return Ok(ToolResult::success(format!(
-                        "Already remembered as #{}: {}",
-                        existing.id, existing.text
-                    )));
-                }
-
-                store.next_id += 1;
-
-                let now = now_unix();
-                let entry = MemoryEntry {
-                    id: store.next_id,
-                    text,
-                    tags: tags
-                        .into_iter()
-                        .map(|tag| tag.trim().to_string())
-                        .filter(|tag| !tag.is_empty())
-                        .take(8)
-                        .collect(),
-                    kind: MemoryKind::Note,
-                    confidence: 1.0,
-                    source: "assistant".to_string(),
-                    session_id: None,
-                    superseded_by: None,
-                    created_unix: now,
-                    updated_unix: now,
-                    last_used_unix: now,
+                // A preference is what makes a correction stick (G1); the other
+                // kinds are notes about the world. Only a preference is scoped
+                // to a project, and only a preference with a topic can replace
+                // an older statement on that topic.
+                let is_preference = kind == MemoryKind::Preference;
+                let topic = topic
+                    .map(|topic| stored_text(&topic).trim().to_lowercase())
+                    .filter(|topic| !topic.is_empty());
+                let project = if is_preference && scope == MemoryScope::Project {
+                    match crate::tools::safety::current_project_root() {
+                        Some(root) => Some(root.display().to_string()),
+                        None => {
+                            return Ok(ToolResult::failure(
+                                "A project preference needs a working directory.",
+                            ))
+                        }
+                    }
+                } else {
+                    None
+                };
+                let scope = if is_preference {
+                    scope
+                } else {
+                    MemoryScope::Global
                 };
 
-                store.entries.push(entry.clone());
+                match remember_entry(&mut store, text, tags, kind, scope, topic, project) {
+                    RememberResult::Duplicate(id) => {
+                        let text = store
+                            .entries
+                            .iter()
+                            .find(|entry| entry.id == id)
+                            .map(|entry| entry.text.clone())
+                            .unwrap_or_default();
 
-                if store.entries.len() > MAX_ENTRIES {
-                    let excess = store.entries.len() - MAX_ENTRIES;
-                    store.entries.drain(0..excess);
+                        Ok(ToolResult::success(format!(
+                            "Already remembered as #{id}: {text}"
+                        )))
+                    }
+                    RememberResult::Saved(entry) => {
+                        save_store(&store)?;
+
+                        let label = match entry.kind {
+                            MemoryKind::Preference => {
+                                let scope = if entry.project.is_some() {
+                                    "project"
+                                } else {
+                                    "global"
+                                };
+
+                                format!("Saved preference #{} ({scope}): ", entry.id)
+                            }
+                            _ => format!("Remembered as #{}: ", entry.id),
+                        };
+
+                        Ok(ToolResult::success(format!("{label}{}", entry.text)))
+                    }
                 }
-
-                save_store(&store)?;
-
-                Ok(ToolResult::success(format!(
-                    "Remembered as #{}: {}",
-                    entry.id, entry.text
-                )))
             }
 
             MemoryAction::Search { query, limit } => {
@@ -1641,6 +1916,21 @@ impl Tool for MemoryTool {
 
                 Ok(ToolResult::success(format!("Forgot memory #{id}.")))
             }
+
+            MemoryAction::Preferences => {
+                let project = crate::tools::safety::current_project_root()
+                    .map(|root| root.display().to_string());
+                let preferences = active_preferences(&store, project.as_deref());
+
+                if preferences.is_empty() {
+                    return Ok(ToolResult::success("No preferences recorded."));
+                }
+
+                Ok(ToolResult::success(render_preference_list(
+                    &preferences,
+                    now_unix(),
+                )))
+            }
         }
     }
 }
@@ -1651,17 +1941,31 @@ fn memory_schema() -> Value {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["remember", "search", "graph_add", "graph_query", "list", "forget"],
+                "enum": ["remember", "search", "graph_add", "graph_query", "list", "forget", "preferences"],
                 "description": "Memory operation."
             },
             "text": {
                 "type": "string",
-                "description": "Note text for `remember`."
+                "description": "Note or preference text for `remember`."
             },
             "tags": {
                 "type": "array",
                 "items": { "type": "string" },
                 "description": "Optional tags for `remember`."
+            },
+            "kind": {
+                "type": "string",
+                "enum": ["note", "fact", "preference"],
+                "description": "What `remember` stores. A preference is a standing instruction: it is injected into every turn, and a newer preference on the same topic replaces the older one."
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["global", "project"],
+                "description": "Where a preference applies: `global` for the user or the service, `project` for the current working directory only."
+            },
+            "topic": {
+                "type": "string",
+                "description": "A short label for what a preference is about, e.g. 'package manager'. A newer preference with the same topic and scope supersedes the older one."
             },
             "query": {
                 "type": "string",
@@ -2011,6 +2315,9 @@ CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             source: "assistant".to_string(),
             session_id: Some("session-7".to_string()),
             superseded_by: Some(9),
+            scope: MemoryScope::Project,
+            project: Some("/tmp/fixture-project".to_string()),
+            topic: Some("package manager".to_string()),
             created_unix: 1_700_000_000,
             updated_unix: 1_700_000_500,
             last_used_unix: 1_700_000_600,
@@ -2328,6 +2635,176 @@ CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         assert_eq!(model, LOCAL_EMBEDDING_MODEL);
         assert_eq!(dims, EMBEDDING_DIMS as i64);
         Ok(())
+    }
+
+    #[test]
+    fn a_preference_is_saved_with_its_kind_and_scope() {
+        let mut store = MemoryStore::default();
+
+        let result = remember_entry(
+            &mut store,
+            "use pnpm instead of npm".to_string(),
+            vec![],
+            MemoryKind::Preference,
+            MemoryScope::Project,
+            Some("package manager".to_string()),
+            Some("/tmp/project-a".to_string()),
+        );
+
+        let RememberResult::Saved(entry) = result else {
+            panic!("the first preference must be saved");
+        };
+        assert_eq!(entry.kind, MemoryKind::Preference);
+        assert_eq!(entry.scope, MemoryScope::Project);
+        assert_eq!(entry.project.as_deref(), Some("/tmp/project-a"));
+        assert_eq!(entry.topic.as_deref(), Some("package manager"));
+        assert_eq!(entry.confidence, 1.0);
+        assert_eq!(entry.source, "assistant");
+        assert_eq!(store.entries.len(), 1);
+    }
+
+    #[test]
+    fn a_newer_preference_supersedes_the_older_one() {
+        let mut store = MemoryStore::default();
+
+        remember_entry(
+            &mut store,
+            "use npm".to_string(),
+            vec![],
+            MemoryKind::Preference,
+            MemoryScope::Global,
+            Some("package manager".to_string()),
+            None,
+        );
+        let latest = remember_entry(
+            &mut store,
+            "no, use pnpm".to_string(),
+            vec![],
+            MemoryKind::Preference,
+            MemoryScope::Global,
+            Some("package manager".to_string()),
+            None,
+        );
+        let RememberResult::Saved(latest) = latest else {
+            panic!("the correction is saved");
+        };
+
+        assert_eq!(store.entries[0].superseded_by, Some(latest.id));
+        assert_eq!(store.entries[0].text, "use npm");
+
+        let active = active_preferences(&store, None);
+        assert_eq!(active.len(), 1, "the replaced statement is not active");
+        assert_eq!(active[0].text, "no, use pnpm");
+
+        let block = render_preferences(&active);
+        assert!(block.contains("- (global) no, use pnpm"), "{block}");
+        assert!(!block.contains("use npm"), "{block}");
+    }
+
+    #[test]
+    fn the_preference_block_isolates_projects() {
+        let mut store = MemoryStore::default();
+
+        for (text, scope, project) in [
+            ("call me Sir", MemoryScope::Global, None),
+            ("use pnpm", MemoryScope::Project, Some("/tmp/project-a")),
+            (
+                "use cargo fmt",
+                MemoryScope::Project,
+                Some("/tmp/project-b"),
+            ),
+        ] {
+            remember_entry(
+                &mut store,
+                text.to_string(),
+                vec![],
+                MemoryKind::Preference,
+                scope,
+                Some(text.to_string()),
+                project.map(str::to_string),
+            );
+        }
+
+        let in_a = render_preferences(&active_preferences(&store, Some("/tmp/project-a")));
+        assert!(in_a.contains("call me Sir"), "{in_a}");
+        assert!(in_a.contains("use pnpm"), "{in_a}");
+        assert!(!in_a.contains("use cargo fmt"), "{in_a}");
+
+        let no_project = render_preferences(&active_preferences(&store, None));
+        assert!(no_project.contains("call me Sir"), "{no_project}");
+        assert!(!no_project.contains("use pnpm"), "{no_project}");
+    }
+
+    #[test]
+    fn forgetting_a_preference_removes_it_from_the_prompt() {
+        let mut store = MemoryStore::default();
+        let RememberResult::Saved(entry) = remember_entry(
+            &mut store,
+            "use pnpm".to_string(),
+            vec![],
+            MemoryKind::Preference,
+            MemoryScope::Global,
+            Some("package manager".to_string()),
+            None,
+        ) else {
+            panic!("the preference is saved");
+        };
+
+        assert!(render_preferences(&active_preferences(&store, None)).contains("use pnpm"));
+
+        store.entries.retain(|candidate| candidate.id != entry.id);
+
+        assert!(
+            render_preferences(&active_preferences(&store, None)).is_empty(),
+            "the prompt no longer carries the forgotten preference"
+        );
+    }
+
+    #[test]
+    fn the_review_list_reports_scope_and_age() {
+        let mut store = MemoryStore::default();
+        let RememberResult::Saved(global) = remember_entry(
+            &mut store,
+            "call me Sir".to_string(),
+            vec![],
+            MemoryKind::Preference,
+            MemoryScope::Global,
+            Some("form of address".to_string()),
+            None,
+        ) else {
+            panic!("saved");
+        };
+        let RememberResult::Saved(project) = remember_entry(
+            &mut store,
+            "use pnpm".to_string(),
+            vec![],
+            MemoryKind::Preference,
+            MemoryScope::Project,
+            Some("package manager".to_string()),
+            Some("/tmp/project-a".to_string()),
+        ) else {
+            panic!("saved");
+        };
+        store.entries[0].created_unix = 1_700_000_000;
+
+        let preferences = active_preferences(&store, Some("/tmp/project-a"));
+        let list = render_preference_list(&preferences, 1_700_000_000 + 3 * 86_400);
+
+        assert!(list.contains("Preferences (2):"), "{list}");
+        assert!(
+            list.contains(&format!(
+                "- [#{}] (global, 3d) form of address: call me Sir",
+                global.id
+            )),
+            "{list}"
+        );
+        assert!(
+            list.contains(&format!(
+                "- [#{}] (project, 0d) package manager: use pnpm",
+                project.id
+            )),
+            "{list}"
+        );
     }
 
     #[test]

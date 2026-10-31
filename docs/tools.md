@@ -414,10 +414,10 @@ $XDG_DATA_HOME/hyusk/memory.md     (generated human-readable view)
 $XDG_DATA_HOME/hyusk/memory.json   (legacy backup after automatic migration)
 ```
 
-The store is schema version 2 (M1). Entries carry provenance (`source`,
+The store is schema version 3 (M1, G1). Entries carry provenance (`source`,
 `session_id`), a `kind` (`note`, `fact`, `preference`, `episode`), a
-`confidence`, `last_used_unix`, `superseded_by`, and both `created_unix` and
-`updated_unix`. A `memory_embeddings` table holds one vector per entry for the
+`confidence`, `last_used_unix`, `superseded_by`, `scope`/`project`/`topic`, and
+both `created_unix` and `updated_unix`. A `memory_embeddings` table holds one vector per entry for the
 hybrid retrieval work (M2); forgetting an entry drops its row.
 
 The schema is additive and migrated on open: a v1 database gains the missing
@@ -429,7 +429,8 @@ and last-used stamps. The migration is idempotent, records `schema_version` in
 an entry's kind and a `(superseded by #N)` marker when they apply.
 
 ```json
-{ "action": "remember", "text": "User prefers dark mode", "tags": ["preference"] }
+{ "action": "remember", "text": "User prefers dark mode", "tags": ["theme"] }
+{ "action": "remember", "text": "use pnpm instead of npm", "kind": "preference", "scope": "project", "topic": "package manager" }
 { "action": "search", "query": "dark mode" }
 { "action": "graph_add", "subject": "user", "relation": "uses", "object": "GNOME Wayland" }
 { "action": "graph_query", "subject": "user" }
@@ -439,12 +440,13 @@ an entry's kind and a `(superseded by #N)` marker when they apply.
 
 | Action | Input | Notes |
 | --- | --- | --- |
-| `remember` | `text`, optional `tags` | Transactionally adds a note to SQLite (kind `note`, source `assistant`, confidence `1.0`) and refreshes `memory.md`. Duplicate notes are rejected. |
+| `remember` | `text`, optional `tags`, `kind`, `scope`, `topic` | Transactionally adds an entry to SQLite (source `assistant`, confidence `1.0`) and refreshes `memory.md`. Duplicate notes are rejected. `kind: "preference"` makes it a standing instruction (G1); `scope` and `topic` apply to preferences. |
 | `search` | `query`, optional `limit` | Uses SQLite FTS5 plus tag and recency signals. |
 | `graph_add` | `subject`, `relation`, `object` | Adds a knowledge-graph triple. Duplicate triples are rejected. |
 | `graph_query` | optional `subject`, `relation`, `object` | Filters triples by substring. |
 | `list` | optional `limit` | Most recent notes. |
-| `forget` | `id` | Removes a note. |
+| `forget` | `id` | Removes an entry; the next prompt block no longer carries it. |
+| `preferences` | none | The review list: active preferences with their scope, age, and topic. |
 
 Each turn retrieves the notes that best match the user's message and injects
 them into the system prompt, so the model sees what is relevant to the current
@@ -454,6 +456,35 @@ corrections) and to search before assuming something about the user or system.
 Retrieved text is delimited as untrusted reference data and cannot override the
 current user message. On first use, legacy JSON is imported in one transaction
 and retained unchanged as a recovery backup.
+
+### Preferences
+
+A preference is a memory entry of kind `preference` and a standing instruction:
+the model is told to follow it rather than ask again (G1). Preferences are
+injected as their own block in the system prompt, separate from the retrieved
+notes, so they apply to every turn rather than only to a matching message.
+
+- **Scope.** `global` is about the user or the service ("call me Sir"); it
+  applies everywhere. `project` is about the current working directory (the same
+  root the shell policy uses: `HYUSK_WORKSPACE`, else the process directory)
+  and is honoured only while the agent runs there. A project preference records
+  its canonical root, so two projects cannot see each other's rules.
+- **Topics and supersession.** A preference carries a short `topic` ("package
+  manager"). A newer preference with the same topic and scope marks the older
+  one `superseded_by`, and only the newest is injected, so a correction replaces
+  the statement it corrects. Without a topic, only an identical repeated text is
+  deduplicated.
+- **Consent.** An ordinary preference - a tool, a format, a default - is saved
+  without a card, because a correction that asks every time never sticks. One
+  that touches privacy, spending, or behaviour across applications asks first:
+  the strict list (`PREFERENCE_CONSENT_WORDS` in `safety.rs`) covers credentials
+  and personal data, money, and "every app"/"system-wide" style wording. The
+  check reads the stored `kind`, so an ordinary note that mentions a budget is
+  never gated by it.
+- **Forget is immediate.** `forget` removes the entry, and the next prompt block
+  is built from the store without it.
+- **Review.** `preferences` lists the active ones with scope, age in days,
+  topic, and id.
 
 Retrieval is hybrid (M2). Each candidate is scored from four signals: the FTS
 rank, local embedding similarity, confidence as importance, and recency, with

@@ -247,7 +247,17 @@ Available tools:
     prompt.push_str("\nSystem context:\n");
     prompt.push_str(&crate::system_info::system_context());
 
-    prompt.push_str("\n\nRemembered context (retrieved for this message):\n");
+    prompt.push_str("\n\nUser preferences (standing, from the user):\n");
+
+    let preferences = crate::tools::memory::preferences_for_prompt();
+
+    if preferences.trim().is_empty() {
+        prompt.push_str("(no preferences recorded yet)\n");
+    } else {
+        prompt.push_str(&preferences);
+    }
+
+    prompt.push_str("\nRemembered context (retrieved for this message):\n");
 
     let memory = crate::tools::memory::context_for(query, 12);
 

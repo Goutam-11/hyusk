@@ -4,6 +4,20 @@
 
 ### Added
 
+- Corrections now stick (G1). A remembered `preference` carries a `scope`
+  (`global`, or `project` tied to the same root the shell policy uses) and a
+  `topic`; a newer preference on the same topic and scope supersedes the older
+  one, and `preferences_for_prompt` injects the active ones as a block separate
+  from the retrieved notes, so a rule applies to every turn instead of only a
+  matching message. An ordinary preference is saved without a card; one that
+  touches privacy, spending, or behaviour across applications asks first
+  (`PREFERENCE_CONSENT_WORDS`), and the check reads the stored `kind`, so an
+  ordinary note is never gated by it. `forget` removes a preference before the
+  next prompt block is built, and the new `preferences` action is the review
+  list with scope, age, and topic. The memory schema moves to version 3 with
+  the additive migration the earlier version established. Tests cover saving,
+  supersession, project isolation, forgetting, the review list, and the consent
+  rule.
 - Memory retrieval is hybrid (M2). Each candidate is scored from the FTS rank,
   local embedding similarity, confidence, and recency; a superseded entry is
   never retrieved, and an entry FTS did not match needs a real similarity before

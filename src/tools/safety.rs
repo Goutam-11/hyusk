@@ -604,8 +604,85 @@ fn task_requires_approval(args: &Value) -> bool {
     }
 }
 
+/// Forgetting asks, and so does a preference the user has not seen yet when it
+/// touches privacy, spending, or behaviour across applications (G1). An
+/// ordinary preference - a tool, a format, a default - is saved without a card,
+/// because a correction that needs a confirmation every time never sticks.
 fn memory_requires_approval(args: &Value) -> bool {
-    action(args) == "forget"
+    action(args) == "forget" || preference_needs_consent(args)
+}
+
+/// Preference topics that need the user's confirmation first: they can expose
+/// private data, spend money, or change behaviour in applications other than
+/// the one being discussed.
+const PREFERENCE_CONSENT_WORDS: &[&str] = &[
+    // privacy
+    "password",
+    "passphrase",
+    "secret",
+    "token",
+    "api key",
+    "credential",
+    "private key",
+    "home address",
+    "phone number",
+    "email address",
+    "bank",
+    "medical",
+    "health",
+    "location",
+    "browsing history",
+    "contacts",
+    // spending
+    "spend",
+    "price",
+    "purchase",
+    "buy ",
+    "payment",
+    "pay ",
+    "budget",
+    "subscription",
+    "billing",
+    "refund",
+    // cross-application behaviour
+    "every app",
+    "all apps",
+    "every application",
+    "all applications",
+    "any app",
+    "across apps",
+    "system-wide",
+    "everywhere",
+    "globally",
+];
+
+/// The text a preference is judged by: the statement and its topic, lowercased.
+fn preference_text(args: &Value) -> Option<String> {
+    if args.get("kind").and_then(Value::as_str) != Some("preference") {
+        return None;
+    }
+
+    let mut text = String::new();
+
+    for key in ["topic", "text"] {
+        if let Some(value) = args.get(key).and_then(Value::as_str) {
+            text.push_str(&value.to_ascii_lowercase());
+            text.push(' ');
+        }
+    }
+
+    Some(text)
+}
+
+/// True when a preference save touches one of the consent topics.
+fn preference_needs_consent(args: &Value) -> bool {
+    let Some(text) = preference_text(args) else {
+        return false;
+    };
+
+    PREFERENCE_CONSENT_WORDS
+        .iter()
+        .any(|word| text.contains(word))
 }
 
 fn window_requires_approval(args: &Value) -> bool {
@@ -644,6 +721,12 @@ fn project_root(working_directory: &std::path::Path) -> Option<std::path::PathBu
         std::env::var_os("HYUSK_WORKSPACE").as_deref(),
         working_directory,
     )
+}
+
+/// The project root the memory scope shares with the shell policy (G1):
+/// `HYUSK_WORKSPACE` when set, otherwise the working directory.
+pub fn current_project_root() -> Option<std::path::PathBuf> {
+    project_root(&std::env::current_dir().ok()?)
 }
 
 /// Resolve an argument the way `sh -c` would see it, without touching the file.
@@ -2137,6 +2220,44 @@ mod tests {
         Decision, FocusContext, ToolName, PREVIEW_LIMIT, TOOLS_WITHOUT_INPUT_PATHS,
     };
     use serde_json::Value;
+
+    /// G1: an ordinary preference is saved without a card, but one that could
+    /// expose private data, spend money, or change other applications asks.
+    #[test]
+    fn a_sensitive_preference_asks_before_it_is_saved() {
+        let remember = |text: &str, kind: &str| {
+            serde_json::json!({"action": "remember", "kind": kind, "text": text}).to_string()
+        };
+
+        for text in [
+            "remember my bank details",
+            "the gift budget is fifty",
+            "always use the dark theme in every app",
+            "keep my browsing history private",
+            "delete the token when you finish",
+        ] {
+            assert!(
+                check("memory", &remember(text, "preference")),
+                "{text} must ask"
+            );
+        }
+
+        for text in ["use pnpm instead of npm", "the repo formats with rustfmt"] {
+            assert!(
+                !check("memory", &remember(text, "preference")),
+                "{text} is a low-risk preference and stays free"
+            );
+        }
+
+        // The rule is about how the entry is stored, not about its words: a
+        // note that mentions a budget is still an ordinary note.
+        assert!(!check(
+            "memory",
+            &remember("the gift budget is fifty", "note")
+        ));
+        // Forgetting always asks.
+        assert!(check("memory", r#"{"action": "forget", "id": 3}"#));
+    }
 
     /// A temp project root with a file and a directory inside it.
     fn project_fixture(label: &str) -> std::path::PathBuf {
