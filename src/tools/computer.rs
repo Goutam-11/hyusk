@@ -325,7 +325,6 @@ fn screenshot_backends() -> &'static [&'static str] {
     match session_kind() {
         "wayland" => &["grim", "GNOME Shell D-Bus", "desktop portal"],
         "x11" => &["ImageMagick import", "scrot"],
-        _ if cfg!(target_os = "macos") => &["screencapture"],
         _ => &[],
     }
 }
@@ -340,14 +339,8 @@ fn screenshot_backend() -> String {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn should_use_portal() -> bool {
     session_kind() == "wayland"
-}
-
-#[cfg(not(target_os = "linux"))]
-fn should_use_portal() -> bool {
-    false
 }
 
 fn enigo_status() -> String {
@@ -1664,10 +1657,6 @@ async fn clipboard_set(text: &str) -> Result<ToolResult> {
             }
         }
 
-        _ if cfg!(target_os = "macos") => run_command_stdin("pbcopy", &[], text).await,
-
-        _ if cfg!(target_os = "windows") => run_command_stdin("clip", &[], text).await,
-
         _ => Err(anyhow!(
             "Clipboard set is not implemented for this display backend"
         )),
@@ -1693,12 +1682,6 @@ async fn clipboard_get() -> Result<ToolResult> {
             Ok(text) => Ok(text),
             Err(_) => run_command_output("xsel", &["-ob"]).await,
         },
-
-        _ if cfg!(target_os = "macos") => run_command_output("pbpaste", &[]).await,
-
-        _ if cfg!(target_os = "windows") => {
-            run_command_output("powershell", &["-NoProfile", "-Command", "Get-Clipboard"]).await
-        }
 
         _ => Err(anyhow!(
             "Clipboard read is not implemented for this display backend"
@@ -1727,10 +1710,6 @@ async fn clipboard_clear() -> Result<ToolResult> {
             Err(_) => run_command_stdin("xsel", &["-bc"], "").await,
         },
 
-        _ if cfg!(target_os = "macos") => run_command_stdin("pbcopy", &[], "").await,
-
-        _ if cfg!(target_os = "windows") => run_command_stdin("clip", &[], "").await,
-
         _ => Err(anyhow!(
             "Clipboard clear is not implemented for this display backend"
         )),
@@ -1757,26 +1736,8 @@ async fn open_url(url: &str) -> Result<ToolResult> {
         ));
     }
 
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = Command::new("open");
-        command.arg(trimmed);
-        command
-    };
-
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", "", trimmed]);
-        command
-    };
-
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    let mut command = {
-        let mut command = Command::new("xdg-open");
-        command.arg(trimmed);
-        command
-    };
+    let mut command = Command::new("xdg-open");
+    command.arg(trimmed);
 
     command.stdout(Stdio::null()).stderr(Stdio::null());
 

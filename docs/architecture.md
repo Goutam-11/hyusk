@@ -118,7 +118,7 @@ for the microphone at the same time.
 | `types/message.rs` | Mirrors the chat-completions message, tool-call, and tool-result wire shape. |
 | `types/event.rs` | Defines events exchanged by the agent, wake detector, STT path, and UI. |
 | `types/state.rs` | Defines visual states consumed by the overlay. |
-| `speech/speech.rs` | Contains Whisper microphone transcription and platform-specific TTS adapters. |
+| `speech/speech.rs` | Contains Whisper microphone transcription and the Piper/espeak TTS adapters. |
 | `wake/detector.rs` | Captures microphone audio, resamples it, runs a LiveKit ONNX classifier, and exposes `WakeResume`. |
 | `ui/orb.rs` | Consumes events and draws the animated butterfly overlay. |
 

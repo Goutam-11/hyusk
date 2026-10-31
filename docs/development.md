@@ -40,9 +40,12 @@ and ONNX Runtime, and takes far longer than a cached run.
 
 ## Prerequisites
 
+- Linux is the only supported target; another host fails to compile with one
+  explicit `compile_error!` in `src/main.rs`. macOS and Windows are not built,
+  tested, or shipped.
 - A current stable Rust toolchain with Cargo.
 - A display server and the native libraries required by `eframe`/`winit` on
-  the host platform.
+  Linux.
 - A microphone for audio startup checks and wake detection.
 - A wake-word classifier. Run `scripts/download-wake-word.sh` to download the
   temporary LiveKit `hey_livekit.onnx` model, or supply a custom model with
@@ -148,9 +151,10 @@ cargo clippy --all-targets
 cargo test --bin hyusk_agent
 ```
 
-`cargo test --all-targets` runs the full suite: 427 passing tests and 7
-ignored (the main binary alone: 400 passing, 6 ignored; shared model/stream
-tests are compiled into each binary). The ignored ones need a real session or
+`cargo test --all-targets` runs the full suite: 408 passing tests and 7
+ignored (the main binary alone: 403 passing, 6 ignored; the workflow editor
+binary contributes five, one of them ignored). The ignored ones need a real
+session or
 network: the four portal smoke tests below, a live CDP browser test, a Whisper
 cancel/cache test, and the GTK workflow editor draft test. Coverage includes
 the computer tool and portal mapping, the keyboard risk classes, the

@@ -1569,78 +1569,15 @@ impl TextToSpeech {
         Self
     }
 
-    /// Non-Linux TTS fallback used by [`TextToSpeech::speak_cancellable`].
-    #[cfg(not(target_os = "linux"))]
-    pub async fn speak(&self, text: &str) -> Result<()> {
-        let text = sanitize_for_speech(text);
-
-        #[cfg(target_os = "macos")]
-        {
-            let output = Command::new("say")
-                .arg(&text)
-                .output()
-                .context("Failed to execute say command")?;
-
-            if !output.status.success() {
-                return Err(anyhow::anyhow!("TTS failed"));
-            }
-            Ok(())
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let ps_script = format!(
-                "Add-Type -AssemblyName System.Speech; \
-                 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; \
-                 $synth.Rate = 0; \
-                 $synth.Volume = 100; \
-                 $synth.Speak('{}')",
-                text.replace("'", "''")
-            );
-
-            let output = Command::new("powershell")
-                .args(["-Command", &ps_script])
-                .output()
-                .context("Failed to execute PowerShell TTS")?;
-
-            if !output.status.success() {
-                return Err(anyhow::anyhow!("TTS failed"));
-            }
-            Ok(())
-        }
-
-        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-        {
-            Err(anyhow::anyhow!("No TTS available for this platform"))
-        }
-    }
-
     /// Speak while remaining cancellable.
     ///
-    /// On Linux this uses tokio child processes with `kill_on_drop`, so a new
-    /// message or wake word stops the current TTS playback. Other platforms
-    /// fall back to a best-effort select around the non-Linux TTS path.
+    /// Playback uses tokio child processes with `kill_on_drop`, so a new
+    /// message or wake word stops the current TTS playback.
     pub async fn speak_cancellable(&self, text: &str, cancel: &CancellationToken) -> Result<()> {
         // Strip Markdown/emoji so the engine speaks words, not formatting.
         let text = sanitize_for_speech(text);
 
-        #[cfg(target_os = "linux")]
-        {
-            self.speak_cancellable_linux(&text, cancel).await
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            tokio::select! {
-                _ = cancel.cancelled() => Ok(()),
-                result = self.speak(&text) => result,
-            }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    async fn speak_cancellable_linux(&self, text: &str, cancel: &CancellationToken) -> Result<()> {
-        match self.speak_piper_cancellable(text, cancel).await {
+        match self.speak_piper_cancellable(&text, cancel).await {
             Ok(()) => Ok(()),
 
             Err(error) => {
@@ -1650,7 +1587,7 @@ impl TextToSpeech {
 
                 eprintln!("ℹ️ Piper unavailable ({}), falling back to espeak", error);
 
-                self.speak_espeak_cancellable(text, cancel).await
+                self.speak_espeak_cancellable(&text, cancel).await
             }
         }
     }

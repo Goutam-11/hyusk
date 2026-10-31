@@ -1,3 +1,11 @@
+//! Hyusk is a Linux desktop agent: its input, speech, screenshot, and panel
+//! integrations are written against Linux interfaces. The gate below makes
+//! that explicit instead of failing later on a pile of missing symbols.
+#[cfg(not(target_os = "linux"))]
+compile_error!(
+    "Hyusk supports Linux only: the desktop, speech, and panel integrations are built against Linux interfaces."
+);
+
 mod agent;
 mod apps;
 mod credentials;
@@ -1625,5 +1633,124 @@ mod tool_policy_tests {
             r#"{"action":"invoke","phone_action":"messages.send"}"#
         ));
         assert!(tools::safety::requires_approval("not_a_tool", "{}"));
+    }
+}
+
+/// P1 and P2 guards: the tree builds for Linux only and no longer ships the
+/// experimental shell agent. Both conditions are properties of the sources, so
+/// they are asserted here rather than by a runtime test.
+#[cfg(test)]
+mod platform_tests {
+    use std::path::{Path, PathBuf};
+
+    fn manifest_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    }
+
+    fn rust_sources(directory: &Path, found: &mut Vec<PathBuf>) {
+        let entries = std::fs::read_dir(directory).expect("read source directory");
+
+        for entry in entries {
+            let path = entry.expect("directory entry").path();
+
+            if path.is_dir() {
+                rust_sources(&path, found);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                found.push(path);
+            }
+        }
+    }
+
+    /// Build the needle at run time so this module never matches itself.
+    fn target_gate(os: &str) -> String {
+        format!("target_os = {os:?}")
+    }
+
+    /// A grep for the removed binary also covers this file, so the name is
+    /// assembled at run time instead of written out.
+    fn removed_binary() -> String {
+        ["hyusk", "shell", "agent"].join("-")
+    }
+
+    #[test]
+    fn no_source_file_keeps_a_macos_or_windows_branch() {
+        let mut sources = Vec::new();
+        rust_sources(&manifest_dir().join("src"), &mut sources);
+        assert!(
+            sources.len() > 20,
+            "the source walk found only {} files; the guard would pass by accident",
+            sources.len()
+        );
+
+        let needles = [target_gate("macos"), target_gate("windows")];
+        let mut offenders = Vec::new();
+
+        for path in &sources {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+
+            for needle in &needles {
+                if text.contains(needle.as_str()) {
+                    offenders.push(format!("{}: {needle}", path.display()));
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "non-Linux branches remain: {offenders:#?}"
+        );
+    }
+
+    #[test]
+    fn the_linux_only_target_is_declared_once() {
+        let main = std::fs::read_to_string(manifest_dir().join("src/main.rs"))
+            .expect("read the composition root");
+        let gate = format!("not({})", target_gate("linux"));
+        let lines: Vec<&str> = main.lines().collect();
+        let mut gates = Vec::new();
+
+        for (index, line) in lines.iter().enumerate() {
+            if line.contains(&gate) {
+                gates.push(index);
+            }
+        }
+
+        assert_eq!(
+            gates.len(),
+            1,
+            "src/main.rs must carry exactly one gate for the other targets"
+        );
+        assert!(
+            lines
+                .get(gates[0] + 1)
+                .is_some_and(|next| next.trim_start().starts_with("compile_error!")),
+            "the non-Linux gate in src/main.rs must be a compile_error!"
+        );
+    }
+
+    #[test]
+    fn the_experimental_shell_agent_is_gone() {
+        let name = removed_binary();
+        assert!(
+            !name.is_empty(),
+            "the removed binary name must still be assembled"
+        );
+
+        let manifest = std::fs::read_to_string(manifest_dir().join("Cargo.toml"))
+            .expect("read the package manifest");
+        assert!(
+            !manifest.contains(&name),
+            "Cargo.toml still declares the removed binary"
+        );
+
+        let binary = manifest_dir().join(format!("src/bin/{name}.rs"));
+        assert!(!binary.exists(), "{} was not deleted", binary.display());
+
+        let duplicated_types = manifest_dir().join("src/bin/types.rs");
+        assert!(
+            !duplicated_types.exists(),
+            "{} was not deleted",
+            duplicated_types.display()
+        );
     }
 }

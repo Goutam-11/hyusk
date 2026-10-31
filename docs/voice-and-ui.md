@@ -207,9 +207,9 @@ PIPER_MODEL (default: models/en_US-lessac-medium.onnx)
         -> paplay or aplay
 ```
 
-If Piper cannot run, it tries `espeak-ng`, then `espeak`. macOS uses the `say`
-command and Windows uses PowerShell's speech synthesizer. These executables are
-external to the Rust binary and must be installed separately.
+If Piper cannot run, it tries `espeak-ng`, then `espeak`. These executables are
+external to the Rust binary and must be installed separately. There is no
+platform fallback: Hyusk builds for Linux only.
 
 ## Desktop overlay
 

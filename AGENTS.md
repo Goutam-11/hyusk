@@ -10,6 +10,10 @@ Sway), and Android.
 umbrella workspace excludes it. Nothing outside this directory is required to
 build or test.
 
+Linux is the only supported target (P2). `src/main.rs` refuses every other
+target with one explicit `compile_error!`, and no source file carries a macOS or
+Windows branch; `platform_tests` in `src/main.rs` guards both conditions.
+
 ## Repository map
 
 | Path | Contents |
@@ -46,7 +50,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Current baseline: **427 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **408 tests passing, 7 ignored**, clippy clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, and tests on Ubuntu.
 
@@ -64,8 +68,8 @@ HYUSK_SESSION_PATH="$PWD/target/test-home/session.json" \
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Layout: `src/` library-like modules, `src/bin/` for `hyusk-shell-agent` and
-`hyusk-workflows`, `tests/` for Python bridge/key checks. Unit tests live in
+Layout: `src/` library-like modules, `src/bin/` for `hyusk-workflows`, `tests/`
+for Python bridge/key checks. Unit tests live in
 `#[cfg(test)]` modules beside the code.
 
 ### Environment quirks
@@ -249,8 +253,9 @@ Do not add new bullets here — open an issue file instead.
 
 Architecture work (prune and feature-gate, tool manifests and the MCP boundary,
 memory v2, preferences) is tracked in `issues/ARCHITECTURE_ISSUE.md` and
-designed in `docs/architecture-roadmap.md`. Start it after permission Phase 1
-(now unblocked).
+designed in `docs/architecture-roadmap.md`. Wave 1 is in progress: P1 (the
+experimental shell agent) and P2 (macOS branches and the Linux declaration) are
+closed; P3 (the `workflow-editor` feature) and T1 (tool manifests) remain.
 
 ## Memory and session notes
 

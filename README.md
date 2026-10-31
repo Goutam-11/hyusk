@@ -12,8 +12,7 @@
 
 # Hyusk Agent
 
-`hyusk_agent` is an experimental single-binary agent runtime for the Hyusk
-project. It combines an OpenRouter-compatible chat model, structured function
+`hyusk_agent` is an experimental Linux agent runtime for the Hyusk project. It combines an OpenRouter-compatible chat model, structured function
 calling, local process tools, an event-driven agent task, a small `eframe`
 status overlay, and optional voice components.
 
@@ -778,7 +777,7 @@ hyusk_agent/
 ├── models/                   # ignored runtime assets (Whisper, Piper, wake)
 └── src/
     ├── agent/       # Agent loop, runner modules, and MPSC runtime task
-    ├── bin/         # hyusk-shell-agent and hyusk-workflows entry points
+    ├── bin/         # hyusk-workflows entry point (the GTK workflow editor)
     ├── link/        # Opt-in TLS mobile link server
     ├── model/       # OpenRouter-compatible clients, Nova Sonic, Codex
     ├── speech/      # Whisper STT and local TTS adapters

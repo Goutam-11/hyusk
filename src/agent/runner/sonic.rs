@@ -134,10 +134,7 @@ impl Agent {
             user_message_saved = true;
         }
         let mut assistant_text = String::new();
-        #[cfg(target_os = "linux")]
         let mut audio_player: Option<crate::speech::speech::Pcm16Player> = None;
-        #[cfg(not(target_os = "linux"))]
-        let mut audio_chunks = Vec::new();
         let mut completed_actions = Vec::new();
         let mut rounds = 0usize;
         let mut confirmation_resolved = !awaiting_confirmation;
@@ -347,17 +344,12 @@ impl Agent {
                     if discard_interrupted_audio {
                         continue;
                     }
-                    #[cfg(target_os = "linux")]
-                    {
-                        if audio_player.is_none() {
-                            audio_player = Some(crate::speech::speech::Pcm16Player::start()?);
-                        }
-                        if let Some(player) = audio_player.as_mut() {
-                            player.write(&chunk).await?;
-                        }
+                    if audio_player.is_none() {
+                        audio_player = Some(crate::speech::speech::Pcm16Player::start()?);
                     }
-                    #[cfg(not(target_os = "linux"))]
-                    audio_chunks.push(chunk);
+                    if let Some(player) = audio_player.as_mut() {
+                        player.write(&chunk).await?;
+                    }
                 }
                 SonicEvent::ToolUse(call) => {
                     if std::env::var_os("HYUSK_SONIC_DEBUG").is_some() {
@@ -638,21 +630,10 @@ impl Agent {
         self.control()
             .set_task_paused(stream_stalled || stalled_by_repetition);
         self.persist_session();
-        #[cfg(target_os = "linux")]
         if let Some(player) = audio_player {
             player.finish().await?;
         } else if let Some(tx) = ui_tx {
             let _ = tx.try_send(HyuskEvent::Response(assistant_text.clone()));
-        }
-        #[cfg(not(target_os = "linux"))]
-        if audio_chunks.is_empty() {
-            if let Some(tx) = ui_tx {
-                let _ = tx.try_send(HyuskEvent::Response(assistant_text.clone()));
-            }
-        } else {
-            TextToSpeech::new()
-                .speak_cancellable(&assistant_text, cancel)
-                .await?;
         }
         Ok(Some(assistant_text))
     }

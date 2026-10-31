@@ -119,10 +119,10 @@ than the shared rule and never weaker.
 | `find_text` | `text` | OCRs the screen (or a supplied `path`) and returns center coordinates for matching words. |
 | `click_text` | `text` | Finds matching OCR text and clicks its center. Optional `button`, `path`, `region`. |
 | `batch` | `steps` | Runs up to 50 computer actions in order and stops at the first failure. Use this to reduce model round-trips. |
-| `clipboard_set` | `text` | Replaces the clipboard using `wl-copy`, `xclip`/`xsel`, `pbcopy`, or `clip`. |
+| `clipboard_set` | `text` | Replaces the clipboard using `wl-copy` on Wayland, or `xclip`/`xsel` on X11. |
 | `clipboard_get` | none | Returns the current clipboard text. |
 | `clipboard_clear` | none | Clears the clipboard. |
-| `open_url` | `url` | Opens an `http`, `https`, or `file` URL with `xdg-open`, `open`, or `start`. |
+| `open_url` | `url` | Opens an `http`, `https`, or `file` URL with `xdg-open`. |
 | `focus_window` | `title` | Best-effort window focus through `hyprctl`, `wmctrl`, or `xdotool`. Under niri or GNOME use the `window` tool instead; this action has no generic API there and returns a clear failure. |
 | `screenshot` | none | Optional `region` and `include_cursor`. With `MODEL_VISION=1`, the image is attached to the next model turn automatically; `inline_image` only matters for text-only models. |
 | `app_state` | none | Returns a bounded AT-SPI tree for the active window plus a desktop screenshot. Reports each result separately, including truncation/failure. The observations are sequential; the image is not cropped to the active window. |
@@ -158,7 +158,9 @@ Screenshot capture tries available backends in order:
 
 - Wayland: `grim`, GNOME Shell D-Bus, then the Screenshot portal.
 - X11: ImageMagick `import`, then `scrot`.
-- macOS: `screencapture`.
+
+Other session types report `unsupported`: Hyusk builds for Linux only (see
+`src/main.rs`).
 
 On GNOME Wayland, `grim` and the Shell screenshot interface normally fail; the
 tool then calls the Screenshot portal, which may show an approval dialog. If the

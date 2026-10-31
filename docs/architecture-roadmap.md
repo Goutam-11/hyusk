@@ -1,8 +1,8 @@
 # Architecture roadmap
 
-Status: agreed on 2026-10-29. Work is tracked in
-[issues/ARCHITECTURE_ISSUE.md](../issues/ARCHITECTURE_ISSUE.md); this document
-records the direction and the reasoning, not individual tasks.
+Status: agreed on 2026-10-29; Wave 1 began on 2026-10-31 with P1 and P2. Work
+is tracked in [issues/ARCHITECTURE_ISSUE.md](../issues/ARCHITECTURE_ISSUE.md);
+this document records the direction and the reasoning, not individual tasks.
 
 This roadmap starts after the permission Phase 1 work in
 [issues/README.md](../issues/README.md). It does not change the permission
@@ -11,8 +11,8 @@ memory and preferences behave.
 
 ## Where the repository is today
 
-About 32.4k lines of Rust in one package, three binaries
-(`hyusk_agent`, `hyusk-shell-agent`, `hyusk-workflows`), and five surfaces
+About 32.4k lines of Rust in one package, two binaries (`hyusk_agent` and
+`hyusk-workflows`), and five surfaces
 (GNOME extension, Noctalia widget, orb, Android app plus link, CLI). The
 load-bearing path is: wake word, Whisper STT, runtime events, one agent turn,
 the model, the tool registry, the approval gate, session and status files, and
@@ -31,15 +31,16 @@ same three concerns:
 - overlapping model clients (OpenRouter, OpenAI, Bedrock Mantle, Codex).
 
 Surfaces this installation does not use: the Android app and mobile link, Nova
-Sonic, the experimental `hyusk-shell-agent`, the GTK workflow editor, the orb
-overlay, and the macOS branches. Roughly 5.8k of the 32.4k Rust lines and 8.8k
-Kotlin lines support paths that are not exercised here.
+Sonic, the GTK workflow editor, and the orb overlay. Roughly 5.8k of the 32.4k
+Rust lines and 8.8k Kotlin lines support paths that are not exercised here. The
+experimental shell-only agent was deleted and the macOS branches removed
+in Wave 1 (P1, P2); Linux is now the only declared target.
 
 ## Decisions
 
 | Area | Decision |
 | --- | --- |
-| Pruning | Park Android plus link and Nova Sonic behind features; delete the `hyusk-shell-agent` experiment; remove macOS branches; make the orb optional; feature-gate the GTK editor with `required-features`. |
+| Pruning | Park Android plus link and Nova Sonic behind features; delete the experimental shell-only agent; remove macOS branches; make the orb optional; feature-gate the GTK editor with `required-features`. |
 | Tool architecture | Hybrid: OS control and approval stay in-process; external tools arrive through one MCP-compatible boundary. |
 | First boundary work | MCP client with an explicit allowlist. |
 | Memory | Hybrid retrieval with provenance and consolidation. |
@@ -93,7 +94,7 @@ tracker.
 
 | ID | Work |
 | --- | --- |
-| P1 | Delete the `hyusk-shell-agent` experiment and the duplicated type module. |
+| P1 | Delete the experimental shell-only agent and the duplicated type module. |
 | P2 | Remove macOS branches; declare Linux as the supported target. |
 | P3 | `workflow-editor` feature; gtk4 and libadwaita optional; `required-features` on the bin. |
 | P4 | `orb` feature; eframe and egui optional. |

@@ -4,6 +4,15 @@
 
 ### Added
 
+- The agent declares Linux as its only supported target. `src/main.rs` fails any
+  other build with one explicit `compile_error!` instead of a pile of missing
+  symbols, and the macOS and Windows branches are gone: the `open`/`cmd`
+  launchers in `open_url`, the `screencapture`, `pbcopy`/`clip`, `pbpaste`, and
+  PowerShell clipboard backends, the non-Linux screenshot backend list, the
+  non-Linux Nova Sonic audio buffer, and the macOS `say`/Windows PowerShell TTS
+  fallback. The non-Linux `enigo` dependency block is removed, and behaviour on
+  Linux is unchanged. `platform_tests` in `src/main.rs` fail if a macOS or
+  Windows branch is reintroduced or the target gate is dropped (P2).
 - Approval decisions are recorded in an audit log. Every resolved confirmation
   appends one JSON line to `approvals.jsonl` in the data directory - approved
   (with the `once` or `turn` scope), denied, dropped because the user asked for
@@ -377,6 +386,15 @@
   the live session.
 - Wake probes no longer cancel an active task unless a spoken instruction is
   actually transcribed, and stale listen results cannot update a newer turn.
+
+### Removed
+
+- The experimental `hyusk-shell-agent` binary and its duplicated
+  `src/bin/types.rs` message module. It described itself as "not the production
+  Hyusk permission model" and was a second, diverging execute-anything path
+  through a `#[path]`-included OpenRouter client; the one client implementation
+  stays. `platform_tests` in `src/main.rs` fail if the binary or the duplicated
+  types return (P1).
 
 ## 2026-09 — voice, workflows, and desktop control
 
