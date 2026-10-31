@@ -100,7 +100,7 @@ tracker.
 | P1 | Delete the experimental shell-only agent and the duplicated type module. |
 | P2 | Remove macOS branches; declare Linux as the supported target. |
 | P3 | `workflow-editor` feature; gtk4 and libadwaita optional; `required-features` on the bin. |
-| P4 | `orb` feature; eframe and egui optional. |
+| P4 | `orb` feature; eframe and egui optional. Deferred on 2026-10-31: the installation uses the GNOME extension and the Noctalia widget, not the orb. |
 | P5 | `mobile` feature around the link server, the mobile tool, and pairing. |
 | P6 | `sonic` feature around the second loop and its client. |
 

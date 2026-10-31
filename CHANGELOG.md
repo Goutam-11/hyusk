@@ -91,6 +91,11 @@
 
 ### Changed
 
+- The orb overlay is deferred. This installation is driven from the GNOME
+  top-bar extension and the Noctalia bar widget, so the `orb` feature work (P4)
+  is out of the queue and `eframe`/`egui` stay unconditional; the recorded
+  decision and acceptance criteria remain in `issues/ARCHITECTURE_ISSUE.md` for
+  anyone who wants them.
 - The GTK workflow editor is behind a `workflow-editor` feature. `gtk4` and
   `libadwaita` are optional dependencies owned by that feature, the
   `hyusk-workflows` bin carries `required-features = ["workflow-editor"]`, and

@@ -221,7 +221,7 @@ runs the installed `hyusk-workflows`, which the installer still provides.
 
 ## P4 — Feature-gate the orb overlay
 
-- Status: open · Wave 2 · Size: small
+- Status: deferred 2026-10-31 (see the note below) · Wave 2 · Size: small
 - Depends on: P3 (same `Cargo.toml` area)
 - Evidence: `src/ui/`, `Cargo.toml` (eframe, egui), `docs/voice-and-ui.md`
 
@@ -233,13 +233,21 @@ Noctalia.
 and start the orb only when the feature is enabled and `HYUSK_ORB` is not
 disabled.
 
-**Acceptance criteria**
+**Deferred (2026-10-31).** The user does not use the orb: this installation is
+driven from the GNOME top-bar extension and the Noctalia bar widget, so an orb
+feature would buy build time and nothing they would see. The work is not
+rejected - the decision above and the acceptance criteria stay valid for anyone
+who wants it - but it is out of the queue. `P5`'s dependency on `P4` was only
+"the same `Cargo.toml` area", so `P5` and `P6` can land without it, and eframe
+and egui stay unconditional until someone takes this item.
+
+**Acceptance criteria** (for whoever takes it)
 
 - [ ] Default build does not compile eframe or egui.
 - [ ] With the feature, the orb behaves as today, including `HYUSK_ORB=0`.
 - [ ] `docs/voice-and-ui.md` states the feature requirement.
 
-**Tests**
+**Tests** (for whoever takes it)
 
 - [ ] Both build modes; manual orb check.
 

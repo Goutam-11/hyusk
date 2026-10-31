@@ -109,8 +109,10 @@ dependencies win over listed order.
 Designed in [architecture-roadmap.md](../docs/architecture-roadmap.md) and
 tracked in [ARCHITECTURE_ISSUE.md](ARCHITECTURE_ISSUE.md). Waves order work
 inside that track and are independent of the phases above. Wave 1 was completed
-on 2026-10-31: `P1`, `P2`, `P3`, and `T1` are closed. Wave 2 is next (`P4`,
-`P5`, `M1`, `T2`).
+on 2026-10-31: `P1`, `P2`, `P3`, and `T1` are closed. Wave 2 is next (`P5`,
+`M1`, `T2`); `P4` (the orb overlay) is deferred because this installation uses
+the GNOME extension and the Noctalia widget, and `P5`'s dependency on it was only
+the shared `Cargo.toml` area.
 
 | ID | Title | Wave | Depends on |
 | --- | --- | --- | --- |

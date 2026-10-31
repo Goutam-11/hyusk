@@ -272,8 +272,9 @@ memory v2, preferences) is tracked in `issues/ARCHITECTURE_ISSUE.md` and
 designed in `docs/architecture-roadmap.md`. Wave 1 is complete: P1 (the
 experimental shell agent), P2 (macOS branches and the Linux declaration), P3
 (the `workflow-editor` feature), and T1 (tool manifests) are closed. Wave 2
-(the orb feature, the mobile feature, memory v2, the external tool host) is
-next.
+(memory v2, the mobile feature, the external tool host) is next; P4 (the orb
+feature) is deferred, because this installation uses the GNOME extension and the
+Noctalia widget rather than the orb.
 
 ## Memory and session notes
 
