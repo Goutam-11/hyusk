@@ -783,9 +783,13 @@ rewrites, so they now compare the stored entries.
 
 ## M4 — Explain and Obsidian export
 
-- Status: open · Wave 3 · Size: small
-- Depends on: M1
-- Evidence: `src/tools/memory.rs` (markdown mirror)
+- Status: done 2026-10-31 · Wave 3 · Size: small
+- Commit: `79b736b`
+- Depends on: M1 (M2, M3, and G1 supplied the vectors, the merge history, and the
+  scope fields the answer shows)
+- Evidence: confirmed before the change at `src/tools/memory.rs` (the `memory`
+  tool had no `why` action and no export path; `render_markdown` was the only
+  human-facing output), and `.env.example` (no vault setting)
 
 **Problem.** The user cannot ask why a memory exists, and the human-curated
 Obsidian vault used by the harness is separate from the agent's memory.
@@ -796,15 +800,75 @@ one note per fact with frontmatter, links for relations, and no secrets.
 
 **Acceptance criteria**
 
-- [ ] `why` explains a note without exposing secrets.
-- [ ] Export writes valid Markdown notes with unique names.
-- [ ] Re-export updates rather than duplicating.
+- [x] `why` explains a note without exposing secrets
+  (`an_explanation_reports_provenance_and_the_chain`,
+  `an_explanation_never_repeats_a_secret`).
+- [x] Export writes valid Markdown notes with unique names
+  (`the_export_writes_one_named_note_per_active_entry`: `hyusk-memory-<id>.md`,
+  or `hyusk-memory-<id>-<topic>.md` for a preference with a topic).
+- [x] Re-export updates rather than duplicating
+  (`re_exporting_updates_the_same_note`, `the_export_removes_a_note_that_stopped_being_active`).
 
 **Tests**
 
-- [ ] Explain output; export idempotence; redaction.
+- [x] Explain output; export idempotence; redaction: six tests, including
+  `the_export_redacts_secrets_and_links_relations`.
 
-**Files.** `src/tools/memory.rs`, config, docs.
+**Files.** `src/tools/memory.rs`, `.env.example`, `README.md`, `docs/tools.md`,
+`AGENTS.md`.
+
+**Notes (2026-10-31).** The `memory` tool gained two actions. `why {id}` answers
+with the kind, scope (and project), topic, confidence, source and session, tags,
+created/updated/last-used timestamps, every entry it supersedes, and the chain of
+entries that superseded it - walking `superseded_by` forward with a cycle guard
+and a "missing from the store" note. The text, topic, project, and session all
+pass X2's `redact::redact` and `safety::redact_secret_paths`, so an answer can be
+spoken or pasted without leaking a credential or a credential path.
+
+`export` writes into `<HYUSK_MEMORY_VAULT>/hyusk-notes`, created `0700` through
+`paths::ensure_private_dir`, with every note `0600` through
+`paths::restrict_file`: a note carries the same private material as the
+database. One note per **active** entry (a superseded entry is history, not a
+current fact), with YAML frontmatter (id, kind, scope, project, topic,
+confidence, created/updated, source, tags, `supersedes: [ids]`), the statement as
+the title, and a `## Relations` section turning every graph triple whose subject
+is the entry's topic into `- relation: [[object]]`. Names are stable per entry id
+(`hyusk-memory-<id>.md`, or `hyusk-memory-<id>-<slug>.md` when a preference has a
+topic), so a re-export replaces the same file; the exporter also removes an
+exported note whose entry became superseded, was forgotten, or whose topic slug
+changed, and it only ever touches files matching the `hyusk-memory-*` prefix.
+
+Decisions and deviations:
+
+- **Active entries only.** Exporting a superseded entry would put a fact the
+  agent no longer believes into a curated vault; the store keeps the history and
+  `why` explains it.
+- **`why` is an action, not a CLI flag.** The memory tool is the model's and the
+  user's interface alike; a new action needs no new binary.
+- **The vault is opt-in.** `HYUSK_MEMORY_VAULT` unset means `export` fails with a
+  message naming it; the agent never writes into a vault on its own, and the
+  export is not part of the consolidation pass.
+- **Relations link by topic.** A triple's subject must equal the entry's topic to
+  become a link; trying to match free text would invent relations that are not
+  there. A note without a topic has no `## Relations` section.
+- **Timestamps are UTC**, so an exported note and a test agree regardless of the
+  machine's time zone.
+
+Drift: the issue's Files list said "config"; the repository configures
+everything else by environment variable, so `HYUSK_MEMORY_VAULT` follows
+`.env.example` and the README table rather than adding a config file.
+
+**Verification.** `cargo fmt --all -- --check`, `cargo check --all-targets
+--offline`, and `cargo clippy --all-targets --offline` are clean apart from the
+three pre-existing `result_large_err` warnings. The default suite is 450 passing,
+6 ignored (444 before; six new tests), and the feature suite 455 passing, 7
+ignored. Probes, each backed up with `cp` and restored in the same bash call
+(markers re-checked, fmt re-checked): making `redacted` an identity function
+failed the explanation secret test; disabling the stale-note removal failed
+`the_export_removes_a_note_that_stopped_being_active`. One test was corrected
+while writing it: the note name derived from the text, so editing the text
+created a second file - names are now keyed on the entry id (plus a topic slug
+for preferences), which is also what makes re-export an update.
 
 ## G1 — Preference notes
 
