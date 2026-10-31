@@ -1489,9 +1489,14 @@ must ask`.
 
 ## G2 — Propose-diff loop
 
-- Status: open · Wave 4 · Size: small
+- Status: done 2026-10-31 · Wave 4 · Size: small
+- Commit: `c360de7`
 - Depends on: —
-- Evidence: `docs/architecture-roadmap.md`, `AGENTS.md`
+- Evidence: confirmed before the change: `docs/architecture-roadmap.md` only
+  said "Human-reviewed releases; the agent proposes diffs, it does not merge or
+  install them" in its decision table, and `AGENTS.md` had no rule about how a
+  change ships (its Conventions ended at the commit/issue-status rule). There
+  was no `docs/self-upgrade.md`.
 
 **Problem.** There is no written rule for how the agent may change the product
 it runs on.
@@ -1504,12 +1509,89 @@ path itself. This is a process document, not new product code.
 
 **Acceptance criteria**
 
-- [ ] `docs/development.md` or a new `docs/self-upgrade.md` states the loop.
-- [ ] `AGENTS.md` references it.
-- [ ] The safety files are named as human-only.
+- [x] `docs/self-upgrade.md` states the loop: roles, the ten-step branch to
+  supervised restart, the proposal template, the review checklist, and rollback.
+- [x] `AGENTS.md` references it in its key-documents list, its conventions, and
+  the architecture status; `README.md`, `docs/README.md`, and
+  `docs/development.md` link it too.
+- [x] The safety files are named as human-only: `src/tools/safety.rs`, the
+  approval model (`src/agent/control.rs`, `runner.rs`, `runner/reply.rs`,
+  `runner/session.rs`, `audit.rs`), the update path
+  (`scripts/install-autostart.sh`, `scripts/uninstall-autostart.sh`, `systemd/`,
+  `.github/workflows/`, release/profile changes in `Cargo.toml`), credentials
+  (`src/credentials.rs`, the keyring, `.env`), and the safety rules in
+  `AGENTS.md` and the new document itself.
 
 **Tests**
 
-- [ ] Documentation review only.
+- [x] Documentation review only. The review checked that every path the
+  document names exists, that the linked commands match
+  `docs/development.md` and `AGENTS.md`, and that the approval/update
+  descriptions match the code (the shared gate, the audit, the installer, the
+  service). No code changed, so the suite is unchanged.
 
-**Files.** `docs/self-upgrade.md` (new) or `docs/development.md`, `AGENTS.md`.
+**Files.** `docs/self-upgrade.md` (new), `AGENTS.md`, `README.md`,
+`docs/README.md`, `docs/development.md`, `CHANGELOG.md`,
+`docs/architecture-roadmap.md`, `issues/README.md`.
+
+**Notes (2026-10-31).** The document is deliberately a process document, not
+product code: it adds no binary surface, no configuration, and no test. Its
+shape:
+
+- **Roles** in a table: the agent proposes; a human reviews, merges, and
+  installs; a supervisor (systemd or a person) restarts. The agent is never the
+  reviewer, merger, installer, or restart decider.
+- **The loop** in ten steps: claim one issue, branch from `main`, change the
+  smallest thing, run fmt/check/clippy/the isolated suite and the feature
+  builds, commit in the log's style with the `docs(issues)` record, propose
+  with evidence, human review, human merge, supervised restart, check and roll
+  back on regression.
+- **Human-only files**, grouped as the approval model, the update path, and
+  secrets/policy, with the reason for each group: a change there could let the
+  agent approve its own actions, widen a gate silently, hide a decision from
+  the audit, or install unreviewed code.
+- **What the agent may change**: ordinary source, tests, fixtures, docs,
+  issues, tool modules, features, and non-installer scripts; it may not skip a
+  test or turn off a gate to make a build pass.
+- **A proposal template and a reviewer checklist**, so the hand-off is the same
+  every time and the reviewer knows what to look for (scope, human-only files,
+  manifests and policy rows, probe evidence, counts, redaction/audit sinks).
+- **What the loop is not**: not a sandbox for the shell/computer tools (their
+  approval policy still applies), and not a ban on preparing a diff - only on
+  reviewing, merging, installing, and restarting it. A restart drops the armed
+  confirmation and settles its placeholder (L6), which the document states.
+
+Decisions and deviations:
+
+- **A new document rather than a section in `development.md`.** The loop has a
+  distinct audience (the reviewer/operator), and the acceptance offered either;
+  a standalone page can be linked from the review checklist and the roadmap,
+  and `development.md` keeps its build/validation focus with one pointer.
+- **Human-only is a hard rule, with one explicit escape.** If an issue genuinely
+  needs a change in a human-only file, the agent stops and proposes; a human
+  commits that part, or explicitly authorises a prepared diff in the issue.
+  Even then the agent does not merge, install, or restart. This keeps the
+  decision honest instead of pretending a fix never needs the safety file.
+- **The update path is named as build/install/CI, not every `Cargo.toml`
+  edit.** Adding a feature or dependency is ordinary work; changing how the
+  shipped binary is built, installed, or published is not.
+- **The restart's effect on an armed approval is stated, not implied.** A
+  restart drops the in-memory pending call and its session placeholder is
+  settled on load (L6), so a reviewer knows what the user loses.
+
+Drift: the issue's `Files` list named the new document (or `development.md`)
+and `AGENTS.md`; the change also updated `README.md`, `docs/README.md`,
+`docs/development.md`, the CHANGELOG, the roadmap and issue-index status, and
+this entry.
+
+**Verification.** Documentation review only: every path named in
+`docs/self-upgrade.md` exists (`src/tools/safety.rs`, `src/agent/control.rs`,
+`runner.rs`, `runner/reply.rs`, `runner/session.rs`, `audit.rs`,
+`src/credentials.rs`, both installer scripts, `systemd/`, `.github/workflows/`);
+the commands it names are the ones in `docs/development.md` and `AGENTS.md`;
+and the approval/update descriptions match the code. As a regression check the
+repository still passes `cargo fmt --all -- --check`, `cargo check --all-targets
+--offline`, `cargo clippy --all-targets --offline` (clean), and the isolated
+default suite: 457 passing, 6 ignored, unchanged. Probes do not apply: there is
+no code path to break. The manual check a future session can run is the loop
+itself on the next real change (branch, review, merge, supervised restart).
