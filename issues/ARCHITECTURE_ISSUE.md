@@ -738,9 +738,14 @@ one note per fact with frontmatter, links for relations, and no secrets.
 
 ## G1 — Preference notes
 
-- Status: open · Wave 4 · Size: medium
-- Depends on: M1
-- Evidence: `src/tools/memory.rs`, `src/agent/runner/prompts.rs`
+- Status: done 2026-10-31 · Wave 4 · Size: medium
+- Commit: `41ff434`
+- Depends on: M1 (planned M1 only; the work also used M2's `superseded_by` and
+  `confidence` fields)
+- Evidence: confirmed before the change at `src/tools/memory.rs` (the `remember`
+  arm built every entry as `kind: Note`, with `scope: Global` implied) and
+  `src/agent/runner/prompts.rs:252` (one retrieved-memory block, no preference
+  block)
 
 **Problem.** Corrections do not stick. The model re-asks about the same tool,
 format, or default in every session.
@@ -753,17 +758,74 @@ saved automatically; privacy, spending, and cross-app behaviour ask first.
 
 **Acceptance criteria**
 
-- [ ] "No, use pnpm" becomes a project preference and is honoured next turn.
-- [ ] A newer preference supersedes an older one.
-- [ ] The review list shows preferences with their scope and age.
-- [ ] Forgetting a preference removes it from the prompt at once.
+- [x] "No, use pnpm" becomes a project preference and is honoured next turn
+  (`a_newer_preference_supersedes_the_older_one` and
+  `the_preference_block_isolates_projects`; the block is added to the system
+  prompt for every turn).
+- [x] A newer preference supersedes an older one (same topic and scope sets
+  `superseded_by`; only the newest is injected).
+- [x] The review list shows preferences with their scope and age
+  (`the_review_list_reports_scope_and_age`).
+- [x] Forgetting a preference removes it from the prompt at once
+  (`forgetting_a_preference_removes_it_from_the_prompt`).
 
 **Tests**
 
-- [ ] Save, retrieve, supersede, forget; scope isolation.
+- [x] Save, retrieve, supersede, forget; scope isolation (five memory tests
+  plus the consent rule in `safety`:
+  `a_sensitive_preference_asks_before_it_is_saved`).
 
 **Files.** `src/tools/memory.rs`, `src/agent/runner/prompts.rs`,
-`src/agent/runner.rs`.
+`src/tools/safety.rs`, `docs/tools.md`, `AGENTS.md`.
+
+**Notes (2026-10-31).** A preference is a `preference`-kind entry with three new
+fields, all additive in schema version 3: `scope` (`global`/`project`), the
+canonical `project` root a project preference belongs to, and a `topic` label.
+`remember` accepts `kind`, `scope`, and `topic`; a non-preference is always
+global. Supersession is topic-based: a new preference marks every active
+preference with the same topic and scope `superseded_by`, so the injected block
+carries one statement per topic and a correction replaces what it corrects.
+Without a topic, only an identical repeated text is deduplicated, because two
+paraphrases cannot be told apart safely. `preferences_for_prompt` loads the store,
+keeps the global ones and the project ones whose recorded root is the current one
+(the same root the shell policy uses), and renders them as their own block in the
+system prompt, before the retrieved-memory block. `forget` already removed an
+entry; the block is rebuilt from the store, so it disappears on the next turn.
+The new `preferences` action is the review list with scope, age in days, topic,
+and id.
+
+Decisions and deviations:
+
+- **Consent is a strict word list, not a model judgement.** The decision says
+  privacy, spending, and cross-app behaviour ask first; the gate is
+  `PREFERENCE_CONSENT_WORDS` in `safety.rs`, matched against the preference text
+  and topic, and the row's classifier reads the stored `kind`, so an ordinary
+  note that happens to mention a budget is not gated. Over-asking is the safe
+  direction; the list is documented in `docs/tools.md`.
+- **Project scope uses the shell policy's root.** `safety::current_project_root`
+  was made public rather than inventing a second notion of "the project", so a
+  preference saved in one workspace cannot leak into another.
+- **No automatic "low-risk" classification.** Everything that is not on the
+  consent list is low-risk by construction; adding a separate classifier would
+  have been a second, unreviewed gate.
+- **The review list is a new action** rather than extra columns on `list`,
+  because `list` is the model's recent-notes view and the review list is a
+  human-facing one with scope and age.
+
+Drift: the issue's dependency line said M1 only; the implementation also relies
+on M2's supersession and confidence fields. The `Files` list did not mention
+`safety.rs`, `docs/tools.md`, or `AGENTS.md`.
+
+**Verification.** `cargo fmt --all -- --check`, `cargo check --all-targets
+--offline`, and `cargo clippy --all-targets --offline` are clean apart from the
+three pre-existing `result_large_err` warnings. The default suite is 437 passing,
+6 ignored (431 before; six new tests), and the feature suite 442 passing, 7
+ignored. Probes, each backed up with `cp` and restored in the same bash call
+(markers re-checked, fmt re-checked): disabling the supersession loop failed
+`a_newer_preference_supersedes_the_older_one`; accepting every scope failed
+`the_preference_block_isolates_projects`; dropping the consent rule failed
+`a_sensitive_preference_asks_before_it_is_saved` at `remember my bank details
+must ask`.
 
 ## G2 — Propose-diff loop
 
