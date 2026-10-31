@@ -121,6 +121,14 @@ build, host, and process work. `P4` (the orb overlay) is deferred because this
 installation uses the GNOME extension and the Noctalia widget, and `P5`'s
 dependency on it was only the shared `Cargo.toml` area.
 
+A fresh review on 2026-11-01 re-checked every closed item, found three defects,
+and fixed two (`F1`, an external call could be granted for a turn; `F2`, a
+consolidation merge was undone by the next memory write; `F3`, the preference
+block ignored the prompt budget). `R1` (the memory path opens the database twice
+per turn) is open and low priority. The details, the probes, and the manual
+checks still outstanding are in the "Review follow-ups" section at the end of
+[ARCHITECTURE_ISSUE.md](ARCHITECTURE_ISSUE.md).
+
 | ID | Title | Wave | Depends on |
 | --- | --- | --- | --- |
 | P1 | Delete the shell-agent experiment | 1 | — |
@@ -149,4 +157,4 @@ dependency on it was only the shared `Cargo.toml` area.
 - `CHANGELOG.md` and the issue status are updated; docs that describe the old
   behaviour are corrected.
 
-Last reviewed: 2026-10-31.
+Last reviewed: 2026-11-01.
