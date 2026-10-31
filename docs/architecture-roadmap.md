@@ -4,8 +4,9 @@ Status: agreed on 2026-10-29. Wave 1 (P1, P2, P3, T1) was completed on
 2026-10-31, Wave 2 began with M1 (memory schema v2), and M2 (hybrid retrieval),
 M3 (consolidation), M4 (explain and export), G1 (preference notes), T2 (the
 external tool host), P5 (the mobile feature), T3 (the MCP provider), T4 (the
-provider trust model and contract tests), and P6 (the Nova Sonic feature)
-followed; P4 is deferred. The remaining work is G2. Work is tracked in
+provider trust model and contract tests), P6 (the Nova Sonic feature), and G2
+(the propose-diff loop) followed; the architecture track is complete and P4 is
+deferred. Work is tracked in
 [issues/ARCHITECTURE_ISSUE.md](../issues/ARCHITECTURE_ISSUE.md); this document
 records the direction and the reasoning, not individual tasks.
 

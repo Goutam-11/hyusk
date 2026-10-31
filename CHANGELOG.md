@@ -4,6 +4,17 @@
 
 ### Added
 
+- The propose-diff loop is written down (G2) in
+  [`docs/self-upgrade.md`](docs/self-upgrade.md): the agent works on a branch,
+  runs fmt, check, clippy, the isolated tests, and the feature builds, and
+  presents the diff; a human reviews and merges; a supervisor restarts the
+  service. The document names the roles, the proposal template, the review
+  checklist, and the human-only files - `src/tools/safety.rs`, the approval
+  model (`control.rs`, `runner.rs`, `reply.rs`, `session.rs`, `audit.rs`), the
+  installer/systemd/CI update path, credentials, and the safety rules. It also
+  states what the agent may still change and what the kill switch does not
+  cover. `AGENTS.md`, the documentation index, and the development guide
+  reference it.
 - Nova Sonic is now the `sonic` Cargo feature and is off by default (P6). A
   plain agent build no longer compiles the AWS SDK, the second agent loop, the
   `SonicListenCompleted` event, or the `bedrock-sonic` provider, and the model

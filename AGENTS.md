@@ -39,7 +39,8 @@ Key documents: `README.md` (user-facing install/use), `ARCHITECTURE.md` (short
 top-level), `docs/architecture.md` (detailed), `docs/tools.md` (tool contracts
 and safety), `docs/voice-and-ui.md`, `DESIGN.md` (control-deck tokens),
 `docs/architecture-roadmap.md` (planned pruning, tool boundary, memory, and
-preferences), and `issues/README.md` (open work).
+preferences), `docs/self-upgrade.md` (the propose-diff loop: the agent proposes,
+a human reviews, merges, and restarts), and `issues/README.md` (open work).
 
 ## Build and test
 
@@ -351,6 +352,13 @@ tests live in `#[cfg(test)]` modules beside the code.
   asked.
 - When you close an item, update its status and notes in `issues/` with the
   commit hash.
+- Ship through the propose-diff loop in
+  [`docs/self-upgrade.md`](docs/self-upgrade.md): a branch, the checks above, a
+  human review and merge, and a supervised restart. The agent never merges,
+  pushes to `main`, installs, or restarts the service, and it never changes the
+  approval model, `src/tools/safety.rs`, the installer/systemd/CI update path,
+  or the safety rules in this file. Those are human-only; if an issue needs a
+  change there, stop and propose it.
 
 ## Current known issues
 
@@ -374,10 +382,10 @@ experimental shell agent), P2 (macOS branches and the Linux declaration), P3
 under way: M1 (memory schema v2), M2 (hybrid retrieval), G1 (preference notes),
 M3 (consolidation), M4 (explain and export), T2 (the external tool host), P5
 (the mobile feature), T3 (the MCP provider), T4 (the provider trust model, kill
-switch, and contract tests), and P6 (Nova Sonic) are closed. The remaining work
-is G2 (the propose-diff loop). P4 (the orb feature) is deferred, because this
-installation uses the GNOME extension and the Noctalia widget rather than the
-orb.
+switch, and contract tests), P6 (Nova Sonic), and G2 (the propose-diff loop)
+are closed; the architecture track is complete. P4 (the orb feature) is
+deferred, because this installation uses the GNOME extension and the Noctalia
+widget rather than the orb.
 
 ## Memory and session notes
 

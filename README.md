@@ -783,6 +783,7 @@ hyusk_agent/
 │   ├── README.md
 │   ├── architecture.md
 │   ├── development.md
+│   ├── self-upgrade.md
 │   ├── tools.md
 │   ├── voice-and-ui.md
 │   ├── gnome-indicator.md
@@ -835,6 +836,12 @@ stay `#[ignore]`d because they need a real session (see
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs
 `cargo fmt --all -- --check`, `cargo clippy --all-targets`, and
 `cargo test --all-targets` on pushes to `main` and on pull requests.
+
+Changes ship through the propose-diff loop: the agent works on a branch and
+presents a verified diff, a human reviews and merges, and a supervisor restarts
+the service. The agent never merges, installs, or restarts itself, and the
+safety and update files are human-only - see
+[docs/self-upgrade.md](docs/self-upgrade.md).
 
 Dependencies are compiled with optimizations even in debug builds (this
 manifest's `[profile.dev.package."*"]`), so `cargo run` is fast enough for

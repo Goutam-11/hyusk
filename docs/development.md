@@ -148,6 +148,11 @@ secret-shaped value.
 
 ## Validation
 
+Run these before proposing a diff. The merge and the restart are human steps;
+the agent never merges, installs, or restarts the service. See
+[the propose-diff loop](self-upgrade.md) for the full process and the
+human-only files.
+
 Run these before committing:
 
 ```bash

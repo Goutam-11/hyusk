@@ -12,6 +12,10 @@ separate `hyusk` workspace CLI.
   and security implications.
 - [Development](development.md) covers setup, build commands, validation, and
   troubleshooting.
+- [The propose-diff loop](self-upgrade.md) states how the agent may change the
+  product it runs on: a branch, verified tests, a human review and merge, and a
+  supervised restart. It names the safety and update files that are
+  human-only.
 - [Voice and UI](voice-and-ui.md) describes the wake-word, STT, TTS, and
   overlay pipeline and its remaining limitations.
 - [GNOME top-bar indicator](gnome-indicator.md) documents the Shell extension,
