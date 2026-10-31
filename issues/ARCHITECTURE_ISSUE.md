@@ -23,10 +23,12 @@ Change a default only by editing this list and the issue that depends on it.
 
 ## P1 — Delete the shell-agent experiment
 
-- Status: open · Wave 1 · Size: small
+- Status: done 2026-10-31 · Wave 1 · Size: small
+- Commit: `d3d6d63`
 - Depends on: —
-- Evidence: `src/bin/hyusk-shell-agent.rs` header, `src/bin/types.rs`,
-  `Cargo.toml` (bin entries)
+- Evidence: confirmed before the change at `Cargo.toml:17-19` (the `[[bin]]`
+  entry), `src/bin/hyusk-shell-agent.rs` (262 lines) and `src/bin/types.rs`
+  (4 lines, a `#[path]` re-export of `src/types/message.rs`)
 
 **Problem.** `hyusk-shell-agent` is self-described as experimental and "not the
 production Hyusk permission model". It duplicates the OpenRouter client through
@@ -38,23 +40,50 @@ single OpenRouter client implementation. Remove doc references.
 
 **Acceptance criteria**
 
-- [ ] The `[[bin]]` entry is gone; `cargo build` no longer produces the binary.
-- [ ] `rg hyusk-shell-agent` returns nothing outside the changelog history.
-- [ ] No duplicated message types remain for the removed binary.
+- [x] The `[[bin]]` entry is gone; `cargo build` no longer produces the binary.
+- [x] `rg hyusk-shell-agent` returns nothing outside the changelog history.
+- [x] No duplicated message types remain for the removed binary.
 
 **Tests**
 
-- [ ] `cargo check --all-targets` and the isolated test run pass.
-- [ ] A grep check in the PR description.
+- [x] `cargo check --all-targets` and the isolated test run pass.
+- [x] A grep check: the tree has no hit outside the records (`CHANGELOG.md`,
+  `issues/`, `memory/`), and
+  `platform_tests::the_experimental_shell_agent_is_gone` keeps it that way.
 
-**Files.** `Cargo.toml`, `src/bin/hyusk-shell-agent.rs`, `src/bin/types.rs`,
-`README.md`, `docs/development.md`.
+**Files.** `Cargo.toml`, `src/bin/hyusk-shell-agent.rs` (deleted),
+`src/bin/types.rs` (deleted), `src/main.rs`, `README.md`, `AGENTS.md`,
+`docs/architecture-roadmap.md`.
+
+**Notes (2026-10-31).** Deleted both files and the `[[bin]]` entry. Nothing
+imported `src/bin/types.rs` except the removed binary, so `src/types/message.rs`
+is untouched and the one `model/openrouter.rs` implementation is now the only
+OpenRouter client. No script, systemd unit, CI job, desktop entry or `.env`
+variable referenced the binary (`HYUSK_SHELL_AGENT_MODEL` existed only inside
+its own help text). The grep criterion is held by a test that assembles the
+removed name at run time, so the test file itself cannot satisfy or defeat it.
+
+The suite dropped by 22 tests and gained three: the deleted binary compiled its
+own fresh-history test plus the OpenRouter client, protocol, and stream suites
+through the `#[path]` include, so those copies are gone. The new baseline is 408
+passing, 7 ignored (main binary 403 passing, 6 ignored; the workflow editor
+contributes five, one ignored), recorded in `AGENTS.md` and
+`docs/development.md`.
 
 ## P2 — Remove macOS branches and declare Linux
 
-- Status: open · Wave 1 · Size: small
+- Status: done 2026-10-31 · Wave 1 · Size: small
+- Commit: `d3d6d63`
 - Depends on: —
-- Evidence: `cfg(not(target_os = "linux"))` sites in `src/`
+- Evidence: confirmed before the change at `src/tools/computer.rs:348`
+  (non-Linux `should_use_portal`), `1760/1767/1774` (`open_url` launchers),
+  `328` (macOS screenshot backend), `1660/1662/1690/1692/1723/1725` (clipboard
+  backends), `src/agent/runner/sonic.rs:139/359/647` (non-Linux audio buffer and
+  TTS fallback), `src/speech/speech.rs:1573/1577/1590/1612/1632` (non-Linux
+  `speak` and the `select!` wrapper) and `Cargo.toml:64-65` (the non-Linux
+  `enigo` block). The issue named only the attribute form
+  `cfg(not(target_os = "linux"))`; six of these are `cfg!(target_os = …)`
+  expressions, and the dependency block was not mentioned.
 
 **Problem.** A handful of non-Linux branches and a non-Linux `enigo` dependency
 suggest cross-platform support that is never built or tested here.
@@ -65,17 +94,58 @@ non-Linux dependency, and emit one `compile_error!` on other targets in
 
 **Acceptance criteria**
 
-- [ ] A non-Linux build fails with one clear message.
-- [ ] The Linux build is unchanged.
-- [ ] The remaining `cfg(unix)` uses are Linux-relevant only.
+- [x] A non-Linux build fails with one clear message.
+- [x] The Linux build is unchanged.
+- [x] The remaining `cfg(unix)` uses are Linux-relevant only.
 
 **Tests**
 
-- [ ] `cargo check --target x86_64-unknown-linux-gnu` passes.
-- [ ] Manual: note the expected failure on another target.
+- [x] `cargo check --target x86_64-unknown-linux-gnu` passes.
+- [ ] Manual: note the expected failure on another target. Not run: only
+  `x86_64-unknown-linux-gnu` is installed here (`rustup target list
+  --installed`), so no other target can be built without adding a toolchain.
+  `platform_tests::the_linux_only_target_is_declared_once` asserts the gate
+  instead.
 
 **Files.** `Cargo.toml`, `src/main.rs`, `src/tools/computer.rs`,
-`src/speech/speech.rs`.
+`src/speech/speech.rs`, `src/agent/runner/sonic.rs`, `docs/tools.md`,
+`docs/voice-and-ui.md`, `docs/architecture.md`, `docs/development.md`,
+`docs/architecture-roadmap.md`, `AGENTS.md`.
+
+**Notes (2026-10-31).** `src/main.rs` now opens with one
+`#[cfg(not(target_os = "linux"))] compile_error!`, so a wrong host fails with
+one sentence instead of a pile of missing symbols. Every other branch was
+deleted rather than left dead: the `open`/`cmd` launchers, the macOS screenshot
+backend, the `pbcopy`/`clip`/`pbpaste`/PowerShell clipboard paths, the non-Linux
+Nova Sonic audio buffer and its `TextToSpeech` fallback, and the non-Linux TTS
+`speak` with the `select!` wrapper around it. The Linux chain is now the only
+`TextToSpeech::speak_cancellable` body.
+
+Two decisions the issue did not settle:
+
+- **The removed fallbacks could never have compiled.** `speech.rs` called
+  `Command::new("say")` and `Command::new("powershell")` without importing
+  `Command` (the file imports only `Stdio`), and `sonic.rs` called
+  `TextToSpeech::new()` without importing it. This is the strongest evidence
+  that the branches were never built; it is recorded here rather than repaired,
+  because P2 deletes them.
+- **`cfg(not(unix))` stubs were kept.** `task::is_executable`,
+  `gnome_doctor`'s `.env` mode check and `paths::restrict_mode` have a
+  `cfg(not(unix))` alternative. They are unreachable now that the crate refuses
+  non-Linux builds, but removing them would edit three files outside this
+  issue and change nothing on Linux, so they stay and the `cfg(unix)` audit
+  requirement is met: every `cfg(unix)` site is a mode, chmod, or symlink call
+  that is true on Linux.
+
+Positive `cfg(target_os = "linux")` guards stay where they mark a Linux-only
+section (the portal helpers, `accessibility`, `window`, `gnome_doctor`, and the
+tests that need a session). They are true on the only supported target.
+
+`platform_tests::no_source_file_keeps_a_macos_or_windows_branch` walks `src/`
+and fails if a macOS or Windows branch returns; it is the regression guard the
+grep criterion of P1 and the "Linux is unchanged" criterion of P2 asked for.
+Until P3 feature-gates the GTK editor, `hyusk-workflows` still fails on a
+non-Linux host through its `gtk4` dependency before reaching the gate.
 
 ## P3 — Feature-gate the GTK workflow editor
 
