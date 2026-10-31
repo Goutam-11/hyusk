@@ -55,9 +55,9 @@ cargo check --all-targets --offline --features workflow-editor
 cargo test --all-targets --offline --features workflow-editor -- --test-threads=4
 ```
 
-Current baseline: **444 tests passing, 6 ignored** for the default suite; the
+Current baseline: **450 tests passing, 6 ignored** for the default suite; the
 workflow editor adds five tests (one ignored) under `--features
-workflow-editor`, for **449 passing, 7 ignored**. Clippy is clean except three
+workflow-editor`, for **455 passing, 7 ignored**. Clippy is clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, the default tests, and that one feature build on Ubuntu.
 
@@ -261,6 +261,14 @@ tests live in `#[cfg(test)]` modules beside the code.
   database up to `memory-before-consolidation-*.db` before writing, and a
   cancelled pass saves nothing. The worker starts from the composition root
   (`start_consolidation_worker`) and is stopped by `stop_consolidation`.
+- Explain and export (M4): `explain_entry` (the `why` action) reports
+  provenance, confidence, and the supersession chain, and `export_notes` writes
+  one note per active entry into `<HYUSK_MEMORY_VAULT>/hyusk-notes` (directory
+  `0700`, notes `0600`). Every free-form field passes the X2 redaction pass and
+  `redact_secret_paths` before it reaches an answer or a note. A note name is
+  stable per entry id, so a re-export updates the same file, and an exported
+  note that is no longer active is removed while other files are never touched.
+  Do not add an export sink without both redaction passes.
 - Wake defaults: `WAKE_CLAP_ENABLED` and `WAKE_WORD_DENOISE` are off unless set;
   `.env.example` documents both.
 - Never print `.env` contents or API keys. Keys are keyring-first, then
@@ -306,8 +314,8 @@ designed in `docs/architecture-roadmap.md`. Wave 1 is complete: P1 (the
 experimental shell agent), P2 (macOS branches and the Linux declaration), P3
 (the `workflow-editor` feature), and T1 (tool manifests) are closed. Wave 2 is
 under way: M1 (memory schema v2), M2 (hybrid retrieval), G1 (preference notes),
-and M3 (consolidation) are closed, and P5 (the mobile feature) and T2 (the
-external tool host) remain; P4 (the orb feature) is deferred, because this installation uses the
+M3 (consolidation), and M4 (explain and export) are closed, and P5 (the mobile
+feature) and T2 (the external tool host) remain; P4 (the orb feature) is deferred, because this installation uses the
 GNOME extension and the Noctalia widget rather than the orb.
 
 ## Memory and session notes

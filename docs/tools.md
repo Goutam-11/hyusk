@@ -447,6 +447,8 @@ an entry's kind and a `(superseded by #N)` marker when they apply.
 | `list` | optional `limit` | Most recent notes. |
 | `forget` | `id` | Removes an entry; the next prompt block no longer carries it. |
 | `preferences` | none | The review list: active preferences with their scope, age, and topic. |
+| `why` | `id` | Explains one entry: provenance, confidence, and the supersession chain, with secret-shaped values redacted. |
+| `export` | none | Writes the Obsidian vault at `HYUSK_MEMORY_VAULT`; reports how many notes were written and how many stale ones were removed. |
 
 Each turn retrieves the notes that best match the user's message and injects
 them into the system prompt, so the model sees what is relevant to the current
@@ -485,6 +487,34 @@ notes, so they apply to every turn rather than only to a matching message.
   is built from the store without it.
 - **Review.** `preferences` lists the active ones with scope, age in days,
   topic, and id.
+
+### Explain and export
+
+`why` answers "why does the agent think this?" for one entry (M4): its kind,
+scope (and project, when scoped), topic, confidence, source and session, tags,
+the timestamps, every entry it supersedes, and the chain of entries that
+superseded it. The text and every other free-form field go through the X2
+redaction pass and `safety::redact_secret_paths`, so a credential-shaped value
+or a credential path never appears in the answer.
+
+`export` is the one-way path into a human-curated Obsidian vault, configured
+with `HYUSK_MEMORY_VAULT` (the notes land in `<vault>/hyusk-notes`, created
+`0700`, every note `0600`):
+
+- one note per **active** entry (a superseded entry is history in the store, not
+  a current fact), named `hyusk-memory-<id>.md`, or
+  `hyusk-memory-<id>-<topic>.md` for a preference with a topic, so the name is
+  unique and a re-export replaces the same file;
+- YAML frontmatter with the id, kind, scope, project, topic, confidence,
+  timestamps, source, tags, and the ids it supersedes;
+- the statement as the note title, and a `## Relations` section with
+  `[[object]]` links for every graph triple whose subject is the entry's topic;
+- everything redacted as above.
+
+Re-exporting updates the same file; a note whose entry is no longer active, or
+no longer stored, is removed on the next export (`hyusk-memory-*` files only),
+so the vault does not accumulate duplicates or stale facts. Other files in the
+vault are never touched.
 
 ### Consolidation
 

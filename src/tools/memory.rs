@@ -1617,6 +1617,321 @@ fn search_entries<'a>(
 /// nothing matches, no note is injected. Graph facts are filtered by the
 /// current query as well, preventing stale or unrelated context from
 /// distracting the current request.
+/// The text shown to a person: redacted for secret-shaped values and
+/// credential paths, because an explanation and a vault note both outlive the
+/// turn (M4, X2, X4).
+fn redacted(text: &str) -> String {
+    let (value, _) = crate::tools::redact::redact(text);
+    let (value, _) = crate::tools::safety::redact_secret_paths(&value);
+    value.trim().to_string()
+}
+
+/// A UTC timestamp for a stored second count; deterministic in tests.
+fn timestamp(unix: u64) -> String {
+    chrono::DateTime::from_timestamp(unix as i64, 0)
+        .map(|moment| moment.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|| unix.to_string())
+}
+
+/// Explain one entry: provenance, confidence, and the supersession chain (M4).
+///
+/// `None` means there is no entry with that id. The text, topic, project, and
+/// session are redacted, so the answer can be read out or pasted without a
+/// credential leaving the store.
+fn explain_entry(store: &MemoryStore, id: u64) -> Option<String> {
+    let entry = store.entries.iter().find(|entry| entry.id == id)?;
+    let mut output = String::new();
+
+    output.push_str(&format!("Memory #{id}: {}\n", redacted(&entry.text)));
+    let scope = match entry.scope {
+        MemoryScope::Global => "global".to_string(),
+        MemoryScope::Project => format!(
+            "project ({})",
+            redacted(entry.project.as_deref().unwrap_or("unknown"))
+        ),
+    };
+    output.push_str(&format!(
+        "- kind: {}, scope: {scope}\n",
+        entry.kind.as_str()
+    ));
+
+    if let Some(topic) = &entry.topic {
+        output.push_str(&format!("- topic: {}\n", redacted(topic)));
+    }
+
+    output.push_str(&format!("- confidence: {:.2}\n", entry.confidence));
+
+    let source = if entry.source.trim().is_empty() {
+        "unknown"
+    } else {
+        entry.source.as_str()
+    };
+    let session = entry
+        .session_id
+        .as_deref()
+        .map(|session| format!(", session: {}", redacted(session)))
+        .unwrap_or_default();
+    output.push_str(&format!("- source: {source}{session}\n"));
+
+    let tags = if entry.tags.is_empty() {
+        "none".to_string()
+    } else {
+        entry.tags.join(", ")
+    };
+    output.push_str(&format!("- tags: {tags}\n"));
+    output.push_str(&format!("- created: {}\n", timestamp(entry.created_unix)));
+    output.push_str(&format!("- updated: {}\n", timestamp(entry.updated_unix)));
+    output.push_str(&format!(
+        "- last used: {}\n",
+        timestamp(entry.last_used_unix)
+    ));
+
+    let supersedes: Vec<&MemoryEntry> = store
+        .entries
+        .iter()
+        .filter(|candidate| candidate.superseded_by == Some(entry.id))
+        .collect();
+
+    if supersedes.is_empty() {
+        output.push_str("- supersedes: nothing\n");
+    } else {
+        for older in supersedes {
+            output.push_str(&format!(
+                "- supersedes: #{} \"{}\"\n",
+                older.id,
+                redacted(&older.text)
+            ));
+        }
+    }
+
+    // Walk the chain forward: the replacement, its replacement, and so on.
+    let mut replacement = entry.superseded_by;
+    let mut seen = Vec::new();
+
+    while let Some(next) = replacement {
+        if seen.contains(&next) {
+            output.push_str("- superseded by: a cycle (data needs repair)\n");
+            break;
+        }
+
+        seen.push(next);
+
+        match store.entries.iter().find(|candidate| candidate.id == next) {
+            Some(newer) => {
+                output.push_str(&format!(
+                    "- superseded by: #{} \"{}\"\n",
+                    newer.id,
+                    redacted(&newer.text)
+                ));
+                replacement = newer.superseded_by;
+            }
+            None => {
+                output.push_str(&format!(
+                    "- superseded by: #{next} (missing from the store)\n"
+                ));
+                break;
+            }
+        }
+    }
+
+    if entry.superseded_by.is_none() {
+        output.push_str("- superseded by: nothing (this is the current statement)\n");
+    }
+
+    Some(output)
+}
+
+/// What one vault export did (M4).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ExportReport {
+    pub written: usize,
+    pub removed: usize,
+}
+
+/// The directory the vault export writes into, when `HYUSK_MEMORY_VAULT` is
+/// set (M4).
+fn vault_notes_dir() -> Option<PathBuf> {
+    let vault = std::env::var("HYUSK_MEMORY_VAULT").ok()?;
+    let vault = vault.trim();
+
+    if vault.is_empty() {
+        return None;
+    }
+
+    Some(PathBuf::from(vault).join("hyusk-notes"))
+}
+
+/// A stable, unique note name (M4).
+///
+/// The id is always in the name, so a re-export replaces the same file rather
+/// than creating a second one; a preference's topic adds a readable slug, and
+/// the exporter removes a previous file for the same id when that slug changes.
+fn note_name(entry: &MemoryEntry) -> String {
+    let Some(topic) = &entry.topic else {
+        return format!("hyusk-memory-{}.md", entry.id);
+    };
+
+    let mut slug = String::new();
+    let mut previous_dash = true;
+
+    for character in topic.to_lowercase().chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+            previous_dash = false;
+        } else if !previous_dash {
+            slug.push('-');
+            previous_dash = true;
+        }
+
+        if slug.len() >= 40 {
+            break;
+        }
+    }
+
+    let slug = slug.trim_matches('-');
+
+    if slug.is_empty() {
+        format!("hyusk-memory-{}.md", entry.id)
+    } else {
+        format!("hyusk-memory-{}-{slug}.md", entry.id)
+    }
+}
+
+/// One note: frontmatter, the statement, its relations, and its history (M4).
+fn render_note(entry: &MemoryEntry, store: &MemoryStore) -> String {
+    let mut output = String::from("---\n");
+
+    output.push_str(&format!("id: {}\n", entry.id));
+    output.push_str(&format!("kind: {}\n", entry.kind.as_str()));
+    output.push_str(&format!("scope: {}\n", entry.scope.as_str()));
+
+    if let Some(project) = &entry.project {
+        output.push_str(&format!("project: \"{}\"\n", yaml_value(project)));
+    }
+
+    if let Some(topic) = &entry.topic {
+        output.push_str(&format!("topic: \"{}\"\n", yaml_value(topic)));
+    }
+
+    output.push_str(&format!("confidence: {:.2}\n", entry.confidence));
+    output.push_str(&format!("created: {}\n", timestamp(entry.created_unix)));
+    output.push_str(&format!("updated: {}\n", timestamp(entry.updated_unix)));
+    output.push_str(&format!("source: {}\n", yaml_value(&entry.source)));
+
+    if !entry.tags.is_empty() {
+        let tags: Vec<String> = entry
+            .tags
+            .iter()
+            .map(|tag| format!("\"{}\"", yaml_value(tag)))
+            .collect();
+        output.push_str(&format!("tags: [{}]\n", tags.join(", ")));
+    }
+
+    let supersedes: Vec<String> = store
+        .entries
+        .iter()
+        .filter(|candidate| candidate.superseded_by == Some(entry.id))
+        .map(|older| older.id.to_string())
+        .collect();
+    output.push_str(&format!("supersedes: [{}]\n", supersedes.join(", ")));
+    output.push_str("---\n\n");
+
+    output.push_str(&format!("# {}\n\n", redacted(&entry.text)));
+
+    let key = entry
+        .topic
+        .as_deref()
+        .map(|topic| topic.to_lowercase())
+        .unwrap_or_default();
+    let mut relations: Vec<String> = Vec::new();
+
+    for triple in &store.graph {
+        if triple.subject.to_lowercase() == key {
+            relations.push(format!(
+                "- {}: [[{}]]\n",
+                redacted(&triple.relation),
+                redacted(&triple.object)
+            ));
+        }
+    }
+
+    if !relations.is_empty() {
+        output.push_str("\n## Relations\n\n");
+        output.push_str(&relations.concat());
+    }
+
+    output
+}
+
+/// A YAML scalar that cannot break the frontmatter: quoted, no quotes inside,
+/// no newlines.
+fn yaml_value(value: &str) -> String {
+    redacted(value).replace(['"', '\n', '\r'], "'")
+}
+
+/// Write one note per active entry and remove a note whose entry is no longer
+/// active or no longer stored (M4).
+///
+/// The directory is owner-only and every note is written `0600`: a memory note
+/// carries the same private material as the database.
+fn export_notes(dir: &std::path::Path, store: &MemoryStore) -> Result<ExportReport> {
+    crate::paths::ensure_private_dir(dir)?;
+
+    let mut report = ExportReport::default();
+    let mut exported: Vec<u64> = Vec::new();
+
+    for entry in store
+        .entries
+        .iter()
+        .filter(|entry| entry.superseded_by.is_none())
+    {
+        let path = dir.join(note_name(entry));
+        let content = render_note(entry, store);
+        std::fs::write(&path, content)
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+        crate::paths::restrict_file(&path);
+        exported.push(entry.id);
+        report.written += 1;
+    }
+
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for file in entries.flatten() {
+            let path = file.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+
+            let Some(rest) = name
+                .strip_prefix("hyusk-memory-")
+                .and_then(|rest| rest.strip_suffix(".md").map(|rest| rest.to_string()))
+            else {
+                continue;
+            };
+            let id = rest.split('-').next().and_then(|id| id.parse::<u64>().ok());
+
+            let Some(id) = id else {
+                continue;
+            };
+
+            let current = store
+                .entries
+                .iter()
+                .find(|entry| entry.id == id && entry.superseded_by.is_none())
+                .map(note_name);
+            let stale = match current {
+                Some(current) => current != name,
+                None => true,
+            };
+
+            if stale && std::fs::remove_file(&path).is_ok() {
+                report.removed += 1;
+            }
+        }
+    }
+
+    Ok(report)
+}
+
 /// Active preferences that apply where the agent is running (G1).
 ///
 /// Global preferences always apply; a project preference applies only while the
@@ -2001,6 +2316,14 @@ enum MemoryAction {
 
     /// The review list: active preferences with their scope and age.
     Preferences,
+
+    /// Provenance, confidence, and the supersession chain of one entry (M4).
+    Why {
+        id: u64,
+    },
+
+    /// Write the vault export (M4).
+    Export,
 }
 
 #[async_trait]
@@ -2013,7 +2336,9 @@ impl Tool for MemoryTool {
             preference (a standing instruction with a `topic`; a newer preference on the \
             same topic replaces the older one), `search` to find relevant notes, \
             `graph_add`/`graph_query` for subject-relation-object facts, `list` for recent \
-            notes, `preferences` for the review list, and `forget` to delete an entry by id. \
+            notes, `preferences` for the review list, `why` to explain one entry (provenance, \
+            confidence, supersession), `export` to write the configured Obsidian vault, and \
+            `forget` to delete an entry by id. \
             The SQLite store survives restarts and a readable Markdown view is generated \
             under the user's data directory.",
             schema: memory_schema,
@@ -2274,6 +2599,28 @@ impl Tool for MemoryTool {
                     now_unix(),
                 )))
             }
+
+            MemoryAction::Why { id } => match explain_entry(&store, id) {
+                Some(explanation) => Ok(ToolResult::success(explanation)),
+                None => Ok(ToolResult::failure(format!("No memory with id #{id}."))),
+            },
+
+            MemoryAction::Export => {
+                let Some(dir) = vault_notes_dir() else {
+                    return Ok(ToolResult::failure(
+                        "No memory vault configured: set HYUSK_MEMORY_VAULT to the vault path.",
+                    ));
+                };
+
+                let report = export_notes(&dir, &store)?;
+
+                Ok(ToolResult::success(format!(
+                    "Exported {} note(s) to {} ({} stale note(s) removed).",
+                    report.written,
+                    dir.display(),
+                    report.removed
+                )))
+            }
         }
     }
 }
@@ -2284,8 +2631,8 @@ fn memory_schema() -> Value {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["remember", "search", "graph_add", "graph_query", "list", "forget", "preferences"],
-                "description": "Memory operation."
+                "enum": ["remember", "search", "graph_add", "graph_query", "list", "forget", "preferences", "why", "export"],
+                "description": "Memory operation. `why` explains one entry; `export` writes the Obsidian vault when HYUSK_MEMORY_VAULT is set."
             },
             "text": {
                 "type": "string",
@@ -2317,7 +2664,7 @@ fn memory_schema() -> Value {
             "subject": { "type": "string", "description": "Graph subject." },
             "relation": { "type": "string", "description": "Graph relation." },
             "object": { "type": "string", "description": "Graph object." },
-            "id": { "type": "integer", "description": "Entry id for `forget`." },
+            "id": { "type": "integer", "description": "Entry id for `forget` or `why`." },
             "limit": {
                 "type": "integer",
                 "minimum": 1,
@@ -3408,6 +3755,212 @@ CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 .all(|entry| entry.superseded_by.is_none()),
             "a cancelled pass saved nothing"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn an_explanation_reports_provenance_and_the_chain() {
+        let mut store = MemoryStore::default();
+        let RememberResult::Saved(older) = remember_entry(
+            &mut store,
+            "use npm".to_string(),
+            vec!["tooling".to_string()],
+            MemoryKind::Preference,
+            MemoryScope::Global,
+            Some("package manager".to_string()),
+            None,
+        ) else {
+            panic!("saved");
+        };
+        let RememberResult::Saved(newer) = remember_entry(
+            &mut store,
+            "no, use pnpm".to_string(),
+            vec![],
+            MemoryKind::Preference,
+            MemoryScope::Global,
+            Some("package manager".to_string()),
+            None,
+        ) else {
+            panic!("saved");
+        };
+
+        let explanation = explain_entry(&store, newer.id).expect("the newer entry");
+        for phrase in [
+            "kind: preference",
+            "scope: global",
+            "topic: package manager",
+            "confidence: 1.00",
+            "source: assistant",
+            &format!("supersedes: #{} \"use npm\"", older.id),
+            "superseded by: nothing (this is the current statement)",
+        ] {
+            assert!(
+                explanation.contains(phrase),
+                "missing {phrase:?} in:\n{explanation}"
+            );
+        }
+
+        let replaced = explain_entry(&store, older.id).expect("the older entry");
+        assert!(
+            replaced.contains(&format!("superseded by: #{} \"no, use pnpm\"", newer.id)),
+            "{replaced}"
+        );
+        assert_eq!(explain_entry(&store, 999), None);
+    }
+
+    #[test]
+    fn an_explanation_never_repeats_a_secret() {
+        let mut store = MemoryStore::default();
+        let RememberResult::Saved(entry) = remember_entry(
+            &mut store,
+            "the key is OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef".to_string(),
+            vec![],
+            MemoryKind::Note,
+            MemoryScope::Global,
+            None,
+            None,
+        ) else {
+            panic!("saved");
+        };
+
+        let explanation = explain_entry(&store, entry.id).expect("the entry");
+
+        assert!(
+            !explanation.contains("sk-or-v1-0123456789abcdef"),
+            "{explanation}"
+        );
+        assert!(explanation.contains("[redacted]"), "{explanation}");
+    }
+
+    #[test]
+    fn the_export_writes_one_named_note_per_active_entry() -> Result<()> {
+        let directory = scratch("export-notes");
+        let store = MemoryStore {
+            entries: vec![
+                note(1, "deploy with make release"),
+                note(2, "the coffee machine is on the third floor"),
+                MemoryEntry {
+                    superseded_by: Some(3),
+                    ..note(3, "an old note")
+                },
+            ],
+            graph: vec![],
+            ..MemoryStore::default()
+        };
+
+        let report = export_notes(&directory, &store)?;
+
+        assert_eq!(
+            report,
+            ExportReport {
+                written: 2,
+                removed: 0
+            }
+        );
+        let names: Vec<String> = std::fs::read_dir(&directory)?
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            names.contains(&"hyusk-memory-1.md".to_string()),
+            "a note without a topic is named by its id: {names:?}"
+        );
+        assert!(
+            names.iter().all(|name| !name.starts_with("hyusk-memory-3")),
+            "a superseded entry is not exported: {names:?}"
+        );
+        assert_eq!(names.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn re_exporting_updates_the_same_note() -> Result<()> {
+        let directory = scratch("export-update");
+        let mut store = MemoryStore {
+            entries: vec![note(1, "deploy with make release")],
+            graph: vec![],
+            ..MemoryStore::default()
+        };
+        export_notes(&directory, &store)?;
+
+        store.entries[0].text = "deploy with make release --signed".to_string();
+        let report = export_notes(&directory, &store)?;
+
+        assert_eq!(
+            report,
+            ExportReport {
+                written: 1,
+                removed: 0
+            }
+        );
+        let files: Vec<std::path::PathBuf> = std::fs::read_dir(&directory)?
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(files.len(), 1, "one note, updated in place: {files:?}");
+        let content = std::fs::read_to_string(&files[0])?;
+        assert!(content.contains("--signed"), "{content}");
+        assert!(!content.contains("deploy with make release\n"), "{content}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_export_removes_a_note_that_stopped_being_active() -> Result<()> {
+        let directory = scratch("export-stale");
+        let store = MemoryStore {
+            entries: vec![note(1, "keep me"), note(2, "replace me")],
+            graph: vec![],
+            ..MemoryStore::default()
+        };
+        export_notes(&directory, &store)?;
+
+        let mut superseded = store.clone();
+        superseded.entries[1].superseded_by = Some(1);
+        let report = export_notes(&directory, &superseded)?;
+
+        assert_eq!(
+            report,
+            ExportReport {
+                written: 1,
+                removed: 1
+            }
+        );
+        let names: Vec<String> = std::fs::read_dir(&directory)?
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_export_redacts_secrets_and_links_relations() -> Result<()> {
+        let directory = scratch("export-note");
+        let mut entry = note(7, "the token is ghp_0123456789abcdef and pnpm is preferred");
+        entry.kind = MemoryKind::Preference;
+        entry.topic = Some("package manager".to_string());
+        let store = MemoryStore {
+            entries: vec![entry],
+            graph: vec![GraphTriple {
+                subject: "package manager".to_string(),
+                relation: "uses".to_string(),
+                object: "pnpm".to_string(),
+            }],
+            ..MemoryStore::default()
+        };
+
+        export_notes(&directory, &store)?;
+
+        let path = directory.join("hyusk-memory-7-package-manager.md");
+        let content = std::fs::read_to_string(&path)?;
+        assert!(
+            !content.contains("ghp_0123456789abcdef"),
+            "the note carries no credential:\n{content}"
+        );
+        assert!(content.contains("[redacted]"), "{content}");
+        assert!(content.contains("kind: preference"), "{content}");
+        assert!(content.contains("topic: \"package manager\""), "{content}");
+        assert!(content.contains("- uses: [[pnpm]]"), "{content}");
         Ok(())
     }
 

@@ -4,6 +4,21 @@
 
 ### Added
 
+- Memory can explain itself and travel into an Obsidian vault (M4). The
+  `memory` action `why` answers "why does the agent think this?" for one entry:
+  kind, scope (and project), topic, confidence, source and session, tags, the
+  timestamps, every entry it supersedes, and the chain of entries that
+  superseded it - with secret-shaped values and credential paths redacted. The
+  new `export` action writes one note per active entry into
+  `<HYUSK_MEMORY_VAULT>/hyusk-notes` (directory `0700`, notes `0600`): YAML
+  frontmatter with the provenance and the supersession ids, the statement as the
+  title, and `[[object]]` links for graph relations on the entry's topic. Names
+  are stable per entry id, so a re-export replaces the same file, and a note
+  whose entry is no longer active is removed on the next export while other
+  files in the vault are untouched. `HYUSK_MEMORY_VAULT` unset disables the
+  export. Tests cover the explanation and its chain, its redaction, the note
+  naming, re-export updates, stale-note removal, and the export's redaction and
+  relations.
 - Memory is consolidated by a bounded background pass (M3). It runs once at
   startup and then every `HYUSK_MEMORY_CONSOLIDATE_INTERVAL_SECS` (default six
   hours), merges near-duplicates - same kind, scope, project, and topic, with
