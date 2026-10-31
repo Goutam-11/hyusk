@@ -494,9 +494,12 @@ tests for providers.
 
 ## M1 — Memory schema v2
 
-- Status: open · Wave 2 · Size: medium
+- Status: done 2026-10-31 · Wave 2 · Size: medium
+- Commit: `098e5c4`
 - Depends on: —
-- Evidence: `src/tools/memory.rs` (schema, `MemoryEntry`)
+- Evidence: confirmed before the change at `src/tools/memory.rs:22-29`
+  (`MemoryEntry`: id, text, tags, created_unix), `70-93` (`SCHEMA`: the v1
+  table), `283-330` (`read_store`), `362-435` (`save_store`)
 
 **Problem.** Entries carry text, tags, and a timestamp. There is no provenance,
 confidence, last-used time, supersession, or entry kind, so stale facts cannot
@@ -509,15 +512,77 @@ databases readable; backfill unknown provenance. Migration is idempotent.
 
 **Acceptance criteria**
 
-- [ ] A v1 database opens, reads, and writes without data loss.
-- [ ] New fields have safe defaults.
-- [ ] `memory.json` and `memory.md` export still work.
+- [x] A v1 database opens, reads, and writes without data loss.
+- [x] New fields have safe defaults.
+- [x] `memory.json` and `memory.md` export still work. `memory.md` is the
+  export and now also shows an entry's kind and a superseded marker;
+  `memory.json` is an **import** format, not an export - see the drift note.
 
 **Tests**
 
-- [ ] Migration on a v1 fixture; roundtrip; export.
+- [x] Migration on a v1 fixture; roundtrip; export
+  (`a_v1_database_opens_with_backfilled_provenance`,
+  `the_schema_migration_is_idempotent`,
+  `the_new_fields_round_trip_through_the_database`,
+  `the_markdown_mirror_shows_kind_and_supersession`,
+  `a_legacy_memory_json_still_imports`,
+  `forgetting_an_entry_drops_its_embedding`).
 
-**Files.** `src/tools/memory.rs`.
+**Files.** `src/tools/memory.rs`, `docs/tools.md`, `docs/architecture.md`,
+`AGENTS.md`.
+
+**Notes (2026-10-31).** `MemoryEntry` gained `source`, `session_id`, `kind`
+(`MemoryKind`: note, fact, preference, episode), `confidence`,
+`superseded_by`, `updated_unix`, and `last_used_unix`, all with serde and
+database defaults, plus `MemoryKind::as_str`/`from_str` (`from_str` maps an
+unknown stored value to `note`, so a row from a newer build still reads). The
+schema gained a `memory_embeddings` table (`entry_id`, `model`, `dims`, `vector`,
+`created_unix`), and `save_store` drops an embedding whose entry is gone.
+
+`migrate_schema` runs on every open after `create_schema`: it reads
+`PRAGMA table_info`, adds each missing column from a fixed list with
+`ALTER TABLE ... ADD COLUMN`, and backfills `updated_unix`/`last_used_unix` from
+`created_unix` and `source = 'import'` where they are still 0/empty, then records
+`schema_version` in `memory_meta`. Re-running finds every column present and
+every backfill already satisfied, so it is a no-op; the v1 fixture test opens the
+same file twice.
+
+Decisions the issue did not settle:
+
+- **`source` values.** A note the agent saves is `assistant` with confidence
+  `1.0`; a v1 row is `import` with `BACKFILLED_CONFIDENCE` (0.5). `session_id`
+  stays `None` until the memory tool is given a session handle (G1), because
+  inventing one here would be false provenance.
+- **No model-facing change.** `remember` still takes text and tags; kind,
+  confidence, and supersession are schema fields that G1 and M3 will write.
+  These are tool-manifest-compatible: the schema is unchanged, so the manifest
+  version stays `1.0.0`.
+- **Retrieval is untouched.** `search_entries` still scores with FTS, tags and
+  recency; `last_used_unix` and `superseded_by` are written but not read yet.
+  Wiring them in is M2/M3, and doing it here would have changed ranking without
+  the fixtures those issues name.
+- **The store paths are parameterised for tests.** `load_store_at` and
+  `save_store_at` take the database path and derive the `memory.md` mirror from
+  it, so the new tests never write the real data directory (the X4 lesson); the
+  public `load_store`/`save_store` keep their signatures.
+
+Drift found: the acceptance named `memory.json` an export, but this repository
+only *reads* it (a one-shot legacy import after migration, retained as a
+recovery backup). Adding a writer would create a second, stale copy of the
+store, so the criterion is recorded as met by the import still working and the
+Markdown export; the issue now says so.
+
+**Verification.** `cargo fmt --all -- --check`, `cargo check --all-targets
+--offline`, and `cargo clippy --all-targets --offline` are clean apart from the
+three pre-existing `result_large_err` warnings. The default suite is 424 passing,
+6 ignored (418 before; M1 adds six tests), and the feature suite 429 passing, 7
+ignored. Two probes, each backed up with `cp` and restored in the same bash call
+(marker re-checked, fmt re-checked): dropping `migrate_schema` from
+`initialize_db` failed both v1 tests with `no such column: kind`; dropping the
+orphan-embedding cleanup failed `the forgotten entry's embedding is gone`. The
+first attempt at the second probe matched nothing because rustfmt had reflowed
+the statement - the same trap the L4 session hit; it was re-applied against the
+formatted text.
 
 ## M2 — Hybrid retrieval
 
