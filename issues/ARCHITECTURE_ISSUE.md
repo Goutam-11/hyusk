@@ -309,10 +309,14 @@ them shared.
 
 ## T1 — Tool manifests
 
-- Status: open · Wave 1 (after A8) · Size: medium
+- Status: done 2026-10-31 · Wave 1 (after A8) · Size: medium
+- Commit: `f6f574b`
 - Depends on: A8, P3
-- Evidence: `src/tools/tool.rs`, `src/tools/registry.rs`,
-  `src/agent/runner/prompts.rs`
+- Evidence: confirmed before the change at `src/tools/tool.rs:42-54` (the
+  three-method trait), `src/tools/registry.rs:6-36` (a `HashMap` of
+  `Arc<dyn Tool>`, no validation), `src/agent/runner/prompts.rs:6-20` (specs
+  built from the tool's own methods), and `src/tools/safety.rs:37-200`
+  (the A8 policy table)
 
 **Problem.** The `Tool` trait exposes a name, description, and schema. Version,
 risk class, capability needs, and origin are implicit or absent, so the policy
@@ -326,18 +330,75 @@ self-test its schema.
 
 **Acceptance criteria**
 
-- [ ] Registering a tool without a manifest fails the build or a test.
-- [ ] Model specs and the policy table are generated from manifests.
-- [ ] A manifest version is visible in the registry.
-- [ ] External tools later use the same manifest shape.
+- [x] Registering a tool without a manifest fails the build or a test.
+- [x] Model specs and the policy table are generated from manifests.
+- [x] A manifest version is visible in the registry.
+- [x] External tools later use the same manifest shape.
 
 **Tests**
 
-- [ ] Registry coverage test tied to A8.
-- [ ] Conformance check for the built-in tools.
+- [x] Registry coverage test tied to A8
+  (`tool_policy_tests::every_registered_tool_declares_a_conformant_manifest`).
+- [x] Conformance check for the built-in tools (the same test, plus five
+  `manifest` and eight `registry` unit tests).
 
-**Files.** `src/tools/tool.rs`, `src/tools/registry.rs`,
-`src/tools/safety.rs`, `src/main.rs`, `src/agent/runner/prompts.rs`.
+**Files.** `src/tools/manifest.rs` (new), `src/tools/tool.rs`,
+`src/tools/registry.rs`, `src/tools/safety.rs`, `src/main.rs`,
+`src/agent/runner/prompts.rs`, all fourteen tool modules, `docs/tools.md`,
+`docs/architecture.md`.
+
+**Notes (2026-10-31).** `Tool::manifest` is now the only required declaration
+and `name`, `description`, and the schema read back from it, so a tool cannot
+compile without one. `ToolManifest` carries `name`, `version` (`CORE_VERSION`,
+`1.0.0`), `description`, `schema: fn() -> Value`, `risk` (read, mutate, input,
+execute, network, system - at least one), `capabilities` (input, screenshot,
+accessibility, from D3), and `source` (core or external).
+
+The registry keeps each tool with its validated manifest, exposes
+`manifests()`, and generates `specs()` from those manifests; `prompts.rs` now
+calls `specs()` instead of rebuilding the JSON itself. `register` validates and
+panics with one message on a programmer error, and `build_tools` runs
+`conformance()` before handing the registry on, so a bad set fails at startup,
+not at the first call.
+
+`conformance()` is the A8/D6 tie: a registered tool without a policy row fails,
+and the `input` capability must be present exactly when the row declares input
+paths. That last check caught a real asymmetry while it was written: `computer`
+declares input paths, so its manifest must carry `Capability::Input`.
+
+Deviations from the decision, recorded so the wording is not mistaken for the
+implementation:
+
+- **The per-action decisions did not move into manifests.** A risk class cannot
+  express "this command stays inside the project root" or "this click label
+  names delete", and moving the decisions out of `safety.rs` would move the
+  approval review surface away from the file the invariant names. Manifests
+  feed the *identity* checks (policy row coverage, input capability versus
+  input paths) and the model specs; the table and its rules stay in
+  `safety.rs`, and a doc note there points at the tie.
+- **`Source::External` exists but cannot register.** It has no policy row until
+  T2's host supplies the approval decisions, so `register` refuses it with a
+  message naming T2. The shape is ready; the host is not.
+- **`input_schema()` was removed from the trait.** Nothing needed a second way
+  to reach the schema; the four tool tests that used it call their own schema
+  function now, which also keeps the schema beside its tool.
+- **Descriptions were reflowed once.** The move into the manifest removed the
+  collapsed runs of spaces left by an earlier reformat, so the model-facing text
+  is the same words with normal spacing.
+
+**Verification.** `cargo fmt --all -- --check`, `cargo check --all-targets
+--offline`, and `cargo clippy --all-targets --offline` are clean apart from the
+three pre-existing `result_large_err` warnings. The default suite is 418 passing,
+6 ignored (404 before this item; T1 adds fourteen tests), and the feature suite
+423 passing, 7 ignored. Fail-before-fix: the trait change itself stopped eight
+test doubles from compiling until each declared a manifest, which is the
+"cannot compile without a manifest" guarantee in the small; two registry tests
+then failed for real reasons (the name check is unobservable through the default
+`name()`, and the conformance message had gained an article) and were corrected
+before the commit. A probe then removed `Capability::Input` from the browser
+manifest and both coverage tests failed with `browser declares the input
+capability false but its policy row declares input paths true`; the file was
+restored in the same call (marker re-checked, fmt clean).
 
 ## T2 — External tool host
 
