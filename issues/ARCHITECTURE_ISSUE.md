@@ -586,9 +586,12 @@ formatted text.
 
 ## M2 — Hybrid retrieval
 
-- Status: open · Wave 3 · Size: large
+- Status: done 2026-10-31 · Wave 3 · Size: large
+- Commit: `321a0c6`
 - Depends on: M1
-- Evidence: `src/tools/memory.rs` (`search_entries`, `context_for`)
+- Evidence: confirmed before the change at `src/tools/memory.rs:620`
+  (`search_entries`: FTS + tag + recency only) and `921` (`context_for`: a fixed
+  `limit`, no token budget)
 
 **Problem.** Retrieval is token overlap over FTS. A paraphrased question misses
 relevant notes, and injection is a fixed top-k with no token budget.
@@ -600,15 +603,86 @@ one, fall back to FTS.
 
 **Acceptance criteria**
 
-- [ ] A paraphrased query retrieves the expected note in a fixture.
-- [ ] The prompt stays inside the configured budget.
-- [ ] No network call is made for retrieval.
+- [x] A paraphrased query retrieves the expected note in a fixture
+  (`a_paraphrased_query_finds_the_note_through_the_embedding`, which also shows
+  the same query finds nothing without the embedder).
+- [x] The prompt stays inside the configured budget
+  (`the_context_stays_inside_the_prompt_budget` at 80, 140, and 400 tokens).
+- [x] No network call is made for retrieval. The recall path has no HTTP client:
+  `LocalEmbedder` hashes in-process, and the database is local.
 
 **Tests**
 
-- [ ] Ranking fixtures; budget test; no-model fallback.
+- [x] Ranking fixtures (`a_paraphrased_query_finds_the_note_through_the_embedding`,
+  `without_embeddings_only_lexical_matches_are_retrieved`,
+  `superseded_entries_are_never_retrieved`,
+  `confidence_and_recency_break_equal_lexical_scores`); budget test
+  (`the_context_stays_inside_the_prompt_budget`); no-model fallback
+  (`without_embeddings_only_lexical_matches_are_retrieved`, plus
+  `the_local_embedder_is_deterministic_and_places_related_words_closer` and
+  `saving_the_store_caches_local_embeddings`).
 
-**Files.** `src/tools/memory.rs`, `models/` (ignored), `docs/development.md`.
+**Files.** `src/tools/memory.rs`, `.env.example`, `README.md`, `docs/tools.md`,
+`docs/development.md`, `AGENTS.md`.
+
+**Notes (2026-10-31).** `hybrid_entries` scores four signals - the FTS rank
+(normalised to the best candidate), the cosine similarity of the local vectors,
+`confidence` as importance, and recency (`exp(-age/90d)`) - weighted
+0.55 / 0.25 / 0.12 / 0.08 so the lexical term stays dominant. It skips a
+superseded entry outright, and it ignores an entry FTS did not match unless its
+similarity clears `MIN_EMBEDDING_SIMILARITY` (0.30), so the hashed vectors
+cannot fill the prompt with noise. `search_entries` fills the lexical map from
+FTS and keeps the old tag/recency ranker as the fallback when FTS returns
+nothing and no embedder is available; the `memory` tool's `search` action uses
+the same hybrid ranker.
+
+`context_from_store` chooses the notes and graph facts, then `render_context`
+charges the header and footer first and adds each line in rank order until the
+next one would not fit - a note is included whole or dropped, never cut in half.
+The budget is `HYUSK_MEMORY_PROMPT_TOKENS` (default 600 estimated tokens at
+four characters per token, clamped to 4000, `0` disables injection), and the
+sum of rounded-up line costs never underestimates the whole.
+
+Deviations from the decision, recorded so the sketch is not mistaken for the
+code:
+
+- **There is no model file, so the embedder is a built-in feature hash.** The
+  decision assumed "computed locally when a model file is present". This
+  repository ships none, and a transformer would also need a tokenizer
+  dependency and its vocab; instead `LocalEmbedder` hashes word tokens and
+  character trigrams into 256 signed dimensions, which makes plurals, typos, and
+  compounds (`npm`/`pnpm`) land near each other with no file, no C++ runtime,
+  and no network. `HYUSK_MEMORY_EMBEDDINGS=0` is the lexical-only fallback the
+  decision asked for.
+- **The paraphrase test uses a fixture embedder.** With no trained model there
+  is nothing to paraphrase with, so that test injects a deterministic embedder
+  whose vectors put "compiler" near "borrow checker" and asserts the note is
+  found by the vector alone (and that the same query finds nothing without one).
+  The built-in embedder's own behaviour is tested separately for related-word
+  closeness and determinism.
+- **The vectors are cached on the write path.** `save_store` stores one vector
+  per entry in `memory_embeddings` (the M1 table) under the label
+  `local-hash-v1`, replaces rows from another model, and drops orphans; an entry
+  without a cached vector (a v1 database, or one written before M2) is embedded
+  during recall instead. The M1 embedding test was rewritten for this: saving
+  the store now creates the cache, so the fixture no longer inserts rows by
+  hand.
+- **`MemoryStore` carries the cache.** `embeddings: HashMap<u64, Vec<f32>>` is
+  `#[serde(skip)]`, so the legacy JSON mirror is unchanged.
+
+Drift found: none in the Evidence lines; the acceptance's "no network call" is
+a property of the code path rather than something a unit test can prove, and it
+is recorded that way.
+
+**Verification.** `cargo fmt --all -- --check`, `cargo check --all-targets
+--offline`, and `cargo clippy --all-targets --offline` are clean apart from the
+three pre-existing `result_large_err` warnings. The default suite is 431 passing,
+6 ignored (424 before; M2 adds seven tests), and the feature suite 436 passing, 7
+ignored. Probes, each backed up with `cp` and restored in the same bash call
+(markers re-checked, fmt re-checked): forcing the similarity input to `None` in
+`hybrid_entries` failed the paraphrase test at `only the paraphrase is similar
+enough`; removing the entry budget check failed the budget test with `budget 80
+produced 531 tokens`.
 
 ## M3 — Consolidation
 
