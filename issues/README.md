@@ -1,160 +1,182 @@
-# Hyusk work items
+# Work record
 
-This folder is the tracker for the permission and desktop-control review of
-2026-10-29. It replaces the bullet list that used to live in `AGENTS.md` under
-"Current known issues". Each area has one file and stable IDs; work one issue
-per session so a fresh agent can pick it up without prior context.
+The permission and desktop-control review of 2026-10-29 and the architecture
+track of 2026-10-31 are finished. This file is the one-page record of what they
+changed, what is still open, and where the detail lives. Open a new file per
+area when the next batch of work starts.
 
-| File | IDs | Area |
+The six trackers were removed on 2026-11-01, once every item was closed,
+deferred, or carried over to "Still open" below. Their full text - evidence,
+decisions, acceptance criteria, named tests, and the review that found F1-F3 -
+stays in git history:
+
+```bash
+git show 8daa174:issues/ARCHITECTURE_ISSUE.md
+git log --oneline -- issues/ARCHITECTURE_ISSUE.md
+```
+
+`8daa174` is the last commit that carried the architecture tracker, including
+the 2026-11-01 review section; the other five files are unchanged since
+`2cdc1d8`.
+
+What still binds later work is not only in history: each decision that governs
+the code today is a safety invariant in [`AGENTS.md`](../AGENTS.md), a section
+in [`docs/tools.md`](../docs/tools.md), or an entry in
+[`CHANGELOG.md`](../CHANGELOG.md). Those are the places to read first.
+
+## What shipped
+
+| ID | Change | Closed |
 | --- | --- | --- |
-| [PERMISSION_ISSUE.md](PERMISSION_ISSUE.md) | A1–A10 | Approval policy, prompt/gate consistency, confirmation UX, panels |
-| [SHELL_ISSUE.md](SHELL_ISSUE.md) | S1–S4 | Shell classification, project scope, read confinement, path spoofing |
-| [DESKTOP_ISSUE.md](DESKTOP_ISSUE.md) | D1–D6 | Terminal typing, browser actions, portal capability, click labels |
-| [SECRETS_ISSUE.md](SECRETS_ISSUE.md) | X1–X4 | `.env`, redaction, private runtime files, leakage audit |
-| [AGENT_LOOP_ISSUE.md](AGENT_LOOP_ISSUE.md) | L1–L6 | Agent mutex, sync IO, stream timeout, timer clamp, mobile replay, restart |
-| [ARCHITECTURE_ISSUE.md](ARCHITECTURE_ISSUE.md) | P1–P6, T1–T4, M1–M4, G1–G2 | Pruning, tool manifests, external providers, memory, preferences |
+| A1 | The model-facing approval guidance is rendered from the policy table | 2026-10-29 |
+| A2 | A research delegation runs free; a workspace delegation asks once | 2026-10-29 |
+| A3 | The card shows the exact call, and that stored call is what runs | 2026-10-29 |
+| A4 | Spoken confirmations are classified by their leading phrase | 2026-10-29 |
+| A5 | Unrelated speech drops the pending call and answers the new request | 2026-10-29 |
+| A6 | "Allow for this turn" is keyed by tool and call shape, and expires | 2026-10-29 |
+| A7 | One approval card kind; a stale panel click is answered | 2026-10-29 |
+| A8 | Explicit policy registry with exhaustive coverage | 2026-10-29 |
+| A9 | The instant command lane uses the same policy | 2026-10-29 |
+| A10 | Every resolved confirmation is appended to `approvals.jsonl` | 2026-10-30 |
+| S1 | Shell writes are scoped to the project root | 2026-10-29 |
+| S2 | Shell reads are confined, and credential paths are refused outright | 2026-10-29 |
+| S3 | A program named by a path never inherits the bare name's decision | 2026-10-29 |
+| S4 | `process` and `shell` classify one browser launch the same way | 2026-10-30 |
+| D1 | Typing or pressing keys into a terminal asks | 2026-10-29 |
+| D2 | Browser `click`/`fill`/`press_key` ask; read and navigate stay free | 2026-10-29 |
+| D3 | A capability registry preflights portal and AT-SPI state | 2026-10-29 |
+| D4 | Clicks ask only when the label commits something | 2026-10-29 |
+| D5 | Keyboard input is classed by what a key does | 2026-10-30 |
+| D6 | Every typing path is decided by one shared rule | 2026-10-30 |
+| X1 | `.env` is mode `0600`; the doctor and installers report it | 2026-10-29 |
+| X2 | Secret-shaped tool output is redacted before it is stored or sent | 2026-10-29 |
+| X3 | Audio, screenshots, and model output are owner-only runtime files | 2026-10-29 |
+| X4 | Journal, session, cards, memory, and logs pass the redaction sinks | 2026-10-30 |
+| L1 | Runtime control state moved out of the turn's agent lock | 2026-10-30 |
+| L2 | Session and status writes go through one coalescing writer | 2026-10-30 |
+| L3 | Streams are bounded by an idle window, not the request timeout | 2026-10-30 |
+| L4 | Timer and scheduler waits are clamped at 30 days | 2026-10-30 |
+| L5 | A replayed mobile request is refused after a reconnect | 2026-10-30 |
+| L6 | An unanswered confirmation is settled when a session loads | 2026-10-30 |
+| P1 | The experimental shell agent is deleted | 2026-10-31 |
+| P2 | macOS and Windows branches are gone; Linux is declared once | 2026-10-31 |
+| P3 | The GTK workflow editor is the `workflow-editor` feature | 2026-10-31 |
+| P4 | The orb overlay was deferred, not closed - see below | deferred |
+| P5 | The mobile link is the `mobile` feature, off by default | 2026-10-31 |
+| P6 | Nova Sonic is the `sonic` feature, off by default | 2026-10-31 |
+| T1 | Every tool declares a validated manifest, and the registry enforces it | 2026-10-31 |
+| T2 | External servers are hosted over JSON-RPC stdio under one always-ask row | 2026-10-31 |
+| T3 | MCP is a provider over that host, with a curated description and an env allowlist | 2026-10-31 |
+| T4 | The provider trust model, kill switch, and fixture contract tests | 2026-10-31 |
+| M1 | The memory schema is versioned and migrated additively | 2026-10-31 |
+| M2 | Recall is ranked from FTS, local embeddings, confidence, and recency | 2026-10-31 |
+| M3 | A bounded pass merges duplicates and decays stale entries | 2026-10-31 |
+| M4 | `why` explains an entry; `export` writes the Obsidian vault | 2026-10-31 |
+| G1 | A correction sticks as a scoped, superseding preference | 2026-10-31 |
+| G2 | The propose-diff loop is written down in `docs/self-upgrade.md` | 2026-10-31 |
 
-## Context recorded on 2026-10-29
+Where a decision is still load-bearing, the invariant in `AGENTS.md` names the
+ID, so the table above is also the ID index: `grep -n "A8\|T1\|M2" AGENTS.md`.
 
-These decisions shape every issue below. Change one only with a note in the
-issue that depends on it.
+### Review follow-ups (2026-11-01)
 
-- **Project root (S1/S2):** `HYUSK_WORKSPACE` when set, otherwise the directory
-  the process was started in (the installer pins it to the repository clone).
-- **Sessions:** GNOME Wayland and niri (Wayland). X11 and Hyprland are
-  secondary; portal-only behaviour applies to GNOME.
-- **Panels:** GNOME Shell indicator and Noctalia bar widget are both in daily
-  use. The phone link is not used; keep it at once-only approvals.
-- **Interaction:** voice hands-free with the wake word. Confirmation grammar
-  must tolerate STT phrasing and paraphrases.
-- **Stack:** OpenRouter and Bedrock Mantle text models. No Nova Sonic; the
-  Sonic approval path stays correct but is low priority.
-- **Formats:** session schema and the `hyusk-control.json` protocol may gain
-  fields/actions; reads stay backward compatible.
-- **Browser:** a dedicated automation profile with no personal logins counts
-  as low risk, but click/fill/press_key are still gated; read/navigate stay
+A fresh review of the closed items found three defects and fixed them; the
+probes are recorded in the removed `ARCHITECTURE_ISSUE.md` and in the commits
+themselves.
+
+| ID | Defect | Commit |
+| --- | --- | --- |
+| F1 | An external tool whose arguments named `action` could be granted for a turn | `b474d60` |
+| F2 | The next memory write reverted an M3 consolidation (whole-store saves by two writers) | `78805e4` |
+| F3 | The standing preference block ignored `HYUSK_MEMORY_PROMPT_TOKENS` | `78805e4` |
+
+F1 touches `src/tools/safety.rs`, which is human-only: it is prepared on a
+branch and merged by a person, never by an agent.
+
+## Still open
+
+### R1 - the memory path opens the database twice per turn
+
+Low priority, small. `preferences_for_prompt` and `context_for` each call
+`load_store`, and `run_db_at` spawns a thread, builds a runtime and pool, and
+re-runs the schema and migration checks on every open before `.join()`ing on
+the caller. Measured 2026-11-01: 5.83 ms per open with 200 entries, so about
+12 ms of blocking work on a tokio worker per turn.
+
+The fix is a kept pool or connection rather than the `spawn_blocking` shape L2
+moved away from, which changes error and lifetime handling in a path that
+currently fails soft (a read error logs and returns an empty store). It is left
+open deliberately rather than hidden inside F2.
+
+Acceptance criteria: one database open per turn at most, measured; the budget
+and consistency tests still green; a read failure still returning an empty
+store instead of failing the turn. Tests to add with the change.
+
+### P4 - the orb overlay is deferred
+
+Not rejected. eframe and egui stay unconditional until someone takes it,
+because this installation is driven from the GNOME top-bar extension and the
+Noctalia bar widget, so an `orb` feature would buy build time and nothing the
+user sees. Whoever takes it needs:
+
+- the default build to stop compiling eframe or egui;
+- the orb to behave as today with the feature, including `HYUSK_ORB=0`;
+- `docs/voice-and-ui.md` to state the feature requirement;
+- both build modes checked, plus a manual orb check.
+
+### Manual checks that never ran
+
+Automated tests cover the code; these need a real session, a real account, or a
+real device, and none was available when the items were closed.
+
+- P2: a non-Linux build fails with the one `compile_error!` (only
+  `x86_64-unknown-linux-gnu` is installed here).
+- P3: `scripts/install-workflow-app.sh` installs the feature-enabled editor.
+- T2/T3/T4: a real external server and a real MCP server (the fixtures are the
+  only ones the tests ran), and a live kill-switch run against the service.
+- P5: a live Android reconnect against a `--features mobile` build.
+- P6: a live `bedrock-sonic` call and a live microphone round trip.
+- A1/A5/A6/A7/D1/D3: the GNOME and Noctalia panels - card text, the "allow for
+  this turn" button, a stale click - and the spoken confirmations.
+- S2/D1/D3: GNOME Wayland and niri portal behaviour (the four portal smokes are
+  `#[ignore]`d for the same reason).
+- X1: the installer `.env` mode check (the repository has no shell test
+  harness).
+- D2: the live CDP browser test, which needs the dedicated profile and
+  `HYUSK_BROWSER_LIVE_TEST=1`.
+
+## Context decisions that still hold
+
+- **Project root:** `HYUSK_WORKSPACE` when set, otherwise the directory the
+  process was started in. Shell policy and project preferences both use it.
+- **Sessions:** GNOME Wayland and niri are the daily drivers; X11 and Hyprland
+  are secondary. Portal-only behaviour applies to GNOME.
+- **Panels:** the GNOME Shell indicator and the Noctalia bar widget are both in
+  daily use; the phone link is not, and stays at once-only approvals.
+- **Interaction:** voice hands-free with the wake word, so confirmation grammar
+  has to tolerate STT phrasing and paraphrases.
+- **Stack:** OpenRouter and Bedrock Mantle text models. Nova Sonic is compiled
+  only under `--features sonic` and is not the daily path.
+- **Browser:** a dedicated automation profile with no personal logins counts as
+  low risk, but click, fill, and press key still ask; read and navigate stay
   free.
-- **Terminal:** typing into a focused terminal prompts; TUI driving stays
-  possible after approval.
-- **Order:** Phase 1 = prompt/policy consistency and fewer prompts; Phase 2 =
-  safety holes; Phase 3 = reliability.
-- **`.env` mode (X1):** the user applies `chmod 600 .env` himself in Phase 1;
-  the installer, doctor, and docs checks remain part of the issue.
+- **Formats:** the session schema and the `hyusk-control.json` protocol may gain
+  fields and actions; reads stay backward compatible.
 
-## How to work one issue
+## Starting the next batch
 
-1. Read `AGENTS.md`, then this file, then the issue in full.
-2. Confirm the baseline: `cargo fmt --all -- --check`, `cargo check
-   --all-targets --offline`, `cargo clippy --all-targets --offline`, and the
-   isolated test command from `AGENTS.md`.
-3. Implement only that issue. Add or update the tests named in the issue.
-4. Update the issue status line, `CHANGELOG.md` (Unreleased), and `AGENTS.md`
-   if the issue was listed in "Current known issues".
-5. Commit as `fix(scope): … (A1)` or `feat(scope): … (A1)`; one issue per
-   commit where practical.
+1. Open `issues/<AREA>_ISSUE.md` for the area you are about to touch, with one
+   section per item and a stable ID.
+2. Record, per item: the evidence that the problem exists, the decision, the
+   acceptance criteria, the tests that must exist, and the files the change may
+   touch.
+3. Work it through the propose-diff loop in
+   [`docs/self-upgrade.md`](../docs/self-upgrade.md): a branch, the checks in
+   `AGENTS.md`, a human review and merge, and a supervised restart.
 
-Suggested session opener:
-
-> Work issue A1 from `issues/PERMISSION_ISSUE.md`. Read `AGENTS.md` and the
-> issue first. Implement only that issue, add the listed tests, run the checks
-> from `AGENTS.md`, and update the status and changelog.
-
-## Status legend
-
-- `open` — not started.
-- `in-progress` — claimed by a session; add the branch name.
-- `blocked` — say why and by which issue.
-- `done` — add the date and commit hash.
-
-## Order
-
-Phase 1 and Phase 2 are complete (2026-10-29); Phase 3 is next. Within a phase,
-dependencies win over listed order.
-
-| ID | Title | Phase | Pri | Depends on |
-| --- | --- | --- | --- | --- |
-| A8 | Explicit policy registry with exhaustive coverage | 1 | high | — |
-| A1 | One source of truth for approval guidance | 1 | high | A8 |
-| A2 | Research delegation runs without approval | 1 | high | A8 |
-| A3 | Approval shows the exact call | 1 | high | A8 |
-| A4 | Confirmation grammar for voice | 1 | medium | — |
-| A5 | Unrelated speech cancels the pending action and proceeds | 1 | high | A4 |
-| S1 | Project-scoped shell writes | 1 | high | A8 |
-| A7 | One approval card kind; stale approve handling | 1 | high | — |
-| A6 | Allow for this turn | 1 | high | A3, A7 |
-| X1 | `.env` permissions | 1 | high | — |
-| A9 | Fast-command lane uses the same policy | 2 | medium | A8 |
-| S2 | Read confinement and secret denylist | 2 | high | S1 |
-| S3 | Reject programs containing a slash | 2 | medium | S1 |
-| D1 | Prompt for typing into a focused terminal | 2 | high | A8 |
-| D2 | Classify browser mutations | 2 | medium | A8 |
-| D3 | Capability registry for portal and AT-SPI | 2 | medium | — |
-| D4 | Refine consequential click labels | 2 | medium | A8 |
-| X2 | Redact secret-shaped output | 2 | medium | S2 |
-| D5 | Consistent keyboard risk model | 3 | low | D1 |
-| D6 | Single-path invariant for typing versus shell | 3 | medium | D1, D2 |
-| S4 | Launch parity between `process` and `shell` | 3 | low | — |
-| A10 | Approval audit log | 3 | low | A3 |
-| L1 | Split the agent mutex | 3 | high | — |
-| L2 | Async session and status writes | 3 | medium | — |
-| L3 | Streaming idle timeout | 3 | medium | — |
-| L4 | Clamp timer and scheduler durations | 3 | low | — |
-| L5 | Mobile-link replay across reconnects | 3 | low | — |
-| L6 | Approval state across restart | 3 | medium | A3, A6 |
-| X3 | Private runtime files | 3 | medium | — |
-| X4 | Leakage audit of logs, status, and memory | 3 | low | X2 |
-
-## Architecture work
-
-Designed in [architecture-roadmap.md](../docs/architecture-roadmap.md) and
-tracked in [ARCHITECTURE_ISSUE.md](ARCHITECTURE_ISSUE.md). Waves order work
-inside that track and are independent of the phases above. Wave 1 was completed
-on 2026-10-31: `P1`, `P2`, `P3`, and `T1` are closed. Wave 2 is under way:
-`M1` (memory schema v2), `T2` (the external tool host), `M2` (hybrid
-retrieval), `G1` (preference notes), `M3` (consolidation), `M4` (explain and
-export), `P5` (the mobile feature), `T3` (the MCP provider), `T4` (the provider
-trust model, kill switch, and contract tests), `P6` (the Nova Sonic feature),
-and `G2` (the propose-diff loop) are closed; the architecture track is
-complete. `M2`, `G1`, `M3`, `M4`, `P5`, `T3`, `T4`, `P6`, and `G2` landed ahead
-of the remaining Wave 2/3/4 order because they depended only on the memory,
-build, host, and process work. `P4` (the orb overlay) is deferred because this
-installation uses the GNOME extension and the Noctalia widget, and `P5`'s
-dependency on it was only the shared `Cargo.toml` area.
-
-A fresh review on 2026-11-01 re-checked every closed item, found three defects,
-and fixed two (`F1`, an external call could be granted for a turn; `F2`, a
-consolidation merge was undone by the next memory write; `F3`, the preference
-block ignored the prompt budget). `R1` (the memory path opens the database twice
-per turn) is open and low priority. The details, the probes, and the manual
-checks still outstanding are in the "Review follow-ups" section at the end of
-[ARCHITECTURE_ISSUE.md](ARCHITECTURE_ISSUE.md).
-
-| ID | Title | Wave | Depends on |
-| --- | --- | --- | --- |
-| P1 | Delete the shell-agent experiment | 1 | — |
-| P2 | Remove macOS branches | 1 | — |
-| P3 | Feature-gate the GTK workflow editor | 1 | — |
-| T1 | Tool manifests | 1 | A8, P3 |
-| P4 | Feature-gate the orb overlay | 2 | P3 |
-| P5 | Feature-gate the mobile link | 2 | P4 |
-| M1 | Memory schema v2 | 2 | — |
-| T2 | External tool host | 2 | T1 |
-| P6 | Feature-gate Nova Sonic | 3 | P5 |
-| T3 | MCP provider | 3 | T2 |
-| T4 | Trust model and contract tests | 3 | T3 |
-| M2 | Hybrid retrieval | 3 | M1 |
-| M3 | Consolidation | 3 | M1 |
-| M4 | Explain and Obsidian export | 3 | M1 |
-| G1 | Preference notes | 4 | M1 |
-| G2 | Propose-diff loop | 4 | — |
-
-## Definition of done
-
-- Behaviour is observable and matches the acceptance criteria.
-- The named tests exist and fail before the fix.
-- `cargo fmt`, `cargo clippy` (no new warnings), and the isolated test command
-  pass.
-- `CHANGELOG.md` and the issue status are updated; docs that describe the old
-  behaviour are corrected.
+Prefixes already used by the closed tracks are `A` (approval), `S` (shell), `D`
+(desktop), `X` (secrets), `L` (loop), `P` (pruning), `T` (tools), `M` (memory),
+`G` (growth), `R` (review follow-ups), and `F` (review findings). Pick a fresh
+prefix or continue an area's sequence; do not reuse a closed ID.
 
 Last reviewed: 2026-11-01.

@@ -1,8 +1,8 @@
 # The propose-diff loop
 
 This document is the written rule for how the agent may change the product it
-runs on. It implements `G2` in
-[issues/ARCHITECTURE_ISSUE.md](../issues/ARCHITECTURE_ISSUE.md) and the
+runs on. It implements `G2` (recorded in
+[issues/README.md](../issues/README.md)) and the
 "Upgrade" decision in
 [docs/architecture-roadmap.md](architecture-roadmap.md): **human-reviewed
 releases; the agent proposes diffs, it does not merge or install them.**
@@ -27,9 +27,11 @@ decides a restart. It may *ask* for one.
 
 ## The loop
 
-1. **Claim one item.** Read `AGENTS.md`, `issues/README.md`, and the issue in
-   full. Work one issue per branch, as `AGENTS.md` requires. If the issue needs
-   a human-only file (below), stop at step 6 and propose rather than edit.
+1. **Claim one item.** Read `AGENTS.md`, then the issue in full (the closed
+   2026 tracks are summarised in `issues/README.md`; new work gets its own
+   `issues/<AREA>_ISSUE.md`). Work one item per branch, as `AGENTS.md`
+   requires. If the issue needs a human-only file (below), stop at step 6 and
+   propose rather than edit.
 2. **Branch.** From `main`, create a topic branch, for example
    `git switch -c fix/shell-path-escape`. Never commit to `main` directly and
    never rewrite `main`.
@@ -117,8 +119,9 @@ unreviewed code. Those are exactly the outcomes the loop exists to prevent.
 
 ## What the agent may change
 
-Ordinary source, tests, fixtures, documentation, `CHANGELOG.md`, `issues/`, and
-tool modules - the work every issue in `issues/` describes. It may add a
+Ordinary source, tests, fixtures, documentation, `CHANGELOG.md`, issues and
+their trackers, and tool modules - the work the closed `issues/` trackers
+described. It may add a
 feature (with its `dep:` entries and optional dependencies), add a tool with
 its manifest and policy row, or change a non-installer script such as a wake
 trainer or a browser helper. It may not delete or skip a test to make a build
@@ -161,7 +164,7 @@ steps, and the binary that starts at login is the one a human shipped.
 
 - [`AGENTS.md`](../AGENTS.md) - the invariants and the checks named here.
 - [`docs/development.md`](development.md) - the exact commands.
-- [`issues/ARCHITECTURE_ISSUE.md`](../issues/ARCHITECTURE_ISSUE.md) - `G2` and
-  the decision record.
+- [`issues/README.md`](../issues/README.md) - `G2` and the closed-work
+  record.
 - [`docs/architecture-roadmap.md`](architecture-roadmap.md) - the "Upgrade"
   decision and the deferred list.

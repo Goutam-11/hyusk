@@ -32,7 +32,7 @@ Windows branch; `platform_tests` in `src/main.rs` guards both conditions.
 | `android/` | Kotlin companion app (Material 3). |
 | `scripts/` | Installers, wake training, mobile link, browser control, AT-SPI bridge. |
 | `docs/` | Focused references; index in `docs/README.md`. |
-| `issues/` | Open work items, one file per area, with stable IDs (`A1`, `S1`, `X1`, …). |
+| `issues/` | The closed-work record (`issues/README.md`) and any open work items, one file per area. |
 | `systemd/`, `assets/`, `models/` | Unit templates, brand art, ignored runtime models. |
 
 Key documents: `README.md` (user-facing install/use), `ARCHITECTURE.md` (short
@@ -40,7 +40,8 @@ top-level), `docs/architecture.md` (detailed), `docs/tools.md` (tool contracts
 and safety), `docs/voice-and-ui.md`, `DESIGN.md` (control-deck tokens),
 `docs/architecture-roadmap.md` (planned pruning, tool boundary, memory, and
 preferences), `docs/self-upgrade.md` (the propose-diff loop: the agent proposes,
-a human reviews, merges, and restarts), and `issues/README.md` (open work).
+a human reviews, merges, and restarts), and `issues/README.md` (the closed
+work record and the open items).
 
 ## Build and test
 
@@ -356,7 +357,9 @@ tests live in `#[cfg(test)]` modules beside the code.
 - Do not commit generated artifacts (`target/`, models, `.env`). Push only when
   asked.
 - When you close an item, update its status and notes in `issues/` with the
-  commit hash.
+  commit hash. The 2026 permission and architecture tracks are closed and
+  recorded in [`issues/README.md`](issues/README.md); start a new
+  `issues/<AREA>_ISSUE.md` for new work instead of adding to that record.
 - Ship through the propose-diff loop in
   [`docs/self-upgrade.md`](docs/self-upgrade.md): a branch, the checks above, a
   human review and merge, and a supervised restart. The agent never merges,
@@ -365,32 +368,34 @@ tests live in `#[cfg(test)]` modules beside the code.
   or the safety rules in this file. Those are human-only; if an issue needs a
   change there, stop and propose it.
 
-## Current known issues
+## Open work
 
-Tracked in [`issues/`](issues/README.md) since 2026-10-29, one file per area:
-permission and approval policy (`A`), shell policy (`S`), desktop control (`D`),
-secrets (`X`), and the agent loop/runtime (`L`). Each entry records the
-evidence, the decision taken, acceptance criteria, and tests.
+The permission and desktop-control review of 2026-10-29 (A1-A10, S1-S4, D1-D6,
+X1-X4, L1-L6) and the architecture track of 2026-10-31 (P1-P3, P5, P6, T1-T4,
+M1-M4, G1-G2) are closed. The six trackers were removed on 2026-11-01; their
+evidence, decisions, acceptance criteria, and tests are in git history and
+summarised in [`issues/README.md`](issues/README.md).
 
-Permission Phase 1 and Phase 2 are complete (2026-10-29): A1-A8, A9, S1-S3,
-X1, X2, and D1-D4 are closed. Phase 3 is complete (2026-10-30): X3, X4, L1-L6,
-A10, S4, D5, and D6 are closed. The order and dependencies are in the issue
-index; the remaining work is the architecture track.
+Two items are carried in that record rather than in a tracker of their own:
 
-Do not add new bullets here — open an issue file instead.
+- **R1** - the memory path opens the database twice per turn, about 12 ms of
+  blocking work on a tokio worker. Low priority; acceptance criteria are in
+  `issues/README.md`.
+- **P4** - the orb overlay stays deferred because this installation uses the
+  GNOME extension and the Noctalia widget. Its acceptance criteria are kept in
+  the same record.
 
-Architecture work (prune and feature-gate, tool manifests and the MCP boundary,
-memory v2, preferences) is tracked in `issues/ARCHITECTURE_ISSUE.md` and
-designed in `docs/architecture-roadmap.md`. Wave 1 is complete: P1 (the
-experimental shell agent), P2 (macOS branches and the Linux declaration), P3
-(the `workflow-editor` feature), and T1 (tool manifests) are closed. Wave 2 is
-under way: M1 (memory schema v2), M2 (hybrid retrieval), G1 (preference notes),
-M3 (consolidation), M4 (explain and export), T2 (the external tool host), P5
-(the mobile feature), T3 (the MCP provider), T4 (the provider trust model, kill
-switch, and contract tests), P6 (Nova Sonic), and G2 (the propose-diff loop)
-are closed; the architecture track is complete. P4 (the orb feature) is
-deferred, because this installation uses the GNOME extension and the Noctalia
-widget rather than the orb.
+The manual checks that never ran (live servers, a live Android reconnect, a
+live Nova Sonic call, the panels, the portals, the installer) are listed there
+too, so they are not mistaken for covered work.
+
+Do not add new bullets here - open a new `issues/<AREA>_ISSUE.md` (one file per
+area, stable IDs) and work it through
+[`docs/self-upgrade.md`](docs/self-upgrade.md).
+
+The architecture *design* remains in `docs/architecture-roadmap.md`; that
+document describes intent, while this file and `docs/tools.md` describe what
+the code does today.
 
 ## Memory and session notes
 
