@@ -6,7 +6,7 @@ knowledge (architecture, conventions, safety invariants, known issues) lives in
 [`AGENTS.md`](../AGENTS.md). What happened in each work session is logged in
 `memory/SESSION-YYYY-MM-DD.md`.
 
-Last updated: 2026-10-30.
+Last updated: 2026-10-31.
 
 ## Workspace
 
@@ -82,6 +82,14 @@ tavily → keenable → firecrawl → parallel → ddg → ddg-lite → searxng 
 perplexity → serpbase → deepseek-official → you → baidu → kimi → aliyun →
 doubao. A failed or keyless engine is skipped automatically; search always
 falls back, so never tell the user search is unavailable.
+
+Re-tested 2026-10-31 during the MCP research: `web_search` and `web_fetch`
+failed with "DeepSeek web access has no API key for DEEPSEEK_API_KEY", and
+`advanced_search` with engine `bing` returned unrelated Chinese pages for a
+long English query. `advanced_search` with engine `exa` or `tavily` worked, and
+`curl -sSL <official-url>` from bash fetched the docs and GitHub raw files
+(parse in the same call; `/tmp` is per-call). Use exa/tavily first for
+research, then curl the official page.
 
 ### How to use them
 

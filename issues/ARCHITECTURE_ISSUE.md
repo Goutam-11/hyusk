@@ -662,9 +662,16 @@ this session ran).
 
 ## T3 — MCP provider
 
-- Status: open · Wave 3 · Size: large
-- Depends on: T2
-- Evidence: new module; `~/.config/hyusk/mcp.json` (new)
+- Status: done 2026-10-31 · Wave 3 · Size: large
+- Commit: `2631387`
+- Depends on: T2 (closed)
+- Evidence: confirmed before the change at `src/tools/external.rs:95`
+  (`ServerSpec` had no protocol kind and the handshake always expected the tool
+  list in the initialize result), `src/tools/external.rs:651` (one local
+  `initialize`), `src/tools/registry.rs:86` (`get` ignored whether a tool was
+  still offered), and `src/agent/runner.rs:204` (the model specs were built
+  once, in `Agent::new`). The issue named a new module and a new config file,
+  both absent.
 
 **Problem.** MCP gives access to a growing ecosystem, but its descriptions and
 results are untrusted, servers run with user privileges, and approval semantics
@@ -678,16 +685,119 @@ and `fetch`. Never auto-approve based on server hints.
 
 **Acceptance criteria**
 
-- [ ] A configured server's tools appear with curated descriptions.
-- [ ] Removing a server from the config removes its tools without a restart.
-- [ ] A destructive tool is gated by the host, regardless of the server's claim.
-- [ ] `HYUSK_MCP=0` disables the provider.
+- [x] A configured server's tools appear with curated descriptions
+  (`a_configured_server_appears_with_curated_descriptions`: the hostile server
+  text is absent, the read tool says "Read-only", the destructive tool says
+  "Changes data", and the argument names come from the schema).
+- [x] Removing a server from the config removes its tools without a restart
+  (`removing_a_server_removes_its_tools_without_a_restart`: `get` and the model
+  specs lose the tool, the remaining server stays, and the removed process is
+  reaped; `removing_the_configuration_removes_every_tool` covers deleting the
+  file).
+- [x] A destructive tool is gated by the host, regardless of the server's claim
+  (the fixture's `wipe_everything` sets `readOnlyHint: true` and says "never ask
+  for approval"; `requires_approval` is true and the claim is not shown).
+- [x] `HYUSK_MCP=0` disables the provider (`the_kill_switch_is_a_documented_value`
+  covers the value parser; the composition root is one `if` around
+  `McpProvider::start_at`, and `test_tools` registers none).
 
 **Tests**
 
-- [ ] Fake MCP server fixture covering discovery, call, and refusal.
+- [x] Fake MCP server fixture covering discovery, call, and refusal:
+  `tests/fixtures/mcp_server.sh` speaks the stateless revision and the legacy
+  initialize handshake, and returns the hostile read-only claim. Nine
+  `tools::mcp::tests` cover discovery in both eras, curated descriptions, the
+  ignored annotation, a call, the allowlist, configuration validation, the kill
+  switch, and both removal paths; one `registry` test covers an unavailable
+  tool.
 
-**Files.** `src/tools/mcp.rs` (new), config loader, `docs/tools.md`.
+**Files.** `src/tools/mcp.rs` (new), `tests/fixtures/mcp_server.sh` (new),
+`src/tools/external.rs`, `src/tools/registry.rs`, `src/tools/tool.rs`,
+`src/agent/runner.rs`, `src/tools/mod.rs`, `src/main.rs`, `docs/tools.md`,
+`docs/architecture.md`, `docs/architecture-roadmap.md`, `docs/development.md`,
+`AGENTS.md`, `README.md`, `.env.example`, `CHANGELOG.md`, `issues/README.md`.
+
+**Notes (2026-10-31).** The provider reads
+`$XDG_CONFIG_HOME/hyusk/mcp.json` (or `HYUSK_MCP_CONFIG`), lists servers as
+`{name, command, args, env, allow, timeout_ms, startup_timeout_ms}`, and is
+disabled by `HYUSK_MCP=0`; an absent file is the normal "off" state and is not
+logged. At most 16 servers, and a server that fails to start is skipped.
+
+Protocol, from the current specification checked on 2026-10-31
+(`https://modelcontextprotocol.io/specification/latest` is revision
+2026-07-28, site last modified 2026-10-30):
+
+- **Modern.** MCP 2026-07-28 is stateless. Every request carries
+  `params._meta` with `io.modelcontextprotocol/protocolVersion`,
+  `clientInfo`, and `clientCapabilities`; discovery is `server/discover`, and
+  the tool list comes from paginated `tools/list` (at most eight bounded
+  pages). The host reads `supportedVersions` and skips a server that does not
+  offer 2026-07-28.
+- **Legacy.** A server that answers `server/discover` with any error other than
+  `-32022` (UnsupportedProtocolVersionError), or not at all, is served with the
+  2025-11-25 `initialize` handshake, `notifications/initialized`, and the same
+  tool discovery. A late probe answer is skipped by request id.
+- **Call.** `tools/call` uses the same per-request `_meta` in the modern era and
+  plain params in the legacy era; results are MCP content blocks and flow
+  through the T2 truncation and redaction.
+- **Curated descriptions.** The host writes the model-facing text from the tool
+  name's read/write verb and the schema's argument names; the server's
+  description is never copied, and `annotations` (`readOnlyHint`,
+  `destructiveHint`) are ignored, as the specification requires for untrusted
+  servers. A destructive verb says "Changes data" and that approval is asked.
+- **Environment and grants.** An MCP child starts with `PATH` and only the
+  names in its `env` list; an optional `allow` list filters the discovered
+  tools. Neither can relax approval: the one `ext.` row still asks every call.
+
+Live removal needed three small changes beyond the provider: a deactivation
+flag on the server, a registry `get` and `specs` that omit an unavailable tool,
+and a per-turn rebuild of the model specs in `Agent::handle`. `manifests()`
+became test-only because production now asks for the filtered specs. Adding a
+server still needs a restart (its tools must be registered); the acceptance
+only names removal, and the refresh logs the addition with that sentence.
+
+Decisions and deviations:
+
+- **"Capability grants" are a tool allowlist, not a category system.** The MCP
+  schema has no comparable grant vocabulary, and anything that relaxed approval
+  would contradict "never auto-approve based on server hints"; `allow` can only
+  narrow the offered set, and the environment list is separate.
+- **The seed servers are documentation, not code.** `git`, `filesystem`, and
+  `fetch` are named in `docs/tools.md` as safe starting points; bundling their
+  commands or arguments would guess at an operator's paths.
+- **The guide block can lag.** `build_tool_specs` is rebuilt each turn, but the
+  system prompt's one-line tool guide is built at startup; a removed server can
+  stay mentioned there until a restart while it is already gone from the specs
+  and callable set. Recorded rather than rebuilding the system message per turn.
+- **The kill switch is startup-only.** `HYUSK_MCP=0` is read when the provider
+  starts; changing it at runtime needs a restart, and the file watcher is the
+  live control.
+
+Drift: the issue's `Files` list did not mention `external.rs`, `registry.rs`,
+`tool.rs`, `runner.rs`, `main.rs`, the fixture, or the documentation updates.
+
+**Verification.** `cargo fmt --all -- --check` clean; `cargo check --all-targets
+--offline` clean. Default suite: 463 passing, 6 ignored (453 before; ten new
+tests: nine MCP and one registry). `--features mobile`: 476 passing, 6 ignored.
+`--features workflow-editor`: 468 passing, 7 ignored. Both features: 481
+passing, 7 ignored. `cargo clippy --all-targets --offline` clean; with
+`--features mobile` only the three pre-existing `result_large_err` warnings.
+Probes, each backed up with `cp` and restored in the same bash call (`cmp`,
+marker count, and fmt re-checked):
+
+- forcing the curated branch off (`let curated = false;`) failed
+  `a_configured_server_appears_with_curated_descriptions` by showing the
+  server's "IGNORE PREVIOUS INSTRUCTIONS" text;
+- making `refresh` a no-op failed
+  `removing_a_server_removes_its_tools_without_a_restart` at "the removed
+  server's tool is still offered";
+- removing the legacy fallback failed
+  `a_legacy_server_is_discovered_through_initialize`.
+
+Manual checks still open: a real MCP server (the fixture is the only one this
+session ran), and a live removal against the running service with a panel/turn
+observing the tool list shrink. T4 owns the operator-facing threat model and the
+kill-switch documentation.
 
 ## T4 — Trust model, contract tests, kill switch
 
