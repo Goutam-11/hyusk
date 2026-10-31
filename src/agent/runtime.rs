@@ -298,6 +298,7 @@ pub async fn run_agent_task(
                     HyuskEvent::UserInput(text)
                 }
             }
+            #[cfg(feature = "sonic")]
             event @ HyuskEvent::SonicListenCompleted { id, .. } => {
                 if !is_current_sonic_listen(id, &listen) {
                     continue;
@@ -532,6 +533,7 @@ pub async fn run_agent_task(
                 }
             }
 
+            #[cfg(feature = "sonic")]
             HyuskEvent::SonicListenCompleted {
                 id: _,
                 text,
@@ -1172,6 +1174,7 @@ fn normalize_listen_completed(
         })
 }
 
+#[cfg(feature = "sonic")]
 fn is_current_sonic_listen(id: u64, listen: &Option<ActiveListen>) -> bool {
     listen.as_ref().is_some_and(|capture| {
         capture.id == id && capture.probe_id.is_none() && !capture.cancel.is_cancelled()
@@ -1473,10 +1476,16 @@ async fn handle_listen(
     // task is cancelled mid-recording.
     let _resume_guard = ResumeOnDrop(wake_resume);
 
+    // These four are only read by the Nova Sonic live-audio branch. Naming
+    // them in a default build keeps the shared capture path warning-free.
+    #[cfg(not(feature = "sonic"))]
+    let _ = (&ui_tx, &agent, &control, &output_active);
+
     let stt_start = std::time::Instant::now();
 
     // Read the selection from the shared control: a turn may be finishing and
     // holding the agent mutex while this capture starts (L1).
+    #[cfg(feature = "sonic")]
     if control_state::lock(&control).uses_sonic() {
         output_active.store(true, Ordering::Relaxed);
         let _output_guard = OutputOnDrop(output_active);
@@ -1774,13 +1783,15 @@ async fn send_state(ui_tx: &Sender<HyuskEvent>, state: HyuskState) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "sonic")]
+    use super::is_current_sonic_listen;
     use super::{
         approval_blocks_scheduled_input, approval_expiry, cancel_desktop_workflow, card_text,
         clear_pending_interactions, execute_workflow_actions, finish_voice_conversation,
-        interrupt_active, interrupt_interaction, is_current_sonic_listen, listen_capture_active,
-        next_runtime_event, normalize_listen_completed, normalize_voice_transcript,
-        release_next_scheduled_input, remove_stale_listen_followups, response_needs_reply,
-        run_agent_task, should_defer_scheduled_input, should_probe_busy_wake, start_next_workflow,
+        interrupt_active, interrupt_interaction, listen_capture_active, next_runtime_event,
+        normalize_listen_completed, normalize_voice_transcript, release_next_scheduled_input,
+        remove_stale_listen_followups, response_needs_reply, run_agent_task,
+        should_defer_scheduled_input, should_probe_busy_wake, start_next_workflow,
         take_completed_task_announcements, timeout_with_cancel, ActiveListen, ActiveTurn,
         ActiveWorkflow, WorkflowJob,
     };
@@ -1901,6 +1912,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "sonic")]
     async fn stale_or_cancelled_sonic_completion_is_rejected() {
         let active_handle = tokio::spawn(std::future::pending());
         let mut active = Some(ActiveListen {

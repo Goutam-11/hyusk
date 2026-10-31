@@ -4,6 +4,16 @@
 
 ### Added
 
+- Nova Sonic is now the `sonic` Cargo feature and is off by default (P6). A
+  plain agent build no longer compiles the AWS SDK, the second agent loop, the
+  `SonicListenCompleted` event, or the `bedrock-sonic` provider, and the model
+  menu stops listing it; `--features sonic` (or
+  `./scripts/install-autostart.sh --features sonic`) restores the provider,
+  the live-audio and typed-Sonic paths, the capture helpers and PCM player they
+  use, and the Sonic tests. A stored `bedrock-sonic` selection in a default
+  build reports that the feature is missing and falls back to the text
+  providers. The shared approval, execution, prompt, and audit code is
+  unchanged: the gate moved the Sonic callers, not the decisions.
 - External providers now have a written trust model (T4). "External providers"
   in `docs/tools.md` covers the assets at risk, what crosses the host boundary,
   who writes descriptions (the host for MCP, the server's sanitised text for a

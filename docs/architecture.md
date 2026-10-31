@@ -85,7 +85,7 @@ for the microphone at the same time.
 | `agent/runner/session.rs` | Builds the session snapshot, repairs interrupted tool batches and unsettled confirmations, and compacts history without splitting tool/result pairs. |
 | `persist.rs` | One coalescing writer task for the session snapshot and `hyusk-status.json`; the caller hands over a builder, at most one write per file is queued, and shutdown flushes the rest (L2). |
 | `agent/runner/stream.rs` | Decodes streamed prose and response envelopes into speakable sentences while the reply is still arriving. |
-| `agent/runner/sonic.rs` | Runs Nova Sonic conversations, tool dispatch, audio playback, and stream cleanup. |
+| `agent/runner/sonic.rs` | Runs Nova Sonic conversations, tool dispatch, audio playback, and stream cleanup; compiled only with the `sonic` feature (P6). |
 | `agent/runtime.rs` | Consumes `HyuskEvent`s, runs post-wake STT, invokes the agent, emits responses, and calls TTS. |
 | `agent/commands.rs` | Deterministic app/site/workflow command router and workflow validation. |
 | `agent/control.rs` | Approval, model-selection, and paused-task state shared with the event loop so control events never wait for a turn (lock order: agent then control). |

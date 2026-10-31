@@ -58,16 +58,23 @@ cargo test --all-targets --offline --features workflow-editor -- --test-threads=
 # TLS transport, pairing file, or model-facing `mobile` tool.
 cargo check --all-targets --offline --features mobile
 cargo test --all-targets --offline --features mobile -- --test-threads=4
+
+# Nova Sonic is behind the `sonic` feature (P6): a default build has no AWS
+# SDK, second agent loop, `SonicListenCompleted` event, or `bedrock-sonic`
+# provider.
+cargo check --all-targets --offline --features sonic
+cargo test --all-targets --offline --features sonic -- --test-threads=4
 ```
 
-Current baseline: **469 tests passing, 6 ignored** for the default suite;
-`--features mobile` restores the link (482 passing, 6 ignored). The workflow
+Current baseline: **457 tests passing, 6 ignored** for the default suite.
+`--features sonic` restores the second loop (470 passing, 6 ignored), and
+`--features mobile` restores the link (470 passing, 6 ignored). The workflow
 editor adds five tests (one ignored) under `--features workflow-editor`, for
-**474 passing, 7 ignored**; both features together are **487 passing, 7
-ignored**. Default clippy is clean (the three pre-existing `result_large_err`
-warnings live behind `mobile` in `src/link/server.rs` and reappear with that
-feature). CI runs fmt, clippy, the default tests, and the feature builds on
-Ubuntu.
+**462 passing, 7 ignored**; all features together are **488 passing, 7
+ignored**. Default and `--features sonic` clippy are clean; the three
+pre-existing `result_large_err` warnings live behind `mobile` in
+`src/link/server.rs` and appear with that feature. CI runs fmt, clippy, the
+default tests, and the feature builds on Ubuntu.
 
 Several tests touch session/memory/status paths, so isolate them:
 
@@ -150,6 +157,15 @@ tests live in `#[cfg(test)]` modules beside the code.
   of `docs/tools.md`, and `src/tools/contract_tests.rs` runs the same contract
   (namespaced conformant manifests, an always-ask gate, a refused malformed
   call, a working call, reaped children) against the local and MCP fixtures.
+- Nova Sonic (P6): the `sonic` feature gates the AWS SDK, `model/bedrock_sonic.rs`,
+  `runner/sonic.rs`, `HyuskEvent::SonicListenCompleted`, the
+  `uses_bedrock_sonic` branch, the `bedrock-sonic` provider and model-catalog
+  entry, the capture helpers and `Pcm16Player` it uses, and the Sonic tests. A
+  default build must not compile the AWS path, must not list the provider, and
+  `uses_bedrock_sonic` is false; a stored `bedrock-sonic` selection fails with
+  "rebuild with --features sonic" and falls back to the text providers. The
+  shared approval, execution, prompt, and audit code stays shared (A7): the
+  gate moved the callers, never the decisions.
 - Approved calls execute the stored arguments, not a fresh model call. Task
   delegation pins the canonical workspace root via `approval_arguments`.
 - Workflows execute deterministic `Action` steps from `src/agent/commands.rs`;
@@ -357,11 +373,11 @@ experimental shell agent), P2 (macOS branches and the Linux declaration), P3
 (the `workflow-editor` feature), and T1 (tool manifests) are closed. Wave 2 is
 under way: M1 (memory schema v2), M2 (hybrid retrieval), G1 (preference notes),
 M3 (consolidation), M4 (explain and export), T2 (the external tool host), P5
-(the mobile feature), T3 (the MCP provider), and T4 (the provider trust model,
-kill switch, and contract tests) are closed. The remaining work is P6 (Nova
-Sonic) and G2 (the propose-diff loop). P4 (the orb feature) is deferred,
-because this installation uses the GNOME extension and the Noctalia widget
-rather than the orb.
+(the mobile feature), T3 (the MCP provider), T4 (the provider trust model, kill
+switch, and contract tests), and P6 (Nova Sonic) are closed. The remaining work
+is G2 (the propose-diff loop). P4 (the orb feature) is deferred, because this
+installation uses the GNOME extension and the Noctalia widget rather than the
+orb.
 
 ## Memory and session notes
 

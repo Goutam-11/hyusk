@@ -38,6 +38,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use agent::Agent;
+#[cfg(any(test, feature = "sonic"))]
 use model::openrouter::OpenRouterClient;
 use model::SharedActiveModel;
 
@@ -423,6 +424,7 @@ async fn refresh_catalogs() {
             fresh,
         });
     }
+    #[cfg(feature = "sonic")]
     catalogs.push(status::Catalog {
         provider: "bedrock-sonic".to_string(),
         models: vec![status::Model {
@@ -582,6 +584,7 @@ async fn stt_test_mode() -> Result<()> {
 
 /// End-to-end laptop smoke test for Nova Sonic, independent of the selected
 /// chat-completions provider: `HYUSK_NOVA_SONIC_TEST=1 cargo run --bin hyusk_agent`.
+#[cfg(feature = "sonic")]
 async fn nova_sonic_test_mode() -> Result<()> {
     let client = model::bedrock_sonic::BedrockSonicClient::from_aws_config().await?;
     let test_text = std::env::var("HYUSK_NOVA_SONIC_TEST_TEXT")
@@ -847,7 +850,10 @@ async fn main() -> Result<()> {
     dotenv().ok();
 
     if std::env::var_os("HYUSK_NOVA_SONIC_TEST").is_some() {
+        #[cfg(feature = "sonic")]
         return nova_sonic_test_mode().await;
+        #[cfg(not(feature = "sonic"))]
+        anyhow::bail!("Nova Sonic is not compiled in; rebuild with --features sonic");
     }
 
     if std::env::var_os("HYUSK_WAKE_TEST").is_some() {
@@ -880,6 +886,7 @@ async fn main() -> Result<()> {
     let model =
         std::env::var("OPENROUTER_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
 
+    #[cfg(feature = "sonic")]
     let bedrock_sonic_client =
         match model::bedrock_sonic::BedrockSonicClient::from_aws_config().await {
             Ok(client) => Some(Arc::new(client)),
@@ -891,23 +898,28 @@ async fn main() -> Result<()> {
     let client = openrouter_client
         .clone()
         .or_else(|| openai_client.clone())
-        .or_else(|| bedrock_client.clone())
-        .or_else(|| {
-            bedrock_sonic_client
-                .as_ref()
-                .map(|_| OpenRouterClient::new("".into(), "https://invalid.local/v1".into()))
-        })
-        .context(
-            "Configure an OpenRouter, OpenAI, Bedrock API key, or AWS CLI profile for Nova Sonic",
-        )?;
+        .or_else(|| bedrock_client.clone());
+    #[cfg(feature = "sonic")]
+    let client = client.or_else(|| {
+        bedrock_sonic_client
+            .as_ref()
+            .map(|_| OpenRouterClient::new("".into(), "https://invalid.local/v1".into()))
+    });
+    let client = client.context(if cfg!(feature = "sonic") {
+        "Configure an OpenRouter, OpenAI, Bedrock API key, or AWS CLI profile for Nova Sonic"
+    } else {
+        "Configure an OpenRouter, OpenAI, or Bedrock API key"
+    })?;
     let default_provider = if openrouter_client.is_some() {
         "openrouter"
     } else if openai_client.is_some() {
         "openai"
     } else if bedrock_client.is_some() {
         "bedrock"
-    } else {
+    } else if cfg!(feature = "sonic") {
         "bedrock-sonic"
+    } else {
+        "bedrock"
     };
     let default_model = match default_provider {
         "openai" => "gpt-4o-mini".to_string(),
@@ -1018,8 +1030,11 @@ async fn main() -> Result<()> {
         .with_openrouter(openrouter_client.clone())
         .with_openai(openai_client.clone())
         .with_bedrock(bedrock_client.clone())
-        .with_bedrock_sonic(bedrock_sonic_client.clone())
         .with_active_api_model(active_api_model);
+    #[cfg(feature = "sonic")]
+    {
+        agent = agent.with_bedrock_sonic(bedrock_sonic_client.clone());
+    }
     let active_selection =
         if let Err(error) = agent.restore_model(&selected_provider, &selected_model) {
             eprintln!(
@@ -2028,6 +2043,63 @@ mod platform_tests {
     /// model-facing `mobile` tool sit behind one feature, off by default. The
     /// test cannot prove the compiler skips the module; `cargo tree` and the
     /// default test count do, and this keeps the wiring from drifting.
+    /// P6: the second loop, its AWS SDK, the event variant, and the provider
+    /// entry sit behind one feature, off by default. The test cannot prove the
+    /// compiler skips the module; `cargo tree` and the default test count do,
+    /// and this keeps the wiring from drifting.
+    #[test]
+    fn the_nova_sonic_loop_is_behind_its_feature() {
+        let manifest = std::fs::read_to_string(manifest_dir().join("Cargo.toml"))
+            .expect("read the package manifest");
+
+        let features = manifest_section(&manifest, "[features]");
+        assert!(
+            features.contains("sonic = ["),
+            "Cargo.toml has no sonic feature"
+        );
+        for dependency in ["dep:aws-config", "dep:aws-sdk-bedrockruntime"] {
+            assert!(
+                features.contains(dependency),
+                "the sonic feature must enable {dependency}"
+            );
+        }
+
+        let dependencies = manifest_section(&manifest, "[dependencies]");
+        for dependency in ["aws-config", "aws-sdk-bedrockruntime"] {
+            let prefix = format!("{dependency} = ");
+            let line = dependencies
+                .lines()
+                .find(|line| line.trim_start().starts_with(&prefix))
+                .unwrap_or_else(|| panic!("{dependency} is not a dependency"));
+            assert!(
+                line.contains("optional = true"),
+                "{dependency} must be optional so a default build skips it"
+            );
+        }
+
+        let model = std::fs::read_to_string(manifest_dir().join("src/model/mod.rs"))
+            .expect("read the model modules");
+        assert!(
+            model.contains("#[cfg(feature = \"sonic\")]\npub mod bedrock_sonic;"),
+            "the Sonic client module must be feature-gated"
+        );
+
+        let events = std::fs::read_to_string(manifest_dir().join("src/types/event.rs"))
+            .expect("read the event types");
+        assert!(
+            events.contains("#[cfg(feature = \"sonic\")]\n    SonicListenCompleted {"),
+            "the Sonic completion event must be feature-gated"
+        );
+
+        let runner = std::fs::read_to_string(manifest_dir().join("src/agent/runner.rs"))
+            .expect("read the runner");
+        assert!(
+            runner
+                .contains("#[cfg(feature = \"sonic\")]\n#[path = \"runner/sonic.rs\"]\nmod sonic;"),
+            "the Sonic loop module must be feature-gated"
+        );
+    }
+
     #[test]
     fn the_mobile_link_is_behind_its_feature() {
         let manifest = std::fs::read_to_string(manifest_dir().join("Cargo.toml"))

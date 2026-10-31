@@ -75,3 +75,10 @@ jobs:
         run: |
           cargo check --all-targets --features mobile
           cargo test --bin hyusk_agent --features mobile
+
+      # Nova Sonic is behind the `sonic` feature (P6): this compiles the AWS
+      # live-audio path and runs its tests while the default build skips both.
+      - name: Build and test the Nova Sonic feature
+        run: |
+          cargo check --all-targets --features sonic
+          cargo test --bin hyusk_agent --features sonic

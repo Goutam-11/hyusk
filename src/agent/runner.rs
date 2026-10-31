@@ -8,9 +8,11 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) use super::control::PendingApproval;
 use super::control::{self as control_state, AgentControl, ControlHandle};
+#[cfg(feature = "sonic")]
+use crate::model::bedrock_sonic::BedrockSonicClient;
 use crate::{
     agent::audit::{self, Outcome as AuditOutcome},
-    model::{bedrock_sonic::BedrockSonicClient, openrouter::OpenRouterClient},
+    model::openrouter::OpenRouterClient,
     model::{codex::CodexClient, SharedActiveModel},
     tools::{ToolRegistry, ToolResult},
     types::{event::ApprovalScope, HyuskEvent, HyuskState, Message},
@@ -22,6 +24,7 @@ mod prompts;
 mod reply;
 #[path = "runner/session.rs"]
 mod session;
+#[cfg(feature = "sonic")]
 #[path = "runner/sonic.rs"]
 mod sonic;
 #[path = "runner/stream.rs"]
@@ -241,13 +244,24 @@ impl Agent {
         self
     }
 
+    #[cfg(feature = "sonic")]
     pub fn with_bedrock_sonic(self, client: Option<std::sync::Arc<BedrockSonicClient>>) -> Self {
         self.control().set_sonic_client(client);
         self
     }
 
+    /// True only in a build with the `sonic` feature and with Nova Sonic
+    /// selected. Without the feature the second loop does not exist, so the
+    /// text path is the only path.
     pub fn uses_bedrock_sonic(&self) -> bool {
-        self.control().uses_sonic()
+        #[cfg(feature = "sonic")]
+        {
+            self.control().uses_sonic()
+        }
+        #[cfg(not(feature = "sonic"))]
+        {
+            false
+        }
     }
 
     pub fn with_active_api_model(self, active: SharedActiveModel) -> Self {
@@ -392,20 +406,26 @@ impl Agent {
 
     fn set_model(&mut self, provider: &str, model: &str, new_conversation: bool) -> Result<()> {
         if provider == "bedrock-sonic" {
-            if self.control().sonic_client().is_none() {
-                anyhow::bail!(
-                    "Nova Sonic is unavailable: configure an AWS CLI profile/region and Bedrock access"
-                );
+            #[cfg(not(feature = "sonic"))]
+            anyhow::bail!("Nova Sonic is not compiled in; rebuild with --features sonic");
+            #[cfg(feature = "sonic")]
+            {
+                if self.control().sonic_client().is_none() {
+                    anyhow::bail!(
+                        "Nova Sonic is unavailable: configure an AWS CLI profile/region and Bedrock access"
+                    );
+                }
+                self.control().set_identity(provider, model);
+                self.control().set_pending(None);
+                self.reply_needs_follow_up = Some(false);
+                self.messages[0] =
+                    Message::system(build_system_prompt(&self.tool_guide, "", false));
+                if new_conversation || self.session_belongs_to_another_model(provider, model) {
+                    self.reset_conversation();
+                }
+                self.loaded_session_identity = Some((provider.to_string(), model.to_string()));
+                return Ok(());
             }
-            self.control().set_identity(provider, model);
-            self.control().set_pending(None);
-            self.reply_needs_follow_up = Some(false);
-            self.messages[0] = Message::system(build_system_prompt(&self.tool_guide, "", false));
-            if new_conversation || self.session_belongs_to_another_model(provider, model) {
-                self.reset_conversation();
-            }
-            self.loaded_session_identity = Some((provider.to_string(), model.to_string()));
-            return Ok(());
         }
         let client = match provider {
             "openrouter" => self
@@ -820,6 +840,7 @@ impl Agent {
         cancel: &CancellationToken,
         sentences: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
     ) -> Result<Option<String>> {
+        #[cfg(feature = "sonic")]
         if self.uses_bedrock_sonic() {
             return self.handle_sonic_text(&user_input, ui_tx, cancel).await;
         }
@@ -1585,10 +1606,9 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        build_system_prompt, confirms, execute_tool_with_deadline, is_denial,
-        is_voice_session_stop, journal_arguments, parse_structured_reply, rejects_image_input,
-        split_image_marker, strip_image_inputs, tool_call_signature, Agent, AgentLoopLimits,
-        PendingApproval, ToolProgress,
+        confirms, execute_tool_with_deadline, is_denial, is_voice_session_stop, journal_arguments,
+        parse_structured_reply, rejects_image_input, split_image_marker, strip_image_inputs,
+        tool_call_signature, Agent, AgentLoopLimits, PendingApproval, ToolProgress,
     };
     use crate::{
         model::openrouter::OpenRouterClient,
@@ -3292,10 +3312,11 @@ mod tests {
         assert_eq!(parse_structured_reply(raw), (raw.to_string(), None));
     }
 
+    #[cfg(feature = "sonic")]
     #[test]
     fn sonic_prompt_never_requests_spoken_json() {
-        let voice = build_system_prompt("", "hello", true);
-        let chat = build_system_prompt("", "hello", false);
+        let voice = super::prompts::build_system_prompt("", "hello", true);
+        let chat = super::prompts::build_system_prompt("", "hello", false);
         assert!(voice.contains("Speak only the natural answer"));
         assert!(!voice.contains("Response protocol (required)"));
         assert!(chat.contains("Response protocol (required)"));

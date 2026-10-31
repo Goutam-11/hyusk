@@ -45,6 +45,7 @@ fresh clone of this repository builds, tests, and installs on its own with
 | Wake-word detection | Optional; auto-selects the first available of `hey_hyusk`, `hey_livekit`, `alexa`, `nihao_livekit`, `hey_jarvis`, `hey_mycroft`, `hey_rhasspy` |
 | Speech-to-text | Connected to the wake flow when a Whisper model loads |
 | Text-to-speech | Invoked and awaited after responses; depends on local tools |
+| Amazon Nova Sonic live voice | Implemented behind the `sonic` build feature; a default build has no AWS SDK, second agent loop, or `bedrock-sonic` provider |
 | Guarded long-running model/tool loops | Implemented; configurable round/time limits, cancellation, and no-progress detection |
 | Background model/Codex tasks | Implemented; bounded concurrency with list, cancel, completion cards, and announcements |
 | Persistent reminders and workflow schedules | Implemented; one-shot jobs survive service restarts |
@@ -125,9 +126,9 @@ or times out, the wake event is ignored and the terminal input path still works.
 | `BEDROCK_API_KEY` | No | - | Amazon Bedrock API key for the OpenAI-compatible Mantle endpoint. `AWS_BEARER_TOKEN_BEDROCK` and `AWS_API_KEY` are also accepted. |
 | `BEDROCK_REGION` | No | `us-east-1` | AWS Region used for the Bedrock Mantle endpoint and model list. |
 | `BEDROCK_MODEL` | No | `openai.gpt-oss-20b` | Initial model for the Bedrock Mantle endpoint; choose an available model in the menu. |
-| `AWS_PROFILE` | No* | AWS default profile | AWS CLI profile used by the Nova Sonic speech-to-speech provider. |
-| `AWS_REGION` / `AWS_DEFAULT_REGION` | No* | Profile region | Region for Nova Sonic's signed Bedrock Runtime stream. |
-| `BEDROCK_SONIC_MODEL` | No | `amazon.nova-2-sonic-v1:0` | Bedrock Nova Sonic model ID. Uses AWS SDK credentials, not a Bedrock API key. |
+| `AWS_PROFILE` | No* | AWS default profile | AWS CLI profile used by the Nova Sonic speech-to-speech provider (only in a `sonic` build; see below). |
+| `AWS_REGION` / `AWS_DEFAULT_REGION` | No* | Profile region | Region for Nova Sonic's signed Bedrock Runtime stream (only in a `sonic` build). |
+| `BEDROCK_SONIC_MODEL` | No | `amazon.nova-2-sonic-v1:0` | Bedrock Nova Sonic model ID. Uses AWS SDK credentials, not a Bedrock API key. Only in a `sonic` build. |
 | `BRAVE_SEARCH_API_KEY` | No | DuckDuckGo fallback | Optional token for Brave's structured Search API. |
 | `HYUSK_WORKSPACE` | No | Current directory | Workspace root for Codex CLI coding mode and for a workspace `task` delegation that names no root. |
 | `MODEL_VISION` | No | `1` | Attach screenshots as image content for vision-capable models. Set `0` for text-only models, then use `ocr` instead. |
@@ -173,7 +174,7 @@ or times out, the wake event is ignored and the terminal input path still works.
 | `PIPER_MODEL` | No | `models/en_US-lessac-medium.onnx` | Piper voice model used by Linux TTS. |
 | `PIPER_SPEAKER` | No | - | Speaker name or numeric ID for a multi-speaker Piper model. |
 
-*Configure at least one of OpenRouter, OpenAI API, Bedrock Mantle, or an AWS CLI profile with Nova Sonic access before starting Hyusk. API provider keys can also be saved from the GNOME **Settings → API keys** menu or the Noctalia gear panel. The GNOME menu stores the key in the login keyring with `secret-tool` and restarts `hyusk.service` so the new key is picked up. The Noctalia panel queues the key in the control file; the agent moves it to the keyring and reloads its catalog without a restart.
+*Configure at least one of OpenRouter, OpenAI API, Bedrock Mantle, or (in a `sonic` build) an AWS CLI profile with Nova Sonic access before starting Hyusk. API provider keys can also be saved from the GNOME **Settings → API keys** menu or the Noctalia gear panel. The GNOME menu stores the key in the login keyring with `secret-tool` and restarts `hyusk.service` so the new key is picked up. The Noctalia panel queues the key in the control file; the agent moves it to the keyring and reloads its catalog without a restart.
 
 The base URL must not include the trailing `/chat/completions` path.
 
@@ -457,7 +458,8 @@ Shell extensions cannot load, [`noctalia-plugin/`](docs/noctalia-indicator.md)
 puts the agent's state, model, and latest card on a Noctalia bar instead.
 
 The indicator's Model menu lists OpenRouter, OpenAI
-API, Amazon Bedrock Mantle, Amazon Nova Sonic speech-to-speech, and Codex CLI workspace mode. Catalogs refresh at startup
+API, Amazon Bedrock Mantle, Amazon Nova Sonic speech-to-speech (in a `sonic`
+build), and Codex CLI workspace mode. Catalogs refresh at startup
 and on **Refresh models**; a failed refresh retains the cached list. Choose a
 provider's model to switch immediately and start a fresh conversation. The
 selection is stored in `$XDG_CONFIG_HOME/hyusk/config.json`; matching history
@@ -479,10 +481,13 @@ regions. Use Mantle model IDs such as `openai.gpt-oss-20b`, not the
 `-1:0` Bedrock Runtime foundation-model ID. A separate Bedrock API key is
 required; a ChatGPT subscription is not an AWS credential.
 
-Nova Sonic is selected separately as **Bedrock Sonic**. It uses the AWS SDK's
-credential chain (including `AWS_PROFILE`, shared AWS CLI credentials, and
-SSO), needs a configured AWS region and Bedrock model access, and uses a
-bidirectional speech stream rather than the Mantle chat endpoint. See
+Nova Sonic is selected separately as **Bedrock Sonic**, and it exists only in a
+build with the `sonic` feature (`./scripts/install-autostart.sh --features
+sonic`); a default build recompiles without the AWS SDK, the second agent loop,
+and the provider entry. It uses the AWS SDK's credential chain (including
+`AWS_PROFILE`, shared AWS CLI credentials, and SSO), needs a configured AWS
+region and Bedrock model access, and uses a bidirectional speech stream rather
+than the Mantle chat endpoint. See
 [`docs/bedrock-nova-sonic.md`](docs/bedrock-nova-sonic.md) for setup and testing.
 
 The GNOME top-bar indicator includes **Stop Hyusk**, which cancels the active

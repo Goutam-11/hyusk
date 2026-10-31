@@ -1,3 +1,4 @@
+#[cfg(feature = "sonic")]
 pub mod bedrock_sonic;
 pub mod codex;
 pub mod openrouter;

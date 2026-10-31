@@ -5,6 +5,21 @@ Hyusk's `bedrock-sonic` provider uses Bedrock's signed bidirectional
 the OpenAI-compatible chat endpoint. The AWS Rust SDK reads credentials from
 its normal credential chain, including AWS CLI shared profiles and SSO.
 
+## Building
+
+Nova Sonic is the `sonic` Cargo feature and is off by default (P6), so a plain
+agent build has no AWS SDK, no second agent loop, no `bedrock-sonic` provider in
+the model menu, and no live-audio path:
+
+```bash
+./scripts/install-autostart.sh --features sonic
+# or for a local run:
+cargo build --release --features sonic
+```
+
+The feature also compiles the Sonic tests. A build without it reports the
+`bedrock-sonic` selection as unavailable and keeps the text providers.
+
 ## Requirements
 
 - An AWS CLI profile with access to Amazon Bedrock in a supported region.

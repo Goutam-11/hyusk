@@ -302,6 +302,7 @@ static WHISPER_NATIVE_CALLBACK_ENTERED: std::sync::atomic::AtomicBool =
 static WHISPER_TEST_HOLD_ABORT_CALLBACK: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(feature = "sonic")]
 fn stream_pulse_input(
     device: &str,
     frames: tokio::sync::mpsc::Sender<Vec<u8>>,
@@ -463,6 +464,7 @@ impl SpeechToText {
 
     /// Capture on a blocking worker and send 16 kHz mono PCM frames as the mic
     /// produces them. Returns whether the local endpointer found speech.
+    #[cfg(feature = "sonic")]
     pub fn stream_audio_for_speech_model(
         &self,
         duration_secs: f32,
@@ -477,6 +479,7 @@ impl SpeechToText {
     /// Continuously stream microphone audio as 16 kHz mono PCM until cancelled.
     /// Unlike `stream_audio_for_speech_model`, this does not buffer an
     /// utterance or run a local endpointer.
+    #[cfg(feature = "sonic")]
     pub fn stream_continuous_audio_for_speech_model(
         &self,
         frames: tokio::sync::mpsc::Sender<Vec<u8>>,
@@ -1377,10 +1380,12 @@ fn push_live_sample(
     }
 }
 
+#[cfg(feature = "sonic")]
 fn pulse_speech_onset(sender: &tokio::sync::mpsc::Sender<()>) {
     let _ = sender.try_send(());
 }
 
+#[cfg(feature = "sonic")]
 fn align_pcm16(pending: &mut Option<u8>, pcm: &[u8]) -> Vec<u8> {
     let mut aligned = Vec::with_capacity(pcm.len() + usize::from(pending.is_some()));
     if let Some(byte) = pending.take() {
@@ -1397,6 +1402,7 @@ fn align_pcm16(pending: &mut Option<u8>, pcm: &[u8]) -> Vec<u8> {
 /// Noise is tracked only during inactive periods, preventing speech from
 /// raising its own threshold. Three active frames give modest transient
 /// rejection while keeping onset latency near 60 ms.
+#[cfg(feature = "sonic")]
 struct SpeechOnsetDetector {
     frame_samples: usize,
     frame_energy: f32,
@@ -1407,6 +1413,7 @@ struct SpeechOnsetDetector {
     speaking: bool,
 }
 
+#[cfg(feature = "sonic")]
 impl SpeechOnsetDetector {
     fn new(frame_samples: usize) -> Self {
         Self {
@@ -1765,11 +1772,13 @@ impl TextToSpeech {
 }
 
 /// A single player for Nova Sonic's 24 kHz mono PCM response stream.
+#[cfg(feature = "sonic")]
 pub struct Pcm16Player {
     child: tokio::process::Child,
     trailing_byte: Option<u8>,
 }
 
+#[cfg(feature = "sonic")]
 impl Pcm16Player {
     fn spawn_player() -> Result<tokio::process::Child> {
         use tokio::process::Command as AsyncCommand;
@@ -1885,10 +1894,11 @@ pub async fn test_audio() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "sonic")]
+    use super::{align_pcm16, SpeechOnsetDetector};
     use super::{
-        align_pcm16, capture_frame_is_speech, clean_transcript, denoise_for_stt,
-        next_piper_output_path, sanitize_for_speech, send_frame_cancellable, FrameSendOutcome,
-        LiveDenoiser, SpeechOnsetDetector,
+        capture_frame_is_speech, clean_transcript, denoise_for_stt, next_piper_output_path,
+        sanitize_for_speech, send_frame_cancellable, FrameSendOutcome, LiveDenoiser,
     };
 
     struct ResetAbortCallbackHold;
@@ -1953,6 +1963,7 @@ mod tests {
         let _ = std::fs::remove_file(&second);
     }
 
+    #[cfg(feature = "sonic")]
     fn push_vad_frames(vad: &mut SpeechOnsetDetector, level: f32, count: usize) -> usize {
         let mut onsets = 0;
         for _ in 0..count * vad.frame_samples {
@@ -1963,6 +1974,7 @@ mod tests {
         onsets
     }
 
+    #[cfg(feature = "sonic")]
     #[test]
     fn onset_detector_rejects_short_transients_and_pulses_once_per_utterance() {
         let mut vad = SpeechOnsetDetector::new(320);
@@ -1973,6 +1985,7 @@ mod tests {
         assert_eq!(push_vad_frames(&mut vad, 0.05, 3), 1);
     }
 
+    #[cfg(feature = "sonic")]
     #[test]
     fn onset_detector_adapts_to_quiet_noise_without_triggering() {
         let mut vad = SpeechOnsetDetector::new(320);
@@ -2027,6 +2040,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "sonic")]
     #[test]
     fn pcm16_alignment_carries_bytes_across_arbitrary_chunk_boundaries() {
         let mut pending = None;
