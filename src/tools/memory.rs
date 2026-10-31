@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     future::Future,
     path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -38,6 +38,23 @@ pub const DEFAULT_CONTEXT_TOKENS: usize = 600;
 
 /// The highest budget the environment may ask for.
 const MAX_CONTEXT_TOKENS: usize = 4_000;
+
+/// How similar two entries must be to be treated as duplicates (M3).
+const DEFAULT_MERGE_SIMILARITY: f32 = 0.90;
+
+/// The age at which an unused entry is considered stale (M3).
+const DEFAULT_STALE_DAYS: u64 = 180;
+
+/// The time one consolidation pass may spend (M3).
+const DEFAULT_BUDGET_MS: u64 = 2_000;
+
+/// How often the background pass runs (M3).
+const DEFAULT_INTERVAL_SECS: u64 = 6 * 60 * 60;
+
+/// The multiplier applied to a stale entry's confidence, and the floor below
+/// which it stops decaying (M3).
+const DECAY_FACTOR: f32 = 0.85;
+const MIN_CONFIDENCE: f32 = 0.1;
 
 /// What a memory entry is, so recall and supersession can tell a preference
 /// from a passing note (M1).
@@ -1023,6 +1040,332 @@ fn context_budget_tokens() -> usize {
 /// whole.
 fn estimate_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(4)
+}
+
+/// What one consolidation pass did (M3).
+///
+/// The pass never deletes: a duplicate is marked with `superseded_by`, and a
+/// stale entry only loses confidence, so every change is reversible from the
+/// backup and the record it left behind.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ConsolidationReport {
+    pub examined: usize,
+    pub merged: usize,
+    pub decayed: usize,
+    /// The caller's token was cancelled before the pass finished.
+    pub cancelled: bool,
+    /// The pass stopped at its time budget.
+    pub budget_hit: bool,
+}
+
+impl ConsolidationReport {
+    pub fn changed(&self) -> bool {
+        self.merged > 0 || self.decayed > 0
+    }
+}
+
+/// The bounds and thresholds of a consolidation pass (M3).
+#[derive(Debug, Clone, Copy)]
+pub struct ConsolidationOptions {
+    pub merge_similarity: f32,
+    pub stale_days: u64,
+    pub time_budget: Duration,
+}
+
+impl Default for ConsolidationOptions {
+    fn default() -> Self {
+        Self {
+            merge_similarity: DEFAULT_MERGE_SIMILARITY,
+            stale_days: DEFAULT_STALE_DAYS,
+            time_budget: Duration::from_millis(DEFAULT_BUDGET_MS),
+        }
+    }
+}
+
+impl ConsolidationOptions {
+    /// The environment's options, with every value clamped to something a
+    /// background pass can survive.
+    pub fn from_env() -> Self {
+        let defaults = Self::default();
+
+        let merge_similarity = std::env::var("HYUSK_MEMORY_MERGE_SIMILARITY")
+            .ok()
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .map(|value| value.clamp(0.5, 1.0))
+            .unwrap_or(defaults.merge_similarity);
+        let stale_days = std::env::var("HYUSK_MEMORY_CONSOLIDATE_STALE_DAYS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(|value| value.clamp(1, 3_650))
+            .unwrap_or(defaults.stale_days);
+        let time_budget = std::env::var("HYUSK_MEMORY_CONSOLIDATE_BUDGET_MS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(|value| value.clamp(50, 30_000))
+            .unwrap_or(DEFAULT_BUDGET_MS);
+
+        Self {
+            merge_similarity,
+            stale_days,
+            time_budget: Duration::from_millis(time_budget),
+        }
+    }
+}
+
+/// Consolidate one store in place (M3): merge near-duplicates, decay stale
+/// entries, and stop when the token is cancelled or the budget is spent.
+///
+/// Pure over the store so the rules are testable without a database; the caller
+/// backs up and saves. Merging keeps the *newer* text and marks the older entry
+/// `superseded_by`, so nothing is lost. Entries only merge when they share a
+/// kind, a scope, and a topic - a project rule must never swallow a global note.
+fn consolidate(
+    store: &mut MemoryStore,
+    options: &ConsolidationOptions,
+    cancel: &tokio_util::sync::CancellationToken,
+    now: u64,
+) -> ConsolidationReport {
+    let started = Instant::now();
+    let embedder = LocalEmbedder::new();
+    let mut report = ConsolidationReport::default();
+
+    // Oldest first, so the newer of a pair always wins.
+    let mut order: Vec<usize> = (0..store.entries.len()).collect();
+    order.sort_by_key(|index| (store.entries[*index].created_unix, store.entries[*index].id));
+
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+
+    for (position, older_index) in order.iter().copied().enumerate() {
+        if cancel.is_cancelled() {
+            report.cancelled = true;
+            return report;
+        }
+
+        if started.elapsed() >= options.time_budget {
+            report.budget_hit = true;
+            break;
+        }
+
+        report.examined += 1;
+
+        if store.entries[older_index].superseded_by.is_some() {
+            continue;
+        }
+
+        for newer_index in order.iter().copied().skip(position + 1) {
+            let older = &store.entries[older_index];
+            let newer = &store.entries[newer_index];
+
+            if newer.superseded_by.is_some()
+                || older.kind != newer.kind
+                || older.scope != newer.scope
+                || older.project != newer.project
+                || older.topic != newer.topic
+            {
+                continue;
+            }
+
+            let (Some(older_vector), Some(newer_vector)) =
+                (embedder.embed(&older.text), embedder.embed(&newer.text))
+            else {
+                continue;
+            };
+
+            if cosine(&older_vector, &newer_vector) < options.merge_similarity {
+                continue;
+            }
+
+            merged.push((older_index, newer_index));
+            break;
+        }
+    }
+
+    let mut tags_added = Vec::new();
+
+    for (older_index, newer_index) in merged {
+        // The newer entry keeps its own text; only its tags and stamp change.
+        let older_tags = store.entries[older_index].tags.clone();
+
+        for tag in older_tags {
+            if !store.entries[newer_index]
+                .tags
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(&tag))
+            {
+                tags_added.push((newer_index, tag));
+            }
+        }
+
+        store.entries[older_index].superseded_by = Some(store.entries[newer_index].id);
+        store.entries[older_index].updated_unix = now;
+        store.entries[newer_index].updated_unix = now;
+        report.merged += 1;
+    }
+
+    for (index, tag) in tags_added {
+        store.entries[index].tags.push(tag);
+    }
+
+    // Stale decay: an entry nobody has used for the stale window loses some
+    // confidence, never below the floor, so it ranks lower rather than vanishing.
+    let stale_after = options.stale_days * 86_400;
+
+    for entry in store.entries.iter_mut() {
+        if cancel.is_cancelled() {
+            report.cancelled = true;
+            break;
+        }
+
+        if started.elapsed() >= options.time_budget {
+            report.budget_hit = true;
+            break;
+        }
+
+        if entry.superseded_by.is_some() {
+            continue;
+        }
+
+        let last_used = entry.last_used_unix.max(entry.updated_unix);
+        let idle = now.saturating_sub(last_used);
+
+        if idle < stale_after || entry.confidence <= MIN_CONFIDENCE {
+            continue;
+        }
+
+        entry.confidence = (entry.confidence * DECAY_FACTOR).max(MIN_CONFIDENCE);
+        entry.updated_unix = now;
+        report.decayed += 1;
+    }
+
+    report
+}
+
+/// `true` unless `HYUSK_MEMORY_CONSOLIDATE` is `0`, `false`, `off`, or `no`.
+fn consolidation_enabled() -> bool {
+    !matches!(
+        std::env::var("HYUSK_MEMORY_CONSOLIDATE")
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Ok("0" | "false" | "off" | "no")
+    )
+}
+
+fn consolidation_interval() -> Duration {
+    let seconds = std::env::var("HYUSK_MEMORY_CONSOLIDATE_INTERVAL_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|value| value.clamp(300, 86_400))
+        .unwrap_or(DEFAULT_INTERVAL_SECS);
+
+    Duration::from_secs(seconds)
+}
+
+/// The canceller for the background pass, so shutdown can stop it (M3).
+static CONSOLIDATION_CANCEL: std::sync::OnceLock<tokio_util::sync::CancellationToken> =
+    std::sync::OnceLock::new();
+
+/// Start the bounded background consolidation pass (M3).
+///
+/// It runs once when the service starts and then on an interval, off the async
+/// workers, and it stops when the token is cancelled. A failure is logged and
+/// never stops the service, like the status writer (L2).
+pub fn start_consolidation_worker() {
+    if !consolidation_enabled() {
+        return;
+    }
+
+    let cancel = CONSOLIDATION_CANCEL
+        .get_or_init(tokio_util::sync::CancellationToken::new)
+        .clone();
+
+    tokio::spawn(async move {
+        loop {
+            let pass = cancel.child_token();
+            let outcome = tokio::task::spawn_blocking(move || {
+                let options = ConsolidationOptions::from_env();
+                consolidate_at(&memory_db_path(), &options, &pass)
+            })
+            .await;
+
+            match outcome {
+                Ok(Ok(report)) if report.changed() => eprintln!(
+                    "[Memory] Consolidated {} duplicate(s) and decayed {} entries",
+                    report.merged, report.decayed
+                ),
+                Ok(Err(error)) => eprintln!("[Memory] Consolidation failed: {error:#}"),
+                Err(error) => eprintln!("[Memory] Consolidation worker stopped: {error}"),
+                _ => {}
+            }
+
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep(consolidation_interval()) => {}
+            }
+        }
+    });
+}
+
+/// Cancel the background pass (M3); a pass in flight stops at its next check.
+pub fn stop_consolidation() {
+    if let Some(cancel) = CONSOLIDATION_CANCEL.get() {
+        cancel.cancel();
+    }
+}
+
+/// Consolidate one database file: load, merge and decay, back up, then save
+/// (M3).
+///
+/// The backup is taken only when something changed, and always before the
+/// write, so the previous store can be recovered from
+/// `memory-before-consolidation-*.db`.
+fn consolidate_at(
+    db: &std::path::Path,
+    options: &ConsolidationOptions,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<ConsolidationReport> {
+    let mut store = load_store_at(db);
+    let report = consolidate(&mut store, options, cancel, now_unix());
+
+    if report.cancelled || !report.changed() {
+        return Ok(report);
+    }
+
+    backup_database(db)?;
+    save_store_at(db, &store)?;
+    Ok(report)
+}
+
+/// Copy the database beside itself, owner-only, keeping one previous copy.
+fn backup_database(db: &std::path::Path) -> Result<Option<PathBuf>> {
+    if !db.exists() {
+        return Ok(None);
+    }
+
+    let stamp = now_unix();
+    let mut backup = db.with_file_name(format!("memory-before-consolidation-{stamp}.db"));
+    let mut sequence = 1;
+
+    while backup.exists() {
+        backup = db.with_file_name(format!("memory-before-consolidation-{stamp}-{sequence}.db"));
+        sequence += 1;
+    }
+
+    std::fs::copy(db, &backup).context("Failed to back up the memory database")?;
+    crate::paths::restrict_file(&backup);
+
+    if let Some(parent) = db.parent() {
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+
+                if name.starts_with("memory-before-consolidation-") && entry.path() != backup {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+
+    Ok(Some(backup))
 }
 
 /// Rank entries against a query with a small tf-idf style score.
@@ -2805,6 +3148,267 @@ CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             )),
             "{list}"
         );
+    }
+
+    fn consolidation_options() -> ConsolidationOptions {
+        ConsolidationOptions {
+            merge_similarity: 0.90,
+            stale_days: 180,
+            time_budget: Duration::from_secs(5),
+        }
+    }
+
+    fn load_at(path: &std::path::Path) -> Result<MemoryStore> {
+        run_db_at(path.to_path_buf(), |pool| {
+            Box::pin(async move { read_store(&pool).await })
+        })
+    }
+
+    fn never_cancelled() -> tokio_util::sync::CancellationToken {
+        tokio_util::sync::CancellationToken::new()
+    }
+
+    #[test]
+    fn duplicates_merge_without_losing_the_newer_text() {
+        let now = 1_800_000_000;
+        let mut older = note(1, "deploy with make release");
+        older.created_unix = now - 600;
+        older.updated_unix = older.created_unix;
+        older.last_used_unix = older.created_unix;
+        older.tags = vec!["release".to_string()];
+        older.confidence = 1.0;
+        let mut newer = note(2, "deploy with make release.");
+        newer.created_unix = now - 60;
+        newer.updated_unix = newer.created_unix;
+        newer.last_used_unix = newer.created_unix;
+        newer.confidence = 1.0;
+        let unrelated = note(3, "the coffee machine is on the third floor");
+        let mut store = MemoryStore {
+            entries: vec![older, newer, unrelated],
+            ..MemoryStore::default()
+        };
+
+        let report = consolidate(
+            &mut store,
+            &consolidation_options(),
+            &never_cancelled(),
+            now,
+        );
+
+        assert_eq!(report.merged, 1, "{report:?}");
+        assert_eq!(
+            store.entries[0].superseded_by,
+            Some(2),
+            "the older entry is tombstoned"
+        );
+        assert_eq!(
+            store.entries[1].text, "deploy with make release.",
+            "the newer text survives"
+        );
+        assert!(
+            store.entries[1].tags.contains(&"release".to_string()),
+            "the tags merge into the newer entry"
+        );
+        assert_eq!(store.entries[2].superseded_by, None);
+
+        // A merged duplicate no longer reaches retrieval.
+        let lexical: HashMap<u64, f32> = HashMap::from([(1, 1.0), (2, 0.9), (3, 0.0)]);
+        let ranked = hybrid_entries(&store.entries, &HashMap::new(), &lexical, None, None, 5);
+        assert!(ranked.iter().all(|(entry, _)| entry.id != 1), "{ranked:?}");
+    }
+
+    #[test]
+    fn a_different_kind_or_scope_is_never_merged() {
+        let now = 1_800_000_000;
+        let mut note_entry = note(1, "use pnpm");
+        note_entry.created_unix = now - 600;
+        let mut preference = note(2, "use pnpm");
+        preference.kind = MemoryKind::Preference;
+        preference.created_unix = now - 60;
+        let mut other_scope = note(3, "use pnpm");
+        other_scope.scope = MemoryScope::Project;
+        other_scope.project = Some("/tmp/other-project".to_string());
+        other_scope.created_unix = now - 30;
+        let mut store = MemoryStore {
+            entries: vec![note_entry, preference, other_scope],
+            ..MemoryStore::default()
+        };
+
+        let report = consolidate(
+            &mut store,
+            &consolidation_options(),
+            &never_cancelled(),
+            now,
+        );
+
+        assert_eq!(report.merged, 0, "{report:?}");
+    }
+
+    #[test]
+    fn stale_entries_lose_confidence_and_used_ones_do_not() {
+        let now = 1_800_000_000;
+        let mut stale = note(1, "an old note nobody uses");
+        stale.confidence = 0.8;
+        stale.created_unix = now - 400 * 86_400;
+        stale.updated_unix = stale.created_unix;
+        stale.last_used_unix = stale.created_unix;
+        let mut used = note(2, "a note used last week");
+        used.confidence = 0.8;
+        used.created_unix = now - 400 * 86_400;
+        used.updated_unix = used.created_unix;
+        used.last_used_unix = now - 7 * 86_400;
+        let mut store = MemoryStore {
+            entries: vec![stale, used],
+            ..MemoryStore::default()
+        };
+
+        let report = consolidate(
+            &mut store,
+            &consolidation_options(),
+            &never_cancelled(),
+            now,
+        );
+
+        assert_eq!(report.decayed, 1, "{report:?}");
+        assert!(store.entries[0].confidence < 0.8, "the stale note decays");
+        assert_eq!(
+            store.entries[1].confidence, 0.8,
+            "a recently used note holds"
+        );
+        assert_eq!(store.entries[0].updated_unix, now);
+    }
+
+    #[test]
+    fn the_pass_stops_when_cancelled() {
+        let now = 1_800_000_000;
+        let mut older = note(1, "deploy with make release");
+        older.created_unix = now - 600;
+        let mut newer = note(2, "deploy with make release.");
+        newer.created_unix = now - 60;
+        let mut store = MemoryStore {
+            entries: vec![older, newer],
+            ..MemoryStore::default()
+        };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+
+        let report = consolidate(&mut store, &consolidation_options(), &cancel, now);
+
+        assert!(report.cancelled);
+        assert_eq!(report.merged, 0);
+        assert_eq!(store.entries[0].superseded_by, None);
+    }
+
+    #[test]
+    fn the_pass_stops_at_its_time_budget() {
+        let now = 1_800_000_000;
+        let mut older = note(1, "deploy with make release");
+        older.created_unix = now - 600;
+        let mut newer = note(2, "deploy with make release.");
+        newer.created_unix = now - 60;
+        let mut store = MemoryStore {
+            entries: vec![older, newer],
+            ..MemoryStore::default()
+        };
+        let options = ConsolidationOptions {
+            time_budget: Duration::ZERO,
+            ..consolidation_options()
+        };
+
+        let report = consolidate(&mut store, &options, &never_cancelled(), now);
+
+        assert!(report.budget_hit);
+        assert_eq!(report.merged, 0);
+    }
+
+    #[test]
+    fn the_backup_is_written_before_the_store_changes() -> Result<()> {
+        let directory = scratch("consolidate-backup");
+        let path = directory.join("memory.db");
+        let now = now_unix();
+        let mut older = note(1, "deploy with make release");
+        older.created_unix = now - 600;
+        older.last_used_unix = older.created_unix;
+        let mut newer = note(2, "deploy with make release.");
+        newer.created_unix = now - 60;
+        newer.last_used_unix = newer.created_unix;
+        let store = MemoryStore {
+            entries: vec![older, newer],
+            ..MemoryStore::default()
+        };
+        save_store_at(&path, &store)?;
+
+        let report = consolidate_at(&path, &consolidation_options(), &never_cancelled())?;
+
+        assert_eq!(report.merged, 1, "{report:?}");
+        let mut backups: Vec<std::path::PathBuf> = std::fs::read_dir(&directory)?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .map(|name| {
+                        name.to_string_lossy()
+                            .starts_with("memory-before-consolidation-")
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "one previous copy is kept");
+        let backup = backups.pop().expect("a backup was written");
+        let backup_store = load_at(&backup)?;
+        assert_eq!(
+            backup_store.entries.len(),
+            2,
+            "the backup is the store from before the pass"
+        );
+        assert!(
+            backup_store
+                .entries
+                .iter()
+                .all(|entry| entry.superseded_by.is_none()),
+            "the backup carries no merge yet"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&backup)?.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "the backup is owner-only");
+        }
+
+        let reloaded = run_db_at(path.clone(), |pool| {
+            Box::pin(async move { read_store(&pool).await })
+        })?;
+        assert_eq!(reloaded.entries[0].superseded_by, Some(2));
+        Ok(())
+    }
+
+    #[test]
+    fn a_cancelled_pass_leaves_the_database_untouched() -> Result<()> {
+        let directory = scratch("consolidate-cancelled");
+        let path = directory.join("memory.db");
+        let store = MemoryStore {
+            entries: vec![
+                note(1, "deploy with make release"),
+                note(2, "deploy with make release."),
+            ],
+            ..MemoryStore::default()
+        };
+        save_store_at(&path, &store)?;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+
+        let report = consolidate_at(&path, &consolidation_options(), &cancel)?;
+
+        assert!(report.cancelled);
+        let after = load_at(&path)?;
+        assert!(
+            after
+                .entries
+                .iter()
+                .all(|entry| entry.superseded_by.is_none()),
+            "a cancelled pass saved nothing"
+        );
+        Ok(())
     }
 
     #[test]

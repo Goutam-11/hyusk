@@ -55,9 +55,9 @@ cargo check --all-targets --offline --features workflow-editor
 cargo test --all-targets --offline --features workflow-editor -- --test-threads=4
 ```
 
-Current baseline: **437 tests passing, 6 ignored** for the default suite; the
+Current baseline: **444 tests passing, 6 ignored** for the default suite; the
 workflow editor adds five tests (one ignored) under `--features
-workflow-editor`, for **442 passing, 7 ignored**. Clippy is clean except three
+workflow-editor`, for **449 passing, 7 ignored**. Clippy is clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, the default tests, and that one feature build on Ubuntu.
 
@@ -253,6 +253,14 @@ tests live in `#[cfg(test)]` modules beside the code.
   behaviour (`PREFERENCE_CONSENT_WORDS`); the check reads the stored `kind`, so
   a note is never gated by it. `forget` is immediate and the `preferences`
   action is the review list.
+- Consolidation (M3): a bounded background pass merges near-duplicates (same
+  kind, scope, project, and topic; local-vector cosine at or above the merge
+  threshold) by marking the older entry `superseded_by` the newer one - never by
+  deleting - decays the confidence of an entry idle for the stale window, and
+  stops at its cancellation token or time budget. `consolidate_at` backs the
+  database up to `memory-before-consolidation-*.db` before writing, and a
+  cancelled pass saves nothing. The worker starts from the composition root
+  (`start_consolidation_worker`) and is stopped by `stop_consolidation`.
 - Wake defaults: `WAKE_CLAP_ENABLED` and `WAKE_WORD_DENOISE` are off unless set;
   `.env.example` documents both.
 - Never print `.env` contents or API keys. Keys are keyring-first, then
@@ -297,9 +305,9 @@ memory v2, preferences) is tracked in `issues/ARCHITECTURE_ISSUE.md` and
 designed in `docs/architecture-roadmap.md`. Wave 1 is complete: P1 (the
 experimental shell agent), P2 (macOS branches and the Linux declaration), P3
 (the `workflow-editor` feature), and T1 (tool manifests) are closed. Wave 2 is
-under way: M1 (memory schema v2), M2 (hybrid retrieval), and G1 (preference
-notes) are closed, and P5 (the mobile feature) and T2 (the external tool host)
-remain; P4 (the orb feature) is deferred, because this installation uses the
+under way: M1 (memory schema v2), M2 (hybrid retrieval), G1 (preference notes),
+and M3 (consolidation) are closed, and P5 (the mobile feature) and T2 (the
+external tool host) remain; P4 (the orb feature) is deferred, because this installation uses the
 GNOME extension and the Noctalia widget rather than the orb.
 
 ## Memory and session notes

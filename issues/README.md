@@ -111,8 +111,8 @@ tracked in [ARCHITECTURE_ISSUE.md](ARCHITECTURE_ISSUE.md). Waves order work
 inside that track and are independent of the phases above. Wave 1 was completed
 on 2026-10-31: `P1`, `P2`, `P3`, and `T1` are closed. Wave 2 is under way -
 `M1` (memory schema v2) is closed, and `P5` and `T2` remain - and `M2` (hybrid
-retrieval) and `G1` (preference notes) are closed as well, ahead of `P5`/`T2`
-because they depended only on the memory work. `P4` (the orb overlay) is deferred because this installation uses
+retrieval), `G1` (preference notes), and `M3` (consolidation) are closed as well,
+ahead of `P5`/`T2` because they depended only on the memory work. `P4` (the orb overlay) is deferred because this installation uses
 the GNOME extension and the Noctalia widget, and `P5`'s dependency on it was only
 the shared `Cargo.toml` area.
 

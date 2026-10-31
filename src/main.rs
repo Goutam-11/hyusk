@@ -712,6 +712,11 @@ async fn main() -> Result<()> {
         return stt_test_mode().await;
     }
 
+    // One bounded consolidation pass at startup and then on an interval: it
+    // merges near-duplicate memories and decays stale ones (M3), never on the
+    // async workers, and it stops when shutdown cancels it.
+    tools::memory::start_consolidation_worker();
+
     println!();
     println!("        🦋 HYUSK");
     println!("   Local AI Computer Agent");
@@ -1483,7 +1488,9 @@ async fn main() -> Result<()> {
     // Give the wake thread and runtime a moment to unwind, then exit hard so a
     // detached blocking microphone task cannot keep the process alive.
     tokio::time::sleep(Duration::from_millis(250)).await;
-    // Write whatever the queue still holds before the process goes away (L2).
+    // Stop the memory pass before the store goes away, then write whatever the
+    // queue still holds (M3, L2).
+    tools::memory::stop_consolidation();
     let flushed = persist::flush();
     if flushed > 0 {
         println!("[Persist] Flushed {flushed} pending write(s) before exit");

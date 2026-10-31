@@ -159,10 +159,10 @@ cargo check --all-targets --features workflow-editor
 cargo test --all-targets --features workflow-editor
 ```
 
-`cargo test --all-targets` runs the default suite: 437 passing tests and 6
+`cargo test --all-targets` runs the default suite: 444 passing tests and 6
 ignored. The GTK workflow editor is skipped by default (P3); with `--features
-workflow-editor` the full suite is 442 passing and 7 ignored (the main binary
-alone: 437 passing, 6 ignored; the editor contributes five, one of them
+workflow-editor` the full suite is 449 passing and 7 ignored (the main binary
+alone: 444 passing, 6 ignored; the editor contributes five, one of them
 ignored). The ignored ones need a real session or
 network: the four portal smoke tests below, a live CDP browser test, a Whisper
 cancel/cache test, and the GTK workflow editor draft test. Coverage includes

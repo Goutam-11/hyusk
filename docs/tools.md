@@ -486,6 +486,31 @@ notes, so they apply to every turn rather than only to a matching message.
 - **Review.** `preferences` lists the active ones with scope, age in days,
   topic, and id.
 
+### Consolidation
+
+A bounded background pass (M3) keeps the store tidy without ever deleting an
+entry. It runs once when the service starts and then every
+`HYUSK_MEMORY_CONSOLIDATE_INTERVAL_SECS` (default 21600, clamped to 300-86400),
+off the async workers, and `stop_consolidation` cancels a pass at shutdown.
+
+- **Near-duplicates merge.** Two entries with the same kind, scope, project, and
+  topic whose local vectors reach `HYUSK_MEMORY_MERGE_SIMILARITY` (default 0.90)
+  are treated as one: the newer entry keeps its text, the older one's tags are
+  merged into it, and the older entry is marked `superseded_by` the newer one.
+  Nothing is removed, so the tombstone explains where the duplicate went and a
+  later correction can still be traced.
+- **Stale entries decay.** An entry nobody has used for
+  `HYUSK_MEMORY_CONSOLIDATE_STALE_DAYS` (default 180) loses 15% confidence per
+  pass, never below 0.1. It ranks lower in retrieval instead of vanishing, and a
+  recall that updates `last_used_unix` stops the decay.
+- **The pass is bounded and cancellable.** It checks its cancellation token and
+  its time budget (`HYUSK_MEMORY_CONSOLIDATE_BUDGET_MS`, default 2000, clamped
+  to 50-30000) between entries; a cancelled pass saves nothing.
+- **A backup is written first.** When a pass changes anything, the database is
+  copied to `memory-before-consolidation-<unix>.db` (owner-only, one previous
+  copy kept) before the write, so a bad merge is recoverable.
+- `HYUSK_MEMORY_CONSOLIDATE=0` disables the pass.
+
 Retrieval is hybrid (M2). Each candidate is scored from four signals: the FTS
 rank, local embedding similarity, confidence as importance, and recency, with
 the lexical term dominant. A superseded entry (`superseded_by` set) never takes

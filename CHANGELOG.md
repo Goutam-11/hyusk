@@ -4,6 +4,19 @@
 
 ### Added
 
+- Memory is consolidated by a bounded background pass (M3). It runs once at
+  startup and then every `HYUSK_MEMORY_CONSOLIDATE_INTERVAL_SECS` (default six
+  hours), merges near-duplicates - same kind, scope, project, and topic, with
+  local-vector similarity at or above `HYUSK_MEMORY_MERGE_SIMILARITY` - by
+  keeping the newer text, merging the older entry's tags into it, and marking the
+  older entry `superseded_by` the newer one, so nothing is deleted, and it decays
+  the confidence of an entry idle for `HYUSK_MEMORY_CONSOLIDATE_STALE_DAYS`
+  (default 180) without ever dropping it. The pass stops at its cancellation
+  token or time budget (`HYUSK_MEMORY_CONSOLIDATE_BUDGET_MS`, default 2000), a
+  cancelled pass saves nothing, and a change is preceded by an owner-only copy at
+  `memory-before-consolidation-<unix>.db`. `HYUSK_MEMORY_CONSOLIDATE=0` disables
+  it. Tests cover the merge, the kind/scope guard, decay, cancellation, the
+  budget, the backup, and that a cancelled pass leaves the stores untouched.
 - Corrections now stick (G1). A remembered `preference` carries a `scope`
   (`global`, or `project` tied to the same root the shell policy uses) and a
   `topic`; a newer preference on the same topic and scope supersedes the older
