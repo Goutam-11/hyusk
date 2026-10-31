@@ -55,9 +55,9 @@ cargo check --all-targets --offline --features workflow-editor
 cargo test --all-targets --offline --features workflow-editor -- --test-threads=4
 ```
 
-Current baseline: **424 tests passing, 6 ignored** for the default suite; the
+Current baseline: **431 tests passing, 6 ignored** for the default suite; the
 workflow editor adds five tests (one ignored) under `--features
-workflow-editor`, for **429 passing, 7 ignored**. Clippy is clean except three
+workflow-editor`, for **436 passing, 7 ignored**. Clippy is clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, the default tests, and that one feature build on Ubuntu.
 
@@ -236,6 +236,14 @@ tests live in `#[cfg(test)]` modules beside the code.
   keep a v1 database and a v1 `memory.json` readable; the migration is
   idempotent and covered by a v1 fixture test. `memory_embeddings` holds one
   vector per entry and an orphan is dropped on save.
+- Memory retrieval (M2): `hybrid_entries` scores the FTS rank, local embedding
+  similarity, confidence, and recency, and never returns a superseded entry; an
+  entry FTS missed needs `MIN_EMBEDDING_SIMILARITY` to be considered. The
+  embedder is the built-in `LocalEmbedder` (hashed word/trigram features, no
+  model file, no network); `HYUSK_MEMORY_EMBEDDINGS=0` is the lexical-only
+  fallback. `context_for` renders inside `HYUSK_MEMORY_PROMPT_TOKENS` (four
+  characters per token, whole notes only), so a retrieval change must keep the
+  budget test green and must not add a provider call.
 - Wake defaults: `WAKE_CLAP_ENABLED` and `WAKE_WORD_DENOISE` are off unless set;
   `.env.example` documents both.
 - Never print `.env` contents or API keys. Keys are keyring-first, then
@@ -280,10 +288,10 @@ memory v2, preferences) is tracked in `issues/ARCHITECTURE_ISSUE.md` and
 designed in `docs/architecture-roadmap.md`. Wave 1 is complete: P1 (the
 experimental shell agent), P2 (macOS branches and the Linux declaration), P3
 (the `workflow-editor` feature), and T1 (tool manifests) are closed. Wave 2 is
-under way: M1 (memory schema v2) is closed, and P5 (the mobile feature) and T2
-(the external tool host) remain; P4 (the orb feature) is deferred, because this
-installation uses the GNOME extension and the Noctalia widget rather than the
-orb.
+under way: M1 (memory schema v2) is closed, M2 (hybrid retrieval) followed from
+Wave 3, and P5 (the mobile feature) and T2 (the external tool host) remain; P4
+(the orb feature) is deferred, because this installation uses the GNOME
+extension and the Noctalia widget rather than the orb.
 
 ## Memory and session notes
 

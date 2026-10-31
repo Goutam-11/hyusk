@@ -455,6 +455,29 @@ Retrieved text is delimited as untrusted reference data and cannot override the
 current user message. On first use, legacy JSON is imported in one transaction
 and retained unchanged as a recovery backup.
 
+Retrieval is hybrid (M2). Each candidate is scored from four signals: the FTS
+rank, local embedding similarity, confidence as importance, and recency, with
+the lexical term dominant. A superseded entry (`superseded_by` set) never takes
+part. An entry that FTS did not match needs a real similarity
+(`MIN_EMBEDDING_SIMILARITY`) before it is considered, so the hashed vectors
+cannot fill the prompt with noise.
+
+The embedding is local and needs no model file: word tokens and character
+trigrams are hashed into 256 signed dimensions and L2-normalised
+(`LocalEmbedder`), so a plural, a typo, or `npm`/`pnpm` still lands near the
+original. It is not a trained model, which is why the ranker also weighs the
+other three signals. Vectors are cached in `memory_embeddings` when the store is
+saved (the label `local-hash-v1` marks the space; a vector from another embedder
+is replaced rather than read) and an entry without one is embedded during
+retrieval. No network call is made for a recall. `HYUSK_MEMORY_EMBEDDINGS=0`
+falls back to lexical ranking.
+
+The injected block is bounded: `HYUSK_MEMORY_PROMPT_TOKENS` (default 600,
+highest 4000, `0` disables) caps it in estimated tokens, four characters per
+token, with the header and footer charged first. The best-ranked notes are
+included whole and the first one that would not fit ends the block - a note is
+never cut in half. Graph facts share the same budget.
+
 ## Shell
 
 `ShellTool` runs `sh -c <command>`.

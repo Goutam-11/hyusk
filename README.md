@@ -140,6 +140,8 @@ or times out, the wake event is ignored and the terminal input path still works.
 | `HYUSK_AGENT_MAX_TURN_SECS` | No | `1800` | Wall-clock safety ceiling for one progressing turn, including tools. |
 | `HYUSK_AGENT_MAX_REPEATED_TOOL_ROUNDS` | No | `3` | Stop after this many identical tool-call/result rounds. |
 | `HYUSK_AGENT_MAX_HISTORY_BYTES` | No | model-derived | Override the serialized history budget. By default it follows the selected model's context window, between 16000 and 120000 bytes. |
+| `HYUSK_MEMORY_PROMPT_TOKENS` | No | `600` | Budget for the per-turn memory block, in estimated tokens (four characters per token; highest 4000; `0` disables the block). Notes are included whole or dropped, never truncated. |
+| `HYUSK_MEMORY_EMBEDDINGS` | No | `1` | Set `0` to rank memory with FTS only. The built-in embedder runs locally and needs no model file or network call. |
 | `HYUSK_SESSION_PATH` | No | `$XDG_DATA_HOME/hyusk/session.json` | Override the private recent-conversation snapshot path. |
 | Background subagents | No configuration | At most two workers. Research is read-only; workspace tasks use local Codex CLI with a 15-minute limit. |
 | `WAKE_CLAP_ENABLED` | No | `0` | Enable hand-clap wake (off by default; noise triggers it). |

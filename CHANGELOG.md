@@ -4,6 +4,21 @@
 
 ### Added
 
+- Memory retrieval is hybrid (M2). Each candidate is scored from the FTS rank,
+  local embedding similarity, confidence, and recency; a superseded entry is
+  never retrieved, and an entry FTS did not match needs a real similarity before
+  it is considered. The embedder is built in (`LocalEmbedder`): word and
+  character-trigram features hashed into 256 signed dimensions, so a plural, a
+  typo, or `npm`/`pnpm` still lands near the original without a model file or a
+  network call. Vectors are cached in `memory_embeddings` on save and an entry
+  without one is embedded during recall; `HYUSK_MEMORY_EMBEDDINGS=0` falls back
+  to lexical ranking. The per-turn memory block is now bounded by
+  `HYUSK_MEMORY_PROMPT_TOKENS` (default 600 estimated tokens, four characters
+  per token, highest 4000, `0` disables): notes and facts are included whole and
+  the first that would not fit ends the block. Tests cover a paraphrased query
+  that only the vector finds, the lexical fallback, supersession, the
+  confidence/recency tie-break, the budget at several sizes, the local
+  embedder's determinism, and the embedding cache.
 - The memory store gains a versioned, additive schema (M1). Entries now carry
   provenance (`source`, `session_id`), a `kind` (`note`, `fact`, `preference`,
   `episode`), a `confidence`, `last_used_unix`, `superseded_by`, and

@@ -1,7 +1,8 @@
 # Architecture roadmap
 
 Status: agreed on 2026-10-29. Wave 1 (P1, P2, P3, T1) was completed on
-2026-10-31, and Wave 2 began with M1 (memory schema v2); P4 is deferred. Work is tracked in
+2026-10-31, Wave 2 began with M1 (memory schema v2), and M2 (hybrid retrieval)
+from Wave 3 followed because it depended only on M1; P4 is deferred. Work is tracked in
 [issues/ARCHITECTURE_ISSUE.md](../issues/ARCHITECTURE_ISSUE.md); this document
 records the direction and the reasoning, not individual tasks.
 
