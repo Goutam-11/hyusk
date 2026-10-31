@@ -6,8 +6,8 @@ separate `hyusk` workspace CLI.
 - [Architecture](architecture.md) explains the modules, event flow, model
   protocol, and runtime boundaries.
 - [Architecture roadmap](architecture-roadmap.md) records the agreed pruning,
-  tool boundary, memory, and preference plan; the work units live in
-  [`issues/`](../issues/README.md).
+  tool boundary, memory, and preference plan; the closed work record is in
+  [`issues/README.md`](../issues/README.md).
 - [Tools](tools.md) documents the tool contracts, examples, extension process,
   and security implications.
 - [Development](development.md) covers setup, build commands, validation, and

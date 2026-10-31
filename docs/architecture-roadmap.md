@@ -6,11 +6,12 @@ M3 (consolidation), M4 (explain and export), G1 (preference notes), T2 (the
 external tool host), P5 (the mobile feature), T3 (the MCP provider), T4 (the
 provider trust model and contract tests), P6 (the Nova Sonic feature), and G2
 (the propose-diff loop) followed; the architecture track is complete and P4 is
-deferred. Work is tracked in
-[issues/ARCHITECTURE_ISSUE.md](../issues/ARCHITECTURE_ISSUE.md); this document
-records the direction and the reasoning, not individual tasks.
+deferred. The work units were closed and their tracker removed on 2026-11-01;
+[issues/README.md](../issues/README.md) is the record of what shipped and what
+stays open. This document records the direction and the reasoning, not
+individual tasks.
 
-This roadmap starts after the permission Phase 1 work in
+This roadmap starts after the permission Phase 1 work recorded in
 [issues/README.md](../issues/README.md). It does not change the permission
 policy; it changes what the repository compiles, how tools arrive, and how
 memory and preferences behave.
@@ -94,9 +95,10 @@ curated summary and applies the same approval policy to every call.
 
 ## Tracks
 
-Issue IDs live in `issues/ARCHITECTURE_ISSUE.md`. Waves order the work within
-this roadmap; they are independent of the Phase labels in the permission
-tracker.
+Issue IDs (`P`, `T`, `M`, `G`) were defined in the archived architecture
+tracker and are indexed in [issues/README.md](../issues/README.md). Waves order
+the work within this roadmap; they are independent of the Phase labels in the
+permission track.
 
 ### P — prune and feature-gate
 
@@ -171,7 +173,7 @@ workflow vocabulary already exists.
 
 ## Starting point
 
-Read [issues/ARCHITECTURE_ISSUE.md](../issues/ARCHITECTURE_ISSUE.md), then
-`AGENTS.md`, then the issue. Do not start Wave 1 before the permission Phase 1
-work is complete: both touch `safety.rs` and `main.rs`, and the registry change
-in `A8` is the foundation for tool manifests in `T1`.
+Read `AGENTS.md`, then [issues/README.md](../issues/README.md) for the record
+of what shipped and what is still open. New work starts in a fresh
+`issues/<AREA>_ISSUE.md`; the permission work (`A`, `S`, `D`, `X`, `L`) it
+depended on is complete, and its outcome is the invariant list in `AGENTS.md`.

@@ -187,12 +187,13 @@
   Tests cover the line shape and redaction, the scope and turn fields, a stale
   click, private modes, and rotation; the runner records exactly one line per
   denial, approval and expiry.
-- `docs/architecture-roadmap.md` and `issues/ARCHITECTURE_ISSUE.md`: the
-  2026-10-29 architecture decisions — park Android/link and Nova Sonic behind
-  features, delete the experimental shell agent, remove macOS branches,
-  feature-gate the GTK editor and the orb, keep one crate; in-process core with
-  one MCP-compatible tool boundary; memory v2 with provenance and
-  consolidation; preference-only learning; human-reviewed upgrades.
+- `docs/architecture-roadmap.md` and the architecture tracker (closed on
+  2026-11-01, see Removed): the 2026-10-29 architecture decisions — park
+  Android/link and Nova Sonic behind features, delete the experimental shell
+  agent, remove macOS branches, feature-gate the GTK editor and the orb, keep
+  one crate; in-process core with one MCP-compatible tool boundary; memory v2
+  with provenance and consolidation; preference-only learning; human-reviewed
+  upgrades.
 - `issues/` work-item tracker from the 2026-10-29 permission and desktop-control
   review: five area files with stable IDs (`A` approval policy, `S` shell, `D`
   desktop control, `X` secrets, `L` agent loop), each with evidence, a recorded
@@ -241,8 +242,8 @@
 - The orb overlay is deferred. This installation is driven from the GNOME
   top-bar extension and the Noctalia bar widget, so the `orb` feature work (P4)
   is out of the queue and `eframe`/`egui` stay unconditional; the recorded
-  decision and acceptance criteria remain in `issues/ARCHITECTURE_ISSUE.md` for
-  anyone who wants them.
+  decision and acceptance criteria were kept in the architecture tracker, now
+  summarised in `issues/README.md`, for anyone who wants them.
 - The GTK workflow editor is behind a `workflow-editor` feature. `gtk4` and
   `libadwaita` are optional dependencies owned by that feature, the
   `hyusk-workflows` bin carries `required-features = ["workflow-editor"]`, and
@@ -580,6 +581,14 @@
 
 ### Removed
 
+- The six per-area work trackers under `issues/` (permission, shell, desktop,
+  secrets, the agent loop, and architecture). Every item is closed or deferred,
+  and the folder is now the one-page record in `issues/README.md`: what shipped,
+  the two review findings that closed the last gaps (F1-F3), the open `R1` and
+  deferred `P4` items with their acceptance criteria, the manual checks that
+  never ran, and how to start the next batch. The full evidence, decisions, and
+  probes stay in git history (`git show 8daa174:issues/ARCHITECTURE_ISSUE.md`),
+  and the invariant list in `AGENTS.md` is unchanged.
 - The experimental `hyusk-shell-agent` binary and its duplicated
   `src/bin/types.rs` message module. It described itself as "not the production
   Hyusk permission model" and was a second, diverging execute-anything path
