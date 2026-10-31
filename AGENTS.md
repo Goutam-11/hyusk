@@ -55,9 +55,9 @@ cargo check --all-targets --offline --features workflow-editor
 cargo test --all-targets --offline --features workflow-editor -- --test-threads=4
 ```
 
-Current baseline: **450 tests passing, 6 ignored** for the default suite; the
+Current baseline: **465 tests passing, 6 ignored** for the default suite; the
 workflow editor adds five tests (one ignored) under `--features
-workflow-editor`, for **455 passing, 7 ignored**. Clippy is clean except three
+workflow-editor`, for **470 passing, 7 ignored**. Clippy is clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
 clippy, the default tests, and that one feature build on Ubuntu.
 
@@ -105,6 +105,15 @@ tests live in `#[cfg(test)]` modules beside the code.
   has no policy row above or declares the `input` capability without input
   paths. Do not add a tool without a manifest and a policy row; the per-action
   decisions stay in `safety.rs` because a risk class cannot express them.
+- External tools (T2): `tools::external` spawns one process per configured
+  server (`HYUSK_EXTERNAL_SERVERS`), handshakes its manifest over
+  newline-delimited JSON-RPC 2.0 on stdio, and registers each tool as
+  `ext.<server>.<tool>`. The `ext.` namespace has one always-ask policy row in
+  `safety.rs`; a turn grant cannot cover an external call, and a server's own
+  risk or "read only" claim is never trusted. Arguments are validated against
+  the declared schema before sending, results are truncated and redacted, calls
+  and startup are bounded, a crash or timeout restarts the process, and
+  shutdown kills and reaps every child. A core tool may not use the namespace.
 - The model-facing `mobile` schema exposes only `list`/`invoke`. Pairing codes
   belong to the GNOME/Noctalia indicators (`hyusk-pairing.json`, `pair_phone`),
   never to a model tool result or session history.
@@ -314,9 +323,12 @@ designed in `docs/architecture-roadmap.md`. Wave 1 is complete: P1 (the
 experimental shell agent), P2 (macOS branches and the Linux declaration), P3
 (the `workflow-editor` feature), and T1 (tool manifests) are closed. Wave 2 is
 under way: M1 (memory schema v2), M2 (hybrid retrieval), G1 (preference notes),
-M3 (consolidation), and M4 (explain and export) are closed, and P5 (the mobile
-feature) and T2 (the external tool host) remain; P4 (the orb feature) is deferred, because this installation uses the
-GNOME extension and the Noctalia widget rather than the orb.
+M3 (consolidation), M4 (explain and export), and T2 (the external tool host)
+are closed. The remaining work is P5 (the mobile feature) and P6 (Nova Sonic),
+which is behind it, T3 (the MCP provider) and T4 (its trust model), which build
+on T2, and G2 (the propose-diff loop). P4 (the orb feature) is deferred, because
+this installation uses the GNOME extension and the Noctalia widget rather than
+the orb.
 
 ## Memory and session notes
 

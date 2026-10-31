@@ -7,7 +7,7 @@ use tokio::process::Command;
 const PLAYERCTL_TIMEOUT: Duration = Duration::from_secs(3);
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
 
 pub struct MediaTool;
 
@@ -131,7 +131,7 @@ impl Tool for MediaTool {
             name: "media",
             version: CORE_VERSION,
             description: "Control media playback on the local desktop via MPRIS. Works with Spotify, YouTube Music in a browser, VLC, mpv, and any other MPRIS player. Requires `playerctl` to be installed. `status` returns the current track (artist, title, album) and whether it is playing; `position` returns the playback position; `shuffle`, `repeat`, and `seek` adjust playback.",
-            schema: media_schema,
+            schema: Schema::Fn(media_schema),
             risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Execute],
             capabilities: &[],
             source: Source::Core,

@@ -3,6 +3,7 @@ pub mod accessibility;
 pub mod browser;
 pub mod capabilities;
 pub mod computer;
+pub mod external;
 #[cfg(target_os = "linux")]
 pub mod gnome_doctor;
 pub mod manifest;

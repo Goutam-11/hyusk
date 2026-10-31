@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
 
 const BRAVE_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
 const DUCKDUCKGO_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
@@ -149,7 +149,7 @@ impl Tool for WebSearchTool {
             name: "web_search",
             version: CORE_VERSION,
             description: "Search the live web directly without opening or controlling a browser. Use this for current events, changing facts, online documentation, recommendations, and source-backed answers. Results contain titles, URLs, and snippets; mention source names in the answer.",
-            schema: web_search_schema,
+            schema: Schema::Fn(web_search_schema),
             risk: &[RiskClass::Read, RiskClass::Network],
             capabilities: &[],
             source: Source::Core,

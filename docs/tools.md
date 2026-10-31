@@ -38,17 +38,18 @@ does not compile. A `ToolManifest` carries:
 | `name` | The name a model call uses; it must equal `Tool::name`. |
 | `version` | A `major.minor.patch` declaration version (`CORE_VERSION` for the built-in tools). |
 | `description` | The model-facing description, and the first line of the prompt's tool guide. |
-| `schema` | A function that builds the JSON Schema for the arguments. |
+| `schema` | A `Schema`: `Fn` for a built-in tool's function, or `Owned` for a schema received in an external handshake. |
 | `risk` | At least one of `read`, `mutate`, `input`, `execute`, `network`, `system`. |
 | `capabilities` | The OS capabilities the tool needs, from the D3 vocabulary: `input`, `screenshot`, `accessibility`. |
-| `source` | `core` for the tools in this binary; `external` is reserved for T2 and cannot register yet, because it has no approval policy row. |
+| `source` | `core` for the tools in this binary; `external` for a handshake tool, which must be named `ext.<server>.<tool>`. |
 
 The registry validates each manifest when the tool registers and panics with one
 message on a programmer error: an empty name, a version that is not
 `major.minor.patch`, an empty or oversized description, a schema that is not an
 object schema, a `required` entry that `properties` does not declare, or no
 risk class. `register` also refuses a manifest whose name disagrees with the
-tool, a duplicate name, and an external source.
+tool, a duplicate name, an external tool outside the `ext.` namespace, and a
+core tool that squats it.
 
 `ToolRegistry::conformance()` runs the set-level checks at startup and in the
 tests: every registered tool needs an approval policy row, and a tool that
@@ -747,6 +748,70 @@ actions. Pairing codes are shown by the GNOME and Noctalia indicators; the tool
 never returns them. See [Android companion](android-agent.md) and the
 [link protocol](mobile-link-protocol.md).
 
+## External tools (T2)
+
+Every built-in tool is Rust compiled into the binary. An external server adds
+tools without a rebuild: the host spawns it, performs one handshake, and
+registers what it declares.
+
+```text
+HYUSK_EXTERNAL_SERVERS='[{"name":"notes","command":"/opt/hyusk-notes","args":["serve"],"timeout_ms":5000}]'
+```
+
+The value is either that JSON array or the path to a file holding it. A server
+entry is `{ "name", "command", "args"?, "timeout_ms"?, "startup_timeout_ms"? }`.
+The name must be 1-32 letters, digits, `-` or `_`, start with a letter or digit,
+and be unique; at most 16 servers and 64 tools per server are read. A broken
+variable is logged and ignored rather than stopping the agent.
+
+**Protocol.** One JSON object per line, in both directions, over stdin and
+stdout (stderr is discarded). The host sends `initialize` with
+`{"protocolVersion":"1.0","client":{…}}`; the server answers with
+
+```json
+{"server":{"name":"notes","version":"1.2.3"},
+ "tools":[{"name":"search","description":"…","inputSchema":{"type":"object"}}]}
+```
+
+and must name itself exactly as configured, so one server cannot impersonate
+another's namespace. The host then sends `{"method":"tools/call","params":
+{"name":"<tool>","arguments":{…}}}` and reads MCP-shaped
+`{"content":[{"type":"text","text":"…"}],"isError":false}`. A call's result text
+is truncated at 20,000 characters and passed through the same redaction as any
+tool output (X2).
+
+**Names and manifests.** A declared tool registers as
+`ext.<server>.<tool>` (whole name at most 64 characters). Its manifest is the
+handshake: the description is collapsed to one line and bounded, the version is
+`major.minor.patch` or `0.0.0`, the risk class is `execute`, and it declares no
+OS capabilities - a server cannot claim the input, screenshot, or accessibility
+grants that the D3/D6 tables own. The server's description is untrusted text;
+it is shown so a call is understandable, never treated as a policy.
+
+**Arguments.** The model's arguments are validated against the declared
+`inputSchema` before they leave the host: top-level object, `type`, `enum`,
+`required`, `additionalProperties: false`, and `items`, to a bounded depth of
+eight. The validator is a small subset, not a full JSON Schema engine, and an
+unknown declared type fails closed. Arguments over 64 KiB are refused.
+
+**Approval.** The one `ext.` row in `src/tools/safety.rs` asks for **every**
+external call. A turn-scoped "allow for this turn" grant cannot cover one,
+because the namespace row has no action shape to key it on, and nothing a
+server says changes that.
+
+**Failure and shutdown.** A per-call deadline (default 10 s, clamped to
+100 ms-120 s) and a startup deadline (default 5 s, clamped to 100 ms-30 s)
+bound each interaction. A timeout or a crashed server kills the process and
+reports a failed result; the next call starts a fresh one, and a server that
+died while idle is noticed before the host writes to it. A server that will not
+start is logged and left out, so the remaining tools still run. Shutdown kills
+and reaps every child, because the agent exits through `std::process::exit` and
+would otherwise leave them behind.
+
+The test fixture at `tests/fixtures/external_server.sh` exercises the happy
+path, redaction, crashes, idle death, timeouts, oversized output, and shutdown;
+T4 adds the operator-facing threat model and the kill switch.
+
 ## Adding a tool
 
 1. Add a module under `src/tools/`.
@@ -764,7 +829,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::manifest::{Capability, CORE_VERSION, RiskClass, Source, ToolManifest};
+use super::manifest::{Capability, Schema, CORE_VERSION, RiskClass, Source, ToolManifest};
 use super::{Tool, ToolResult};
 
 pub struct Ping;
@@ -791,7 +856,7 @@ impl Tool for Ping {
             name: "ping",
             version: CORE_VERSION,
             description: "Echo a short message without touching the host.",
-            schema: ping_schema,
+            schema: Schema::Fn(ping_schema),
             risk: &[RiskClass::Read],
             capabilities: &[],
             source: Source::Core,
@@ -809,7 +874,10 @@ Then add `pub mod ping;` to `tools/mod.rs` and call
 `tools.register(Ping);` during startup. A tool that types text or presses keys
 declares `Capability::Input` in its manifest and its actions in the policy
 row's `input_paths`; `conformance()` fails if only one of the two is present.
-Restart the binary so the new spec is sent to the model.
+Restart the binary so the new spec is sent to the model. A tool that arrives
+from an external server skips this: it is configured in
+`HYUSK_EXTERNAL_SERVERS`, registers under `ext.<server>.<tool>`, and is covered
+by the namespace row rather than a per-tool entry.
 
 ## Security model
 
@@ -849,6 +917,11 @@ The tool platform has guardrails but no sandbox:
   finding, focusing, and `get_text` stay free.
 - `browser` mutations (`click`, `fill`, `press_key`) ask; reads and navigation
   stay free, and an unknown action fails closed.
+- External servers (T2) run as separate processes. Every call asks, the
+  server's description and schema are untrusted data, results are truncated and
+  redacted, and a crash or a missed deadline kills the process without touching
+  the agent. See [External tools](#external-tools-t2); T3 and T4 add the MCP
+  allowlist, curated descriptions, and the operator-facing threat model.
 - A denied or unsupported OS capability (portal input, screen capture, AT-SPI)
   returns a capability error before arming a card; the state is one line in the
   per-turn context and in `gnome_doctor`.

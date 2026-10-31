@@ -619,6 +619,10 @@ struct ToolSetup<'a> {
     active_model: SharedActiveModel,
     link_server: Option<Arc<link::LinkServer>>,
     brave_search_key: Option<String>,
+    /// The external tool host, started before the registry so its handshake
+    /// tools register beside the core ones (T2). `None` when none are
+    /// configured or none answered.
+    external_host: Option<Arc<tools::external::ExternalHost>>,
 }
 
 /// Build the model-facing tool registry.
@@ -627,13 +631,16 @@ struct ToolSetup<'a> {
 /// `tools::safety::ToolName`: the compiler enforces the naming match and
 /// `tool_policy_tests::every_registered_tool_has_an_explicit_policy` checks the
 /// registry this function actually builds, so a tool cannot be added without a
-/// decision.
-fn build_tools(setup: ToolSetup<'_>) -> ToolRegistry {
+/// decision. External tools (T2) are the exception by construction: they are
+/// not known at compile time and are covered by the one `ext.` namespace row in
+/// `tools::safety`.
+async fn build_tools(setup: ToolSetup<'_>) -> ToolRegistry {
     let ToolSetup {
         events,
         active_model,
         link_server,
         brave_search_key,
+        external_host,
     } = setup;
 
     let mut tools = ToolRegistry::new();
@@ -683,6 +690,15 @@ fn build_tools(setup: ToolSetup<'_>) -> ToolRegistry {
     // declares the input capability must declare input paths in its row. A
     // violation is a build-time mistake, so it fails here rather than at the
     // first call.
+    //
+    // External tools (T2) arrive with their server's handshake and join the
+    // same registry under `ext.<server>.<tool>`. A server that failed at
+    // startup is already absent; `register_into` skips a malformed declaration
+    // rather than aborting the whole set.
+    if let Some(host) = external_host.as_ref() {
+        host.register_into(&mut tools);
+    }
+
     if let Err(problems) = tools.conformance() {
         panic!(
             "the tool registry is inconsistent:\n  {}",
@@ -901,12 +917,28 @@ async fn main() -> Result<()> {
         Ok(key) => Some(key),
         Err(_) => credentials::lookup("brave_search").await,
     };
+
+    // The external host probes each configured server once, here, so its
+    // handshake tools can join the registry (T2). The same handle is kept for
+    // the shutdown below: an exit through `std::process::exit` skips drops, so
+    // leaving the children to `kill_on_drop` would orphan them.
+    let external_host = tools::external::ExternalHost::start_from_env().await;
+    if let Some(host) = external_host.as_ref() {
+        println!(
+            "[External] {} server(s) exposing {} tool(s)",
+            host.server_count(),
+            host.tool_count()
+        );
+    }
+
     let tools = build_tools(ToolSetup {
         events: &agent_tx,
         active_model: active_api_model.clone(),
         link_server: link_server.clone(),
         brave_search_key,
-    });
+        external_host: external_host.clone(),
+    })
+    .await;
 
     let saved_selection = settings::load();
     let selected_provider = saved_selection
@@ -1485,6 +1517,12 @@ async fn main() -> Result<()> {
         let _ = std::fs::remove_file(path);
     }
 
+    // Kill and reap the external servers before the hard exit below, which
+    // would otherwise skip `kill_on_drop` and leave the children behind (T2).
+    if let Some(host) = external_host {
+        host.shutdown().await;
+    }
+
     // Give the wake thread and runtime a moment to unwind, then exit hard so a
     // detached blocking microphone task cannot keep the process alive.
     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -1591,7 +1629,7 @@ mod control_tests {
 mod tool_policy_tests {
     use super::*;
 
-    fn test_tools() -> ToolRegistry {
+    async fn test_tools() -> ToolRegistry {
         let (events, _receiver) = mpsc::channel(4);
         build_tools(ToolSetup {
             events: &events,
@@ -1602,14 +1640,16 @@ mod tool_policy_tests {
             ),
             link_server: None,
             brave_search_key: None,
+            external_host: None,
         })
+        .await
     }
 
     /// A tool registered without an approval policy must fail here rather than
     /// silently running unconfirmed.
     #[tokio::test]
     async fn every_registered_tool_has_an_explicit_policy() {
-        let tools = test_tools();
+        let tools = test_tools().await;
         let mut missing = Vec::new();
         for tool in tools.iter() {
             if tools::safety::policy_for(tool.name()).is_none() {
@@ -1647,7 +1687,7 @@ mod tool_policy_tests {
     /// with the approval policy table (A8) and the input-path rule (D6).
     #[tokio::test]
     async fn every_registered_tool_declares_a_conformant_manifest() {
-        let tools = test_tools();
+        let tools = test_tools().await;
 
         if let Err(problems) = tools.conformance() {
             panic!("the tool registry is inconsistent: {problems:#?}");
@@ -1685,7 +1725,7 @@ mod tool_policy_tests {
             assert_eq!(spec["type"], "function");
             assert_eq!(spec["function"]["name"], manifest.name);
             assert_eq!(spec["function"]["description"], manifest.description);
-            assert_eq!(spec["function"]["parameters"], (manifest.schema)());
+            assert_eq!(spec["function"]["parameters"], manifest.schema.build());
         }
 
         // The version is visible in the registry without building the tool.

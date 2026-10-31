@@ -18,7 +18,7 @@ use crate::{
 };
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
 
 const MAX_PENDING_TASKS: usize = 16;
 
@@ -216,7 +216,7 @@ impl Tool for TaskTool {
             name: "task",
             version: CORE_VERSION,
             description: "Delegate, list, or cancel background work. `research` is read-only. `workspace` lets an installed Codex CLI inspect and edit one approved project directory in workspace-write sandbox mode, without desktop or personal-data access. The main assistant remains available and announces completion.",
-            schema: task_schema,
+            schema: Schema::Fn(task_schema),
             risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Execute, RiskClass::Network],
             capabilities: &[],
             source: Source::Core,

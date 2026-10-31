@@ -80,6 +80,30 @@ impl Capability {
     }
 }
 
+/// Where a manifest's argument schema comes from.
+///
+/// A core tool names a function beside its code, so its schema stays where it
+/// is written. An external tool receives its schema in the host handshake
+/// (T2), so it keeps the parsed value instead; the host leaks that value for
+/// the process lifetime, because the server set is fixed at startup.
+#[derive(Clone, Copy, Debug)]
+pub enum Schema {
+    /// A core tool's schema, built on demand from a function.
+    Fn(fn() -> Value),
+    /// A schema received at run time, valid for the process lifetime.
+    Owned(&'static Value),
+}
+
+impl Schema {
+    /// The schema as a JSON value.
+    pub fn build(self) -> Value {
+        match self {
+            Schema::Fn(build) => build(),
+            Schema::Owned(schema) => schema.clone(),
+        }
+    }
+}
+
 /// One tool's declaration.
 ///
 /// `Copy` because every field is a constant, so the registry can hand a
@@ -92,10 +116,9 @@ pub struct ToolManifest {
     pub version: &'static str,
     /// The model-facing description.
     pub description: &'static str,
-    /// Builds the JSON Schema for the arguments. A function rather than a
-    /// value, so a tool keeps its schema beside its code and nothing is
-    /// serialised until a spec is built.
-    pub schema: fn() -> Value,
+    /// The JSON Schema for the arguments, either a core function or a value
+    /// received in the T2 handshake.
+    pub schema: Schema,
     /// At least one class; an unclassified tool is a bug.
     pub risk: &'static [RiskClass],
     /// The OS capabilities the tool needs, from the D3 vocabulary.
@@ -153,7 +176,8 @@ impl fmt::Display for ManifestError {
 
 /// `major.minor.patch`, all numeric. Deliberately narrow: the registry only
 /// needs to tell versions apart, and accepting more would let a typo through.
-fn valid_version(version: &str) -> bool {
+/// The external host (T2) reuses it on a version a server declares.
+pub(crate) fn valid_version(version: &str) -> bool {
     let parts: Vec<&str> = version.split('.').collect();
 
     parts.len() == 3
@@ -193,7 +217,7 @@ impl ToolManifest {
             return Err(ManifestError::NoRiskClass);
         }
 
-        let schema = (self.schema)();
+        let schema = self.schema.build();
         let Some(object) = schema.as_object() else {
             return Err(ManifestError::SchemaNotObject);
         };
@@ -244,7 +268,7 @@ pub fn stub(name: &'static str) -> ToolManifest {
         name,
         version: "0.0.0",
         description: "test tool",
-        schema: stub_schema,
+        schema: Schema::Fn(stub_schema),
         risk: &[RiskClass::Read],
         capabilities: &[],
         source: Source::Core,
@@ -278,7 +302,7 @@ mod tests {
             name: "fixture",
             version: CORE_VERSION,
             description: "A fixture tool.",
-            schema,
+            schema: Schema::Fn(schema),
             risk: &[RiskClass::Read, RiskClass::Mutate],
             capabilities: &[Capability::Input],
             source: Source::Core,
@@ -394,7 +418,7 @@ mod tests {
 
         for (schema, expected) in cases {
             let manifest = ToolManifest {
-                schema,
+                schema: Schema::Fn(schema),
                 ..manifest()
             };
             assert_eq!(manifest.conformance(), Err(expected));

@@ -19,7 +19,7 @@ use tokio::process::Command;
 use tokio::time::sleep;
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{Capability, RiskClass, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{Capability, RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
 
 const MAX_TEXT_BYTES: usize = 100_000;
 const MAX_CLICKS: u32 = 20;
@@ -2241,7 +2241,7 @@ impl Tool for ComputerTool {
             attached to the conversation as an image; inspect it directly instead \
             of calling `ocr`. This tool can affect the user's real desktop; use it \
             only for actions the user asked for.",
-            schema: computer_schema,
+            schema: Schema::Fn(computer_schema),
             risk: &[
                 RiskClass::Read,
                 RiskClass::Mutate,

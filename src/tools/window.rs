@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
 
 const SERVICE: &str = "org.hyusk.Shell";
 const PATH: &str = "/org/hyusk/Shell";
@@ -402,7 +402,7 @@ impl Tool for WindowTool {
             focused window). This is the reliable way to manage windows on \
             Wayland; prefer it over blind alt+tab or accessibility, which cannot \
             raise windows.",
-            schema: window_schema,
+            schema: Schema::Fn(window_schema),
             risk: &[RiskClass::Read, RiskClass::Mutate],
             capabilities: &[],
             source: Source::Core,

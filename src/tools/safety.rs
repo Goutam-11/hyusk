@@ -341,14 +341,49 @@ impl ToolPolicy {
 
 /// The model-facing approval guidance, rendered from the table so the prose
 /// cannot drift from the gate: one line per tool, in the order of
-/// [`ToolName::ALL`]. The system prompt embeds this text instead of a
+/// [`ToolName::ALL`], plus the external namespace (T2), whose tools are not
+/// fixed at compile time. The system prompt embeds this text instead of a
 /// hand-written list (A1).
 pub fn approval_guidance() -> String {
     let mut guidance = String::new();
     for tool in ToolName::ALL {
         guidance.push_str(&format!("- {}: {}\n", tool.name(), tool.policy().guidance));
     }
+    guidance.push_str(&format!(
+        "- {}<server>.<tool>: {}\n",
+        EXTERNAL_PREFIX, EXTERNAL_POLICY.guidance
+    ));
     guidance
+}
+
+/// The prefix every external tool name starts with (T2).
+///
+/// The registry and the gate share this one string: a name in the namespace is
+/// an external tool, whichever server supplies it, and is decided by
+/// [`EXTERNAL_POLICY`] rather than by a row per server.
+pub const EXTERNAL_PREFIX: &str = "ext.";
+
+/// True when a tool name belongs to the external namespace.
+pub fn is_external_tool(name: &str) -> bool {
+    name.strip_prefix(EXTERNAL_PREFIX)
+        .is_some_and(|remainder| !remainder.trim().is_empty())
+}
+
+/// The one row for every external tool (T2). An external server supplies the
+/// description and the result, and the server's own idea of risk is not a
+/// policy, so the host asks for every call. The row declares no input paths:
+/// the host does not let a server claim a desktop capability the D6/D3 tables
+/// did not grant.
+const EXTERNAL_POLICY: ToolPolicy = ToolPolicy {
+    decision: Decision::Classified(external_always_asks),
+    guidance: "an external tool always asks: the server supplies its description and \
+               result, so the host applies this policy whatever the server claims",
+    preview_keys: &[],
+    input_paths: &[],
+};
+
+fn external_always_asks(_: &Value) -> bool {
+    true
 }
 
 /// The key a turn-scoped "allow for this turn" grant applies to: the tool plus
@@ -499,7 +534,14 @@ fn truncate_preview(text: &str) -> String {
 }
 
 /// The policy for a registered tool, or `None` when the name is unknown.
+///
+/// An external tool (T2) is decided by the one namespace row: the set of
+/// external tools depends on which servers answered, so it cannot have a
+/// variant in the compile-time table.
 pub fn policy_for(name: &str) -> Option<ToolPolicy> {
+    if is_external_tool(name) {
+        return Some(EXTERNAL_POLICY);
+    }
     ToolName::from_name(name).map(ToolName::policy)
 }
 
@@ -3307,7 +3349,8 @@ mod tests {
     fn generated_guidance_lists_every_policy_row_once() {
         let guidance = super::approval_guidance();
         let lines: Vec<&str> = guidance.lines().collect();
-        assert_eq!(lines.len(), ToolName::ALL.len());
+        // The compile-time rows, then the one external-namespace line (T2).
+        assert_eq!(lines.len(), ToolName::ALL.len() + 1);
         for (line, tool) in lines.iter().zip(ToolName::ALL) {
             assert!(
                 line.starts_with(&format!("- {}: ", tool.name())),
@@ -3324,6 +3367,13 @@ mod tests {
                 tool.name()
             );
         }
+        assert!(
+            lines
+                .last()
+                .is_some_and(|line| line.starts_with("- ext.<server>.<tool>: ")),
+            "the external namespace needs one guidance line: {guidance}"
+        );
+        assert_eq!(guidance.matches("- ext.<server>.<tool>: ").count(), 1);
     }
 
     #[test]
@@ -3336,6 +3386,38 @@ mod tests {
         assert!(policy_for("mystery_tool").is_none());
         assert!(policy_for("shell").is_some());
         assert!(!check("browser", r#"{"action":"read","target_id":"1"}"#));
+    }
+
+    /// T2: a server's tools are untrusted, so every external call asks. The
+    /// namespace row also has no action to key a turn grant on, so approving
+    /// one call never blankets the rest of the turn.
+    #[test]
+    fn external_tools_always_ask_and_cannot_be_granted_for_a_turn() {
+        for name in ["ext.fixture.echo", "ext.git.status", "ext.fetch.get"] {
+            assert!(super::is_external_tool(name), "{name} is external");
+            assert!(check(name, "{}"), "{name} asks with no arguments");
+            assert!(check(name, r#"{"text":"hello"}"#), "{name} asks");
+            assert!(check(name, "not json"), "{name} asks on bad arguments");
+            assert!(policy_for(name).is_some(), "{name} has a policy row");
+            assert!(
+                !requires_focus_context(name, r#"{"text":"hello"}"#),
+                "{name} never claims a focus-dependent input path"
+            );
+            assert_eq!(
+                grant_key(name, r#"{"text":"hello"}"#),
+                None,
+                "{name} cannot be covered by a turn grant"
+            );
+        }
+        // The preview shows the tool and its arguments as written.
+        assert_eq!(
+            preview("ext.fixture.echo", r#"{"text":"hello"}"#),
+            "ext.fixture.echo text=hello"
+        );
+        // A prefix alone is not a tool, and an ordinary name is not external.
+        for name in ["ext.", "ext", "extra", "shell", ""] {
+            assert!(!super::is_external_tool(name), "{name} is not external");
+        }
     }
 
     #[test]

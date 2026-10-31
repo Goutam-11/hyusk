@@ -159,10 +159,10 @@ cargo check --all-targets --features workflow-editor
 cargo test --all-targets --features workflow-editor
 ```
 
-`cargo test --all-targets` runs the default suite: 450 passing tests and 6
+`cargo test --all-targets` runs the default suite: 465 passing tests and 6
 ignored. The GTK workflow editor is skipped by default (P3); with `--features
-workflow-editor` the full suite is 455 passing and 7 ignored (the main binary
-alone: 450 passing, 6 ignored; the editor contributes five, one of them
+workflow-editor` the full suite is 470 passing and 7 ignored (the main binary
+alone: 465 passing, 6 ignored; the editor contributes five, one of them
 ignored). The ignored ones need a real session or
 network: the four portal smoke tests below, a live CDP browser test, a Whisper
 cancel/cache test, and the GTK workflow editor draft test. Coverage includes
@@ -170,8 +170,9 @@ the computer tool and portal mapping, the keyboard risk classes, the
 path-equivalence table for every input path, input and URL validation, browser
 CDP protocol handling, accessibility targeting, wake and clap detection,
 RNNoise denoising, the instant-command router, streaming sentence splitting,
-session repair and compaction, persistent memory, scheduling, and the one-shot
-`WakeResume` handshake.
+session repair and compaction, persistent memory, scheduling, the external tool
+host (handshake, redaction, crash, idle death, timeout, truncation, argument
+validation, and shutdown), and the one-shot `WakeResume` handshake.
 
 `cargo clippy --all-targets` currently reports three
 `result_large_err` warnings on `LinkServerError` in `src/link/server.rs`; there

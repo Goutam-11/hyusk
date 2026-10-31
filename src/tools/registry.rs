@@ -27,10 +27,15 @@ impl ToolRegistry {
     /// Register a tool, validating its manifest first (T1).
     ///
     /// A malformed manifest, a manifest whose name disagrees with the tool, a
-    /// second tool with the same name, and an external tool are all programmer
-    /// errors: the composition root registers a fixed set at startup, so a
-    /// panic here is the explicit failure the issue asks for, not a runtime
-    /// condition.
+    /// second tool with the same name, and a name in the wrong namespace are
+    /// all programmer errors: the composition root registers a fixed set at
+    /// startup, so a panic here is the explicit failure the issue asks for, not
+    /// a runtime condition.
+    ///
+    /// An external tool (T2) uses the same manifest shape and must live in the
+    /// `ext.<server>.<tool>` namespace, which is what gives it a policy row
+    /// without a compile-time entry in the table. A core tool may not squat
+    /// that namespace, and an external manifest cannot escape it.
     pub fn register<T>(&mut self, tool: T)
     where
         T: Tool + 'static,
@@ -49,11 +54,20 @@ impl ToolRegistry {
             );
         }
 
-        if manifest.source == Source::External {
-            panic!(
-                "external tool {:?} cannot register yet: it has no approval policy row (T2)",
-                manifest.name
-            );
+        match manifest.source {
+            Source::External if !super::safety::is_external_tool(manifest.name) => {
+                panic!(
+                    "external tool {:?} is not named ext.<server>.<tool>",
+                    manifest.name
+                );
+            }
+            Source::Core if super::safety::is_external_tool(manifest.name) => {
+                panic!(
+                    "core tool {:?} uses the external ext. namespace",
+                    manifest.name
+                );
+            }
+            _ => {}
         }
 
         if self.tools.contains_key(manifest.name) {
@@ -110,7 +124,7 @@ impl ToolRegistry {
                     "function": {
                         "name": manifest.name,
                         "description": manifest.description,
-                        "parameters": (manifest.schema)(),
+                        "parameters": manifest.schema.build(),
                     }
                 })
             })
@@ -277,13 +291,45 @@ mod tests {
         registry.register(named("alpha"));
     }
 
+    /// T2: an external tool uses the same manifest shape and registers in its
+    /// namespace, where the gate has one always-ask policy row.
     #[test]
-    #[should_panic(expected = "cannot register yet")]
-    fn an_external_tool_is_refused_until_the_host_exists() {
+    fn an_external_tool_in_its_namespace_registers_and_conforms() {
+        let mut registry = ToolRegistry::new();
+        registry.register(NamedTool(ToolManifest {
+            name: "ext.fixture.echo",
+            source: Source::External,
+            ..manifest::stub("ext.fixture.echo")
+        }));
+
+        assert_eq!(registry.conformance(), Ok(()));
+        let manifests = registry.manifests();
+        assert_eq!(manifests.len(), 1);
+        assert_eq!(manifests[0].name, "ext.fixture.echo");
+        assert_eq!(manifests[0].source, Source::External);
+        assert!(crate::tools::safety::requires_approval(
+            "ext.fixture.echo",
+            "{}"
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "is not named ext.<server>.<tool>")]
+    fn an_external_tool_outside_the_namespace_is_refused() {
         let mut registry = ToolRegistry::new();
         registry.register(NamedTool(ToolManifest {
             source: Source::External,
             ..manifest::stub("fixture")
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "uses the external ext. namespace")]
+    fn a_core_tool_cannot_squat_the_external_namespace() {
+        let mut registry = ToolRegistry::new();
+        registry.register(NamedTool(ToolManifest {
+            name: "ext.fixture.echo",
+            ..manifest::stub("ext.fixture.echo")
         }));
     }
 

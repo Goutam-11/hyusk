@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{RiskClass, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
 
 const MAX_ENTRIES: usize = 5_000;
 const MAX_GRAPH: usize = 5_000;
@@ -2341,7 +2341,7 @@ impl Tool for MemoryTool {
             `forget` to delete an entry by id. \
             The SQLite store survives restarts and a readable Markdown view is generated \
             under the user's data directory.",
-            schema: memory_schema,
+            schema: Schema::Fn(memory_schema),
             risk: &[RiskClass::Read, RiskClass::Mutate],
             capabilities: &[],
             source: Source::Core,

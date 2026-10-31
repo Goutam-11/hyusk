@@ -2,9 +2,9 @@
 
 Status: agreed on 2026-10-29. Wave 1 (P1, P2, P3, T1) was completed on
 2026-10-31, Wave 2 began with M1 (memory schema v2), and M2 (hybrid retrieval),
-M3 (consolidation) and M4 (explain and export) from Wave 3, plus G1 (preference
-notes) from Wave 4, followed because they depended only on the memory work; P4
-is deferred. Work is tracked in
+M3 (consolidation), M4 (explain and export), G1 (preference notes), and T2 (the
+external tool host) followed; P4 is deferred. The remaining work is P5, P6, T3,
+T4, and G2. Work is tracked in
 [issues/ARCHITECTURE_ISSUE.md](../issues/ARCHITECTURE_ISSUE.md); this document
 records the direction and the reasoning, not individual tasks.
 

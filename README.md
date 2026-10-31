@@ -145,6 +145,7 @@ or times out, the wake event is ignored and the terminal input path still works.
 | `HYUSK_MEMORY_CONSOLIDATE` | No | `1` | The bounded background pass that merges near-duplicate memories and decays entries idle for the stale window; `0` disables it. |
 | `HYUSK_MEMORY_CONSOLIDATE_STALE_DAYS` | No | `180` | How long an unused memory may sit before it starts losing confidence. |
 | `HYUSK_MEMORY_VAULT` | No | unset | An Obsidian vault path; `memory` action `export` then writes one note per active memory into `<vault>/hyusk-notes`. Unset disables the export. |
+| `HYUSK_EXTERNAL_SERVERS` | No | unset | A JSON array, or a path to a file holding one, of external tool servers (`{"name","command","args","timeout_ms","startup_timeout_ms"}`). Each server is spawned once, handshakes its tools, and registers them as `ext.<server>.<tool>`; every external call asks for approval. Unset disables the host. |
 | `HYUSK_SESSION_PATH` | No | `$XDG_DATA_HOME/hyusk/session.json` | Override the private recent-conversation snapshot path. |
 | Background subagents | No configuration | At most two workers. Research is read-only; workspace tasks use local Codex CLI with a 15-minute limit. |
 | `WAKE_CLAP_ENABLED` | No | `0` | Enable hand-clap wake (off by default; noise triggers it). |

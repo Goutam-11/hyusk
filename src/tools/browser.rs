@@ -9,7 +9,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{Capability, RiskClass, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{Capability, RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
 
 const DEFAULT_CDP_URL: &str = "http://127.0.0.1:9222";
 const CDP_TIMEOUT: Duration = Duration::from_secs(12);
@@ -466,7 +466,7 @@ impl Tool for BrowserTool {
             name: "browser",
             version: CORE_VERSION,
             description: "Control the separate Hyusk browser profile over local CDP. Use status to diagnose, start to open/reuse the managed automation browser, and new_tab to recover from an unresponsive page without closing existing tabs. Read DOM, navigate, click, fill, and press keys. Never kill browser processes with shell commands.",
-            schema: browser_schema,
+            schema: Schema::Fn(browser_schema),
             risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Input],
             capabilities: &[Capability::Input],
             source: Source::Core,

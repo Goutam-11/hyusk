@@ -100,6 +100,7 @@ for the microphone at the same time.
 | `tools/tool.rs` | Defines the async `Tool` trait and `ToolResult`; the trait requires a manifest. |
 | `tools/manifest.rs` | Declares the per-tool manifest (name, version, description, schema, risk classes, capability needs, source) and validates it. |
 | `tools/registry.rs` | Stores each tool with its validated manifest, exposes the manifests, generates the model-facing specs from them, and checks the policy tie (T1). |
+| `tools/external.rs` | Spawns configured external tool servers over JSON-RPC 2.0 on stdio, handshakes their manifests, and registers their tools as `ext.<server>.<tool>` (T2). |
 | `tools/computer.rs` | Controls the GUI with the portal/enigo backends, screenshots, OCR, and key/mouse helpers. |
 | `tools/portal.rs` | Linux-only XDG RemoteDesktop and Screenshot portal integration. |
 | `tools/browser.rs` | Controls a dedicated browser profile over CDP instead of screenshots. |

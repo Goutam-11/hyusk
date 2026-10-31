@@ -4,6 +4,23 @@
 
 ### Added
 
+- Tools can now arrive from an external server without a rebuild (T2). One
+  host spawns each server configured in `HYUSK_EXTERNAL_SERVERS` (inline JSON or
+  a file path), performs a JSON-RPC 2.0 handshake over stdio, and registers what
+  the server declares as `ext.<server>.<tool>`. The handshake carries the
+  model-facing description and the argument schema; the host collapses the
+  description to one bounded line, normalises the version, and assigns the risk
+  class itself. Arguments are validated against the declared schema (type,
+  `enum`, `required`, `additionalProperties: false`, `items`) before the server
+  sees them, results are truncated at 20,000 characters and pass the same
+  redaction as built-in tool output, and every external call asks for approval
+  through one `ext.` namespace row - a turn grant cannot cover it and a server's
+  own claims never change that. A call deadline (default 10 s) and a startup
+  deadline (default 5 s) bound each interaction; a crashed or slow server is
+  killed and restarted on the next call, a server that will not start is skipped,
+  and shutdown kills and reaps every child. Tests use a fixture server for the
+  happy path, redaction, crashes, idle death, timeouts, oversized output,
+  argument validation, and shutdown.
 - Memory can explain itself and travel into an Obsidian vault (M4). The
   `memory` action `why` answers "why does the agent think this?" for one entry:
   kind, scope (and project), topic, confidence, source and session, tags, the
