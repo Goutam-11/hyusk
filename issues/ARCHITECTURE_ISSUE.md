@@ -386,10 +386,19 @@ on the manual list).
 
 ## P6 — Feature-gate Nova Sonic
 
-- Status: open · Wave 3 · Size: large
-- Depends on: P5
-- Evidence: `src/model/bedrock_sonic.rs`, `src/agent/runner/sonic.rs`,
-  `src/agent/runner.rs`, `src/agent/runtime.rs`, `src/types/event.rs`
+- Status: done 2026-10-31 · Wave 3 · Size: large
+- Commit: `eccacee`
+- Depends on: P5 (closed)
+- Evidence: confirmed before the change at `src/model/bedrock_sonic.rs` (869
+  lines, unconditional `pub mod` in `model/mod.rs`), `src/agent/runner/sonic.rs`
+  (660 lines, an unconditional `#[path] mod`), `src/agent/runner.rs` (the
+  `BedrockSonicClient` import, `with_bedrock_sonic`, `uses_bedrock_sonic`, the
+  provider branch and `handle_sonic_text` call), `src/agent/runtime.rs` (the
+  live-audio branch and the `SonicListenCompleted` dispatch), and
+  `src/types/event.rs` (the event variant). `Cargo.toml:69-70` declared
+  `aws-config` and `aws-sdk-bedrockruntime` unconditionally, and the provider,
+  model catalog, test mode, capture helpers, and `Pcm16Player` all came with
+  them.
 
 **Problem.** Sonic is a second agent loop with its own approval handling, card
 kind, and audio lifecycle. It is not used on this installation, and it already
@@ -402,17 +411,111 @@ them shared.
 
 **Acceptance criteria**
 
-- [ ] Default build excludes Sonic code and its AWS live-audio path.
-- [ ] `--features sonic` builds and the existing Sonic tests run.
-- [ ] No `cfg` leaves a dangling event or enum variant.
+- [x] Default build excludes Sonic code and its AWS live-audio path
+  (`cargo tree -e normal --depth 1` has neither AWS crate by default; the
+  module and event gates fail to compile if removed, as the probes show).
+- [x] `--features sonic` builds and the existing Sonic tests run (470 passing,
+  6 ignored: the 13 previously unconditional Sonic tests are back).
+- [x] No `cfg` leaves a dangling event or enum variant: the variant, every
+  match arm, every constructor, the dispatch, and the `is_current_sonic_listen`
+  helper carry the same gate, and both build modes compile.
 
 **Tests**
 
-- [ ] Both build modes; Sonic tests under the feature.
+- [x] Both build modes: default 457 passing, 6 ignored; `--features sonic` 470
+  passing, 6 ignored; mobile 470; workflow 462 (7 ignored); mobile+sonic 483;
+  all features 488 (7 ignored).
+- [x] Sonic tests under the feature: the seven `model::bedrock_sonic` tests, the
+  Sonic runner test, the stale-completion test, the prompt test, and the three
+  capture/audio tests run with `--features sonic`.
 
-**Files.** `Cargo.toml`, `src/model/bedrock_sonic.rs`,
-`src/agent/runner/sonic.rs`, `src/agent/runner.rs`, `src/agent/runtime.rs`,
-`src/types/event.rs`, `docs/bedrock-nova-sonic.md`.
+**Files.** `Cargo.toml`, `src/model/mod.rs`, `src/model/bedrock_sonic.rs`
+(unchanged, now gated), `src/agent/runner/sonic.rs` (unchanged, now gated),
+`src/agent/runner.rs`, `src/agent/control.rs`, `src/agent/runtime.rs`,
+`src/types/event.rs`, `src/main.rs`, `src/speech/speech.rs`,
+`docs/bedrock-nova-sonic.md`, `docs/architecture.md`,
+`docs/architecture-roadmap.md`, `docs/development.md`, `AGENTS.md`, `README.md`,
+`.env.example`, `CHANGELOG.md`, `issues/README.md`,
+`.github/workflows/ci.yml`.
+
+**Notes (2026-10-31).** The A7 check came first, as the decision asked: the
+Sonic loop already uses the shared `safety::requires_approval_with_context`,
+`approval_arguments`, `pending_text`, `APPROVAL_CARD_KIND`,
+`execute_tool_with_deadline`, the shared pending-approval state in
+`agent/control.rs`, the shared prompts, `tool_specs`, and the audit. Gating
+therefore moved only the callers; no approval decision, card kind, or execution
+path was duplicated or removed. The one shared accessor Sonic had to itself,
+`pending_cloned`, moved behind the feature because Sonic is its only caller; the
+state it reads stays shared.
+
+The gate covers:
+
+- `sonic = ["dep:aws-config", "dep:aws-sdk-bedrockruntime"]` with both
+  dependencies `optional = true`;
+- `model/bedrock_sonic.rs` and `runner/sonic.rs`;
+- `HyuskEvent::SonicListenCompleted`, every arm in `runtime.rs`, the
+  live-audio branch, the constructors, and `is_current_sonic_listen`;
+- `uses_bedrock_sonic` (false without the feature), the `handle_sonic_text`
+  call, `with_bedrock_sonic`, the `bedrock-sonic` provider branch, the model
+  catalog entry, the AWS client creation, the Sonic `or_else` fallback, and the
+  `HYUSK_NOVA_SONIC_TEST` entry point;
+- the continuous-capture helpers (`stream_pulse_input`,
+  `stream_audio_for_speech_model`, `stream_continuous_audio_for_speech_model`,
+  `pulse_speech_onset`, `align_pcm16`, `SpeechOnsetDetector`) and
+  `Pcm16Player`, which only Sonic and its test mode use;
+- the Sonic tests in the client, runner, runtime, and speech modules.
+
+Behaviour without the feature: a default build's model catalog has no
+`bedrock-sonic` entry, `uses_bedrock_sonic()` is false, selecting the provider
+(a stored selection, a panel action) fails with "Nova Sonic is not compiled in;
+rebuild with --features sonic" and the composition root falls back to the text
+providers, and `HYUSK_NOVA_SONIC_TEST` reports the same before any AWS code is
+reached.
+
+Decisions and deviations:
+
+- **`uses_bedrock_sonic` stays defined in both modes.** Returning a constant
+  `false` without the feature keeps the runtime's shared branches readable and
+  avoids a second cfg at each call site; the turn path itself is gated.
+- **The prompt's `sonic_voice` branch stays compiled.** It is a string, not the
+  AWS path, and `build_system_prompt` is shared; dropping the argument would
+  change every caller for no build win. Its test is gated because it asserts
+  Sonic behaviour.
+- **The capture helpers moved behind the feature.** They were only reachable
+  from the Sonic loop and the Sonic test mode, and leaving them compiled made
+  a default build warn about dead code (and kept the Sonic capture path in the
+  binary); gating them is the honest boundary.
+- **The `sonic` feature is independent of `mobile` and `workflow-editor`.** The
+  combinations are tested and recorded, and `--all-features` is the CI-style
+  check.
+
+Drift: the issue's `Files` list did not mention `src/agent/control.rs`,
+`src/speech/speech.rs`, `src/model/mod.rs`, `Cargo.toml`'s dependency lines,
+the guard test in `src/main.rs`, CI, or the documentation counts.
+
+**Verification.** `cargo fmt --all -- --check` and `cargo check --all-targets
+--offline` clean. Default suite: 457 passing, 6 ignored (the 13 Sonic tests are
+out). `--features sonic`: 470 passing, 6 ignored. `--features mobile`: 470
+passing, 6 ignored. `--features workflow-editor`: 462 passing, 7 ignored.
+`--features mobile,sonic`: 483 passing, 6 ignored. `--all-features`: 488
+passing, 7 ignored. `cargo clippy --all-targets --offline` and
+`--features sonic` are clean; `--all-features` shows only the three
+pre-existing `result_large_err` warnings that live behind `mobile`. `cargo tree
+-e normal --depth 1` has neither AWS crate by default and both with
+`--features sonic`. Probes, each backed up with `cp` and restored in the same
+bash call (`cmp`, marker count, and fmt re-checked):
+
+- removing the gate on `pub mod bedrock_sonic;` failed the default check with
+  unresolved `aws_config` and `aws_sdk_bedrockruntime` imports;
+- removing the gate on the `SonicListenCompleted` match arm failed with "no
+  variant named `SonicListenCompleted`" and "cannot find function
+  `is_current_sonic_listen`";
+- removing `"dep:aws-sdk-bedrockruntime"` from the feature failed
+  `platform_tests::the_nova_sonic_loop_is_behind_its_feature`.
+
+Manual checks still open: a live `bedrock-sonic` call (no AWS credentials or
+microphone in this session) and a live microphone/audio round trip; the
+`--features sonic` build, tests, and clippy are automated.
 
 ## T1 — Tool manifests
 
