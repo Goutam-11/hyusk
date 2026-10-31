@@ -9,7 +9,8 @@ APPLICATIONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 
 echo "Building Hyusk Workflows..."
-cargo build --release --manifest-path "$PROJECT_DIR/Cargo.toml" --bin hyusk-workflows
+cargo build --release --manifest-path "$PROJECT_DIR/Cargo.toml" \
+  --features workflow-editor --bin hyusk-workflows
 
 mkdir -p "$BIN_DIR" "$APPLICATIONS_DIR" "$ICONS_DIR"
 install -m 0755 "$BINARY" "$BIN_DIR/hyusk-workflows"

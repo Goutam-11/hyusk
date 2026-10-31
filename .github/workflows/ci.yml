@@ -20,14 +20,15 @@ jobs:
   rust:
     name: fmt, clippy, tests
     runs-on: ubuntu-24.04
-    # A cold cache builds GTK4, the AWS SDK, whisper.cpp, and ONNX Runtime.
+    # A cold cache builds the AWS SDK, whisper.cpp, and ONNX Runtime, plus GTK4
+    # for the workflow editor feature build below.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
       # cpal needs ALSA, eframe/winit need the X11 and Wayland clients, the
-      # settings editor needs GTK4/libadwaita, and whisper.cpp and aws-lc are
-      # built by their crates through cmake and bindgen.
+      # workflow editor feature build needs GTK4/libadwaita, and whisper.cpp and
+      # aws-lc are built by their crates through cmake and bindgen.
       - name: Install native build dependencies
         run: |
           sudo apt-get update
@@ -54,7 +55,15 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets
 
-      # Portal, live-CDP, Whisper-inference, and GUI workflow checks are
-      # #[ignore]d because they need a desktop session.
+      # The default suite skips the GTK workflow editor, which is behind the
+      # `workflow-editor` feature. Portal, live-CDP, Whisper-inference, and GUI
+      # workflow checks are #[ignore]d because they need a desktop session.
       - name: Run tests
         run: cargo test --all-targets
+
+      # One feature-enabled build, so the editor is compiled and its tests run
+      # while the default build above never touches GTK4.
+      - name: Build and test the workflow editor feature
+        run: |
+          cargo check --all-targets --features workflow-editor
+          cargo test --bin hyusk-workflows --features workflow-editor

@@ -29,14 +29,19 @@ cargo run
 cargo fmt --all -- --check
 cargo clippy --all-targets
 cargo test --all-targets
+cargo check --all-targets --features workflow-editor
+cargo test --bin hyusk-workflows --features workflow-editor
 ```
 
 The job installs the native packages listed under Prerequisites below, caches
 the Cargo registry and build directory, and reports clippy warnings without
 failing on them. The portal, live-CDP, Whisper-inference, and GUI workflow
-checks stay `#[ignore]`d, so CI does not cover the desktop-only paths. A cold
-run builds the whole dependency tree, including GTK4, the AWS SDK, whisper.cpp,
-and ONNX Runtime, and takes far longer than a cached run.
+checks stay `#[ignore]`d, so CI does not cover the desktop-only paths. The
+default build skips the GTK workflow editor (P3, the `workflow-editor`
+feature); the last two commands are the one feature-enabled build, so the
+editor is compiled and its tests run without making GTK4 part of every agent
+build. A cold run builds the AWS SDK, whisper.cpp, and ONNX Runtime, plus GTK4
+for that feature build, and takes far longer than a cached run.
 
 ## Prerequisites
 
@@ -65,7 +70,8 @@ and ONNX Runtime, and takes far longer than a cached run.
 On Debian or Ubuntu the build needs `build-essential`, `cmake`, `clang`,
 `libclang-dev`, and `pkg-config` for whisper.cpp and the AWS-LC bindings,
 `libasound2-dev` for audio, `libgtk-4-dev` and `libadwaita-1-dev` for the
-settings editor, and the X11/Wayland client packages `libx11-dev`, `libxi-dev`,
+workflow editor feature build (they are not needed for the agent alone), and
+the X11/Wayland client packages `libx11-dev`, `libxi-dev`,
 `libxcursor-dev`, `libxrandr-dev`, `libxinerama-dev`, `libwayland-dev`,
 `libxkbcommon-dev`, and `libgl1-mesa-dev`. `ci.yml` installs exactly this set.
 Distribution package names vary.
@@ -149,12 +155,15 @@ cargo fmt --all -- --check
 cargo check --all-targets
 cargo clippy --all-targets
 cargo test --bin hyusk_agent
+cargo check --all-targets --features workflow-editor
+cargo test --all-targets --features workflow-editor
 ```
 
-`cargo test --all-targets` runs the full suite: 408 passing tests and 7
-ignored (the main binary alone: 403 passing, 6 ignored; the workflow editor
-binary contributes five, one of them ignored). The ignored ones need a real
-session or
+`cargo test --all-targets` runs the default suite: 404 passing tests and 6
+ignored. The GTK workflow editor is skipped by default (P3); with `--features
+workflow-editor` the full suite is 409 passing and 7 ignored (the main binary
+alone: 404 passing, 6 ignored; the editor contributes five, one of them
+ignored). The ignored ones need a real session or
 network: the four portal smoke tests below, a live CDP browser test, a Whisper
 cancel/cache test, and the GTK workflow editor draft test. Coverage includes
 the computer tool and portal mapping, the keyboard risk classes, the

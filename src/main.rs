@@ -1636,15 +1636,38 @@ mod tool_policy_tests {
     }
 }
 
-/// P1 and P2 guards: the tree builds for Linux only and no longer ships the
-/// experimental shell agent. Both conditions are properties of the sources, so
-/// they are asserted here rather than by a runtime test.
+/// Build-shape guards (P1-P3): the tree builds for Linux only, no longer ships
+/// the experimental shell agent, and keeps the GTK workflow editor behind its
+/// feature. These are properties of the sources and the manifest, so they are
+/// asserted here rather than by a runtime test.
 #[cfg(test)]
 mod platform_tests {
     use std::path::{Path, PathBuf};
 
     fn manifest_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    }
+
+    /// The body of one manifest section, header line excluded.
+    fn manifest_section(manifest: &str, header: &str) -> String {
+        let mut section = String::new();
+        let mut inside = false;
+
+        for line in manifest.lines() {
+            let trimmed = line.trim();
+
+            if trimmed.starts_with('[') {
+                inside = trimmed == header;
+                continue;
+            }
+
+            if inside {
+                section.push_str(line);
+                section.push('\n');
+            }
+        }
+
+        section
     }
 
     fn rust_sources(directory: &Path, found: &mut Vec<PathBuf>) {
@@ -1752,5 +1775,50 @@ mod platform_tests {
             "{} was not deleted",
             duplicated_types.display()
         );
+    }
+
+    /// P3: an agent build must not compile GTK4 or libadwaita, so the editor is
+    /// behind one feature that owns both optional dependencies.
+    #[test]
+    fn the_workflow_editor_is_behind_its_feature() {
+        let manifest = std::fs::read_to_string(manifest_dir().join("Cargo.toml"))
+            .expect("read the package manifest");
+
+        let features = manifest_section(&manifest, "[features]");
+        assert!(
+            features.contains("workflow-editor"),
+            "Cargo.toml has no workflow-editor feature"
+        );
+        for dependency in ["dep:gtk4", "dep:libadwaita"] {
+            assert!(
+                features.contains(dependency),
+                "the workflow-editor feature must enable {dependency}"
+            );
+        }
+
+        let editor = manifest
+            .split("[[bin]]")
+            .find(|block| block.contains("name = \"hyusk-workflows\""))
+            .expect("the workflow editor bin entry");
+        assert!(
+            editor.contains("required-features = [\"workflow-editor\"]"),
+            "the workflow editor bin must require the workflow-editor feature"
+        );
+
+        let linux = manifest_section(
+            &manifest,
+            "[target.'cfg(target_os = \"linux\")'.dependencies]",
+        );
+        for dependency in ["gtk4", "libadwaita"] {
+            let prefix = format!("{dependency} = ");
+            let line = linux
+                .lines()
+                .find(|line| line.trim_start().starts_with(&prefix))
+                .unwrap_or_else(|| panic!("{dependency} is not a Linux dependency"));
+            assert!(
+                line.contains("optional = true"),
+                "{dependency} must be optional so a default build skips it"
+            );
+        }
     }
 }

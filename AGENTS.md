@@ -48,11 +48,18 @@ cargo fmt --all -- --check
 cargo check --all-targets --offline
 cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
+
+# The GTK workflow editor is behind a feature (P3), so its build and tests are
+# the one feature-enabled run:
+cargo check --all-targets --offline --features workflow-editor
+cargo test --all-targets --offline --features workflow-editor -- --test-threads=4
 ```
 
-Current baseline: **408 tests passing, 7 ignored**, clippy clean except three
+Current baseline: **404 tests passing, 6 ignored** for the default suite; the
+workflow editor adds five tests (one ignored) under `--features
+workflow-editor`, for **409 passing, 7 ignored**. Clippy is clean except three
 pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
-clippy, and tests on Ubuntu.
+clippy, the default tests, and that one feature build on Ubuntu.
 
 Several tests touch session/memory/status paths, so isolate them:
 
@@ -68,9 +75,9 @@ HYUSK_SESSION_PATH="$PWD/target/test-home/session.json" \
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Layout: `src/` library-like modules, `src/bin/` for `hyusk-workflows`, `tests/`
-for Python bridge/key checks. Unit tests live in
-`#[cfg(test)]` modules beside the code.
+Layout: `src/` library-like modules, `src/bin/` for the `workflow-editor`
+feature's `hyusk-workflows` bin, `tests/` for Python bridge/key checks. Unit
+tests live in `#[cfg(test)]` modules beside the code.
 
 ### Environment quirks
 
@@ -254,8 +261,9 @@ Do not add new bullets here — open an issue file instead.
 Architecture work (prune and feature-gate, tool manifests and the MCP boundary,
 memory v2, preferences) is tracked in `issues/ARCHITECTURE_ISSUE.md` and
 designed in `docs/architecture-roadmap.md`. Wave 1 is in progress: P1 (the
-experimental shell agent) and P2 (macOS branches and the Linux declaration) are
-closed; P3 (the `workflow-editor` feature) and T1 (tool manifests) remain.
+experimental shell agent), P2 (macOS branches and the Linux declaration), and P3
+(the `workflow-editor` feature) are closed; T1 (tool manifests) remains and
+changes the tool boundary, so ask before starting it.
 
 ## Memory and session notes
 

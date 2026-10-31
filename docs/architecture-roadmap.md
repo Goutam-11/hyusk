@@ -1,7 +1,7 @@
 # Architecture roadmap
 
-Status: agreed on 2026-10-29; Wave 1 began on 2026-10-31 with P1 and P2. Work
-is tracked in [issues/ARCHITECTURE_ISSUE.md](../issues/ARCHITECTURE_ISSUE.md);
+Status: agreed on 2026-10-29; Wave 1 began on 2026-10-31 with P1, P2, and P3.
+Work is tracked in [issues/ARCHITECTURE_ISSUE.md](../issues/ARCHITECTURE_ISSUE.md);
 this document records the direction and the reasoning, not individual tasks.
 
 This roadmap starts after the permission Phase 1 work in
@@ -11,8 +11,8 @@ memory and preferences behave.
 
 ## Where the repository is today
 
-About 32.4k lines of Rust in one package, two binaries (`hyusk_agent` and
-`hyusk-workflows`), and five surfaces
+About 32.4k lines of Rust in one package, two binaries (`hyusk_agent` and the
+feature-gated `hyusk-workflows` editor), and five surfaces
 (GNOME extension, Noctalia widget, orb, Android app plus link, CLI). The
 load-bearing path is: wake word, Whisper STT, runtime events, one agent turn,
 the model, the tool registry, the approval gate, session and status files, and
@@ -32,9 +32,11 @@ same three concerns:
 
 Surfaces this installation does not use: the Android app and mobile link, Nova
 Sonic, the GTK workflow editor, and the orb overlay. Roughly 5.8k of the 32.4k
-Rust lines and 8.8k Kotlin lines support paths that are not exercised here. The
-experimental shell-only agent was deleted and the macOS branches removed
-in Wave 1 (P1, P2); Linux is now the only declared target.
+Rust lines and 8.8k Kotlin lines support paths that are not exercised here. Wave
+1 has started the pruning: the experimental shell-only agent was deleted and the
+macOS branches removed (P1, P2), Linux is the only declared target, and the
+editor now sits behind the `workflow-editor` feature so an agent build no longer
+compiles GTK4 or libadwaita (P3).
 
 ## Decisions
 

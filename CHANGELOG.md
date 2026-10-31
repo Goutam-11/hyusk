@@ -78,6 +78,17 @@
 
 ### Changed
 
+- The GTK workflow editor is behind a `workflow-editor` feature. `gtk4` and
+  `libadwaita` are optional dependencies owned by that feature, the
+  `hyusk-workflows` bin carries `required-features = ["workflow-editor"]`, and
+  `scripts/install-workflow-app.sh` passes the feature, so a plain
+  `cargo build` or `cargo test --all-targets` no longer compiles the toolkit —
+  the largest avoidable build cost in the repository. CI keeps one
+  feature-enabled build (`cargo check --all-targets --features
+  workflow-editor` plus the editor's tests) next to the default job, and
+  `platform_tests` in `src/main.rs` fails if the feature wiring is dropped. The
+  README, the desktop entry, and the installed application are unchanged for
+  users who run the installer (P3).
 - The mobile link no longer accepts a replayed request after a reconnect. Replay
   protection used to be per connection: each new connection started its
   sequence at zero, so a captured request could be replayed by opening a new

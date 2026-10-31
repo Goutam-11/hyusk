@@ -109,8 +109,8 @@ dependencies win over listed order.
 Designed in [architecture-roadmap.md](../docs/architecture-roadmap.md) and
 tracked in [ARCHITECTURE_ISSUE.md](ARCHITECTURE_ISSUE.md). Waves order work
 inside that track and are independent of the phases above. Wave 1 began on
-2026-10-31: `P1` and `P2` are closed, and `P3` plus `T1` remain. `T1` needs
-`P3` and the closed `A8` policy registry.
+2026-10-31: `P1`, `P2`, and `P3` are closed, and `T1` remains. `T1` needs the
+closed `A8` policy registry and the feature work in `P3`.
 
 | ID | Title | Wave | Depends on |
 | --- | --- | --- | --- |

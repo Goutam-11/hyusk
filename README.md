@@ -558,6 +558,12 @@ Install the native GTK4/libadwaita editor for the current user:
 ./scripts/install-workflow-app.sh
 ```
 
+The editor is behind the `workflow-editor` cargo feature, because it is the only
+part of this repository that needs GTK4 and libadwaita. A plain `cargo build`
+and `cargo test --all-targets` build the agent without the toolkit; the
+installer passes the feature for you, and a manual build is
+`cargo build --features workflow-editor --bin hyusk-workflows`.
+
 Open **Hyusk Workflows** from the GNOME app grid, run
 `hyusk-workflows`, or choose **Workflows** from the Hyusk top-bar menu.
 The app provides a searchable workflow library, voice-trigger editing,
@@ -799,7 +805,8 @@ cargo run
 ```
 
 `cargo check --all-targets` and `cargo fmt --all -- --check` currently pass.
-`cargo test --all-targets` runs the unit suite; a few portal and audio checks
+`cargo test --all-targets` runs the unit suite; it skips the GTK workflow
+editor, which needs `--features workflow-editor`. A few portal and audio checks
 stay `#[ignore]`d because they need a real session (see
 [development](docs/development.md)).
 
