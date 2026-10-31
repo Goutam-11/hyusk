@@ -812,6 +812,66 @@ The test fixture at `tests/fixtures/external_server.sh` exercises the happy
 path, redaction, crashes, idle death, timeouts, oversized output, and shutdown;
 T4 adds the operator-facing threat model and the kill switch.
 
+## MCP provider (T3)
+
+The Model Context Protocol is one provider kind on the external host: the
+configuration names allowed servers, the host spawns them, discovers their
+tools, and registers each one as `ext.<server>.<tool>`.
+
+```json
+{
+  "servers": [
+    {
+      "name": "git",
+      "command": "mcp-server-git",
+      "args": ["--repository", "/home/you/project"],
+      "env": ["GIT_DIR"],
+      "allow": ["git_status", "git_diff", "git_log"],
+      "timeout_ms": 10000
+    }
+  ]
+}
+```
+
+The file is `$XDG_CONFIG_HOME/hyusk/mcp.json` (`~/.config/hyusk/mcp.json`), or
+`HYUSK_MCP_CONFIG` when set. `HYUSK_MCP=0` disables the provider; unset means
+enabled, and a missing or empty file simply means no servers. A malformed file
+is logged and ignored, never fatal.
+
+**Protocol.** The host speaks the current revision, MCP 2026-07-28, which is
+stateless: every request carries `params._meta` with
+`io.modelcontextprotocol/protocolVersion`, `clientInfo`, and
+`clientCapabilities`, and discovery is a `server/discover` call rather than an
+initialize handshake. It reads the server's supported versions and the tool
+list from `tools/list` (following `nextCursor` for at most eight bounded
+pages). A server that predates the stateless revisions answers `server/discover`
+with an error, so the host falls back to the 2025-11-25 `initialize` handshake,
+sends `notifications/initialized`, and lists tools the old way. A modern server
+that speaks only a different revision is skipped with a message naming the
+versions it offers.
+
+**Trust.** The model-facing description is written by Hyusk from the tool name,
+its read/write verb, and the argument names in the schema; the server's own
+description is not shown, and its `annotations` (`readOnlyHint`,
+`destructiveHint`) are ignored, as the MCP specification requires for untrusted
+servers. Every call still passes through the one `ext.` approval row, so a
+destructive tool asks regardless of what the server claims. A per-server `env`
+list is the environment allowlist for the child (`PATH` is always passed;
+nothing else is inherited), and an optional `allow` list narrows the offered
+tools - it can never widen approval.
+
+**Live removal.** A watcher polls the file (`HYUSK_MCP_REFRESH_SECS`, default
+30, clamped 5-3600). When a server disappears, its process is stopped and its
+tools become unavailable: the registry omits them from the next turn's model
+specs and a call fails closed, with no restart. Adding a server still needs a
+restart, because its tools have to be registered. Deleting the file
+deactivates every server.
+
+The fixture at `tests/fixtures/mcp_server.sh` speaks both eras and returns a
+hostile tool that claims to be read-only; the tests cover discovery in both
+eras, curated descriptions, the ignored annotation, a call, the allowlist,
+configuration validation, the kill switch, and both removal paths.
+
 ## Adding a tool
 
 1. Add a module under `src/tools/`.
@@ -920,8 +980,13 @@ The tool platform has guardrails but no sandbox:
 - External servers (T2) run as separate processes. Every call asks, the
   server's description and schema are untrusted data, results are truncated and
   redacted, and a crash or a missed deadline kills the process without touching
-  the agent. See [External tools](#external-tools-t2); T3 and T4 add the MCP
-  allowlist, curated descriptions, and the operator-facing threat model.
+  the agent. See [External tools](#external-tools-t2).
+- MCP servers (T3) are the other external kind. Their own descriptions and
+  annotations are never shown or trusted (the host writes a curated
+  description), their environment is an explicit allowlist, and every call is
+  gated by the same `ext.` row. A server removed from the configuration stops
+  being offered on the next turn; T4 adds the operator-facing threat model and
+  the kill switch documentation.
 - A denied or unsupported OS capability (portal input, screen capture, AT-SPI)
   returns a capability error before arming a card; the state is one line in the
   per-turn context and in `gnome_doctor`.

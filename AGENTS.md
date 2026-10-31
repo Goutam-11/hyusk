@@ -60,10 +60,10 @@ cargo check --all-targets --offline --features mobile
 cargo test --all-targets --offline --features mobile -- --test-threads=4
 ```
 
-Current baseline: **453 tests passing, 6 ignored** for the default suite;
-`--features mobile` restores the link (466 passing, 6 ignored). The workflow
+Current baseline: **463 tests passing, 6 ignored** for the default suite;
+`--features mobile` restores the link (476 passing, 6 ignored). The workflow
 editor adds five tests (one ignored) under `--features workflow-editor`, for
-**458 passing, 7 ignored**; both features together are **471 passing, 7
+**468 passing, 7 ignored**; both features together are **481 passing, 7
 ignored**. Default clippy is clean (the three pre-existing `result_large_err`
 warnings live behind `mobile` in `src/link/server.rs` and reappear with that
 feature). CI runs fmt, clippy, the default tests, and the feature builds on
@@ -132,6 +132,20 @@ tests live in `#[cfg(test)]` modules beside the code.
   indicators (`hyusk-pairing.json`, `pair_phone`), never to a model tool result
   or session history.
   `platform_tests::the_mobile_link_is_behind_its_feature` guards the wiring.
+- MCP provider (T3): `tools::mcp` starts the servers in
+  `$XDG_CONFIG_HOME/hyusk/mcp.json` (or `HYUSK_MCP_CONFIG`) unless
+  `HYUSK_MCP=0`, and registers their tools beside the other `ext.` tools. It
+  speaks the stateless MCP 2026-07-28 revision (`server/discover`,
+  `tools/list`, per-request `_meta` in `params`) and falls back to the legacy
+  `initialize` handshake for a server that rejects the probe. A server's
+  description and `annotations` are never shown or trusted: the host writes the
+  description from the tool name and schema, and the always-ask `ext.` row
+  gates every call whatever the server claims. The child gets only `PATH` and
+  the names in its `env` allowlist, and an `allow` list only narrows the offered
+  tools. A watcher deactivates a server removed from the file, and the runner
+  rebuilds the model specs per turn, so its tools disappear without a restart
+  (adding one still needs a restart). `HYUSK_MCP=0` must keep registering
+  nothing.
 - Approved calls execute the stored arguments, not a fresh model call. Task
   delegation pins the canonical workspace root via `approval_arguments`.
 - Workflows execute deterministic `Action` steps from `src/agent/commands.rs`;
@@ -338,12 +352,12 @@ designed in `docs/architecture-roadmap.md`. Wave 1 is complete: P1 (the
 experimental shell agent), P2 (macOS branches and the Linux declaration), P3
 (the `workflow-editor` feature), and T1 (tool manifests) are closed. Wave 2 is
 under way: M1 (memory schema v2), M2 (hybrid retrieval), G1 (preference notes),
-M3 (consolidation), M4 (explain and export), T2 (the external tool host), and P5
-(the mobile feature) are closed. The remaining work is P6 (Nova Sonic), which is
-behind P5, T3 (the MCP provider) and T4 (its trust model), which build on T2,
-and G2 (the propose-diff loop). P4 (the orb feature) is deferred, because this
-installation uses the GNOME extension and the Noctalia widget rather than the
-orb.
+M3 (consolidation), M4 (explain and export), T2 (the external tool host), P5
+(the mobile feature), and T3 (the MCP provider) are closed. The remaining work
+is P6 (Nova Sonic), T4 (the MCP trust model and kill switch, which builds on
+T3), and G2 (the propose-diff loop). P4 (the orb feature) is deferred, because
+this installation uses the GNOME extension and the Noctalia widget rather than
+the orb.
 
 ## Memory and session notes
 

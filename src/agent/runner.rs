@@ -801,6 +801,10 @@ impl Agent {
         cancel: &CancellationToken,
         sentences: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
     ) -> Result<Option<String>> {
+        // A tool set can change between turns without a restart: an MCP
+        // server removed from the configuration stops being offered (T3), so
+        // the declarations are rebuilt from the registry's available set.
+        self.tool_specs = build_tool_specs(&self.tools);
         // A grant lasts exactly one turn: drop the previous turn's before the
         // new input is interpreted, and again once this turn is over.
         self.turn_grants.clear();

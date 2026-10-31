@@ -57,4 +57,15 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str {
         self.manifest().description
     }
+
+    /// Whether the registry should currently offer this tool to the model and
+    /// allow a call.
+    ///
+    /// A compiled tool is always available. An external tool returns false
+    /// when its server leaves the configuration (T3), so the operator can
+    /// remove a server and the next turn stops offering its tools without a
+    /// restart. The manifest stays registered, so conformance still covers it.
+    fn is_available(&self) -> bool {
+        true
+    }
 }

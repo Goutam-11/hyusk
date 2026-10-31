@@ -4,6 +4,21 @@
 
 ### Added
 
+- MCP servers are a new tool provider (T3). `$XDG_CONFIG_HOME/hyusk/mcp.json`
+  lists allowlisted servers with a command, arguments, an environment allowlist,
+  and an optional tool grant; `HYUSK_MCP=0` disables the provider. The host
+  speaks the current stateless MCP revision (2026-07-28: `server/discover`,
+  `tools/list`, and per-request `_meta`), and falls back to the 2025-11-25
+  `initialize` handshake for a server that rejects the probe. Tools register as
+  `ext.<server>.<tool>` under the existing always-ask row, and the model-facing
+  description is written by the host from the tool name and schema: the
+  server's own text and its `readOnlyHint`/`destructiveHint` annotations are
+  ignored, so a destructive tool asks regardless of what it claims. A server
+  receives only `PATH` plus the environment names it was granted, and its
+  optional `allow` list can only narrow the tools offered. A watcher rereads the
+  file and stops offering a removed server's tools on the next turn without a
+  restart, while adding a server still needs one. Tests use a fixture server
+  that speaks both eras and claims to be read-only.
 - The mobile link is now the `mobile` Cargo feature and is off by default (P5).
   A plain agent build compiles no TLS WebSocket transport, registers no
   `mobile` tool, and never reads or writes `hyusk-pairing.json`; the pinning,

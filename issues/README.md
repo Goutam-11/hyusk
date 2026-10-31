@@ -112,12 +112,13 @@ inside that track and are independent of the phases above. Wave 1 was completed
 on 2026-10-31: `P1`, `P2`, `P3`, and `T1` are closed. Wave 2 is under way:
 `M1` (memory schema v2), `T2` (the external tool host), `M2` (hybrid
 retrieval), `G1` (preference notes), `M3` (consolidation), `M4` (explain and
-export), and `P5` (the mobile feature) are closed; `M2`, `G1`, `M3`, `M4`, and
-`P5` landed ahead of the remaining Wave 2 order because they depended only on
-the memory and build work. `P4` (the orb overlay) is deferred because this
-installation uses the GNOME extension and the Noctalia widget, and `P5`'s
-dependency on it was only the shared `Cargo.toml` area. The remaining items are
-`P6` (which needs `P5`), `T3` and `T4` (which build on `T2`), and `G2`.
+export), `P5` (the mobile feature), and `T3` (the MCP provider) are closed;
+`M2`, `G1`, `M3`, `M4`, `P5`, and `T3` landed ahead of the remaining Wave 2/3
+order because they depended only on the memory, build, and host work. `P4` (the
+orb overlay) is deferred because this installation uses the GNOME extension and
+the Noctalia widget, and `P5`'s dependency on it was only the shared
+`Cargo.toml` area. The remaining items are `P6` (Nova Sonic), `T4` (the MCP
+trust model and kill switch, which builds on `T3`), and `G2`.
 
 | ID | Title | Wave | Depends on |
 | --- | --- | --- | --- |

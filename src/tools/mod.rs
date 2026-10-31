@@ -7,6 +7,7 @@ pub mod external;
 #[cfg(target_os = "linux")]
 pub mod gnome_doctor;
 pub mod manifest;
+pub mod mcp;
 pub mod media;
 pub mod memory;
 #[cfg(feature = "mobile")]

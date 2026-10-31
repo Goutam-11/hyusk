@@ -740,6 +740,9 @@ struct ToolSetup<'a> {
     /// tools register beside the core ones (T2). `None` when none are
     /// configured or none answered.
     external_host: Option<Arc<tools::external::ExternalHost>>,
+    /// The MCP provider, started from `~/.config/hyusk/mcp.json` (T3).
+    /// `None` when `HYUSK_MCP=0`, the file is absent, or no server answered.
+    mcp_provider: Option<Arc<tools::mcp::McpProvider>>,
 }
 
 /// Build the model-facing tool registry.
@@ -759,6 +762,7 @@ async fn build_tools(setup: ToolSetup<'_>) -> ToolRegistry {
         link_server,
         brave_search_key,
         external_host,
+        mcp_provider,
     } = setup;
 
     let mut tools = ToolRegistry::new();
@@ -817,6 +821,12 @@ async fn build_tools(setup: ToolSetup<'_>) -> ToolRegistry {
     // rather than aborting the whole set.
     if let Some(host) = external_host.as_ref() {
         host.register_into(&mut tools);
+    }
+
+    // MCP servers are the other external provider kind (T3). Their tools share
+    // the `ext.` namespace and the same always-ask row.
+    if let Some(provider) = mcp_provider.as_ref() {
+        provider.register_into(&mut tools);
     }
 
     if let Err(problems) = tools.conformance() {
@@ -968,6 +978,26 @@ async fn main() -> Result<()> {
         );
     }
 
+    // The MCP provider reads `~/.config/hyusk/mcp.json` unless HYUSK_MCP=0
+    // (T3). Its watcher stops offering a server removed from the file; a
+    // malformed or missing file leaves the assistant running.
+    let mcp_provider = if tools::mcp::enabled() {
+        match tools::mcp::config_path() {
+            Some(path) => tools::mcp::McpProvider::start_at(path).await,
+            None => None,
+        }
+    } else {
+        None
+    };
+    if let Some(provider) = mcp_provider.as_ref() {
+        println!(
+            "[MCP] {} server(s) exposing {} tool(s)",
+            provider.server_count(),
+            provider.tool_count()
+        );
+        tools::mcp::spawn_refresh_worker(Arc::clone(provider));
+    }
+
     let tools = build_tools(ToolSetup {
         events: &agent_tx,
         active_model: active_api_model.clone(),
@@ -975,6 +1005,7 @@ async fn main() -> Result<()> {
         link_server: link_server.clone(),
         brave_search_key,
         external_host: external_host.clone(),
+        mcp_provider: mcp_provider.clone(),
     })
     .await;
 
@@ -1567,10 +1598,14 @@ async fn main() -> Result<()> {
         let _ = std::fs::remove_file(path);
     }
 
-    // Kill and reap the external servers before the hard exit below, which
-    // would otherwise skip `kill_on_drop` and leave the children behind (T2).
+    // Kill and reap the external and MCP servers before the hard exit below,
+    // which would otherwise skip `kill_on_drop` and leave the children behind
+    // (T2, T3).
     if let Some(host) = external_host {
         host.shutdown().await;
+    }
+    if let Some(provider) = mcp_provider {
+        provider.shutdown().await;
     }
 
     // Give the wake thread and runtime a moment to unwind, then exit hard so a
@@ -1692,6 +1727,7 @@ mod tool_policy_tests {
             link_server: None,
             brave_search_key: None,
             external_host: None,
+            mcp_provider: None,
         })
         .await
     }

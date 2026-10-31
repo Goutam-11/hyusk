@@ -25,7 +25,15 @@
 //! a JSON file or the JSON array itself. Servers are probed once at startup,
 //! which is also where a broken one is skipped.
 
-use std::{collections::HashSet, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    process::Stdio,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -43,8 +51,20 @@ use super::registry::ToolRegistry;
 use super::safety::EXTERNAL_PREFIX;
 use super::{redact, Tool, ToolResult};
 
-/// The one handshake protocol version this host speaks.
+/// The handshake protocol version of the local (T2) server kind.
 pub const PROTOCOL_VERSION: &str = "1.0";
+
+/// The Model Context Protocol revision this client implements.
+///
+/// The 2026-07-28 revision is stateless: every request carries its version and
+/// client metadata in `params._meta`, so there is no initialize handshake. The
+/// newest initialize-based revision is used only to detect and serve a legacy
+/// server (T3).
+pub const MCP_PROTOCOL_VERSION: &str = "2026-07-28";
+/// The newest initialize-based MCP revision, for a legacy server.
+pub const MCP_LEGACY_PROTOCOL_VERSION: &str = "2025-11-25";
+/// The most `tools/list` pages one server may page through.
+const MAX_LIST_PAGES: usize = 8;
 
 /// The environment variable naming the server configuration.
 pub const ENV_VAR: &str = "HYUSK_EXTERNAL_SERVERS";
@@ -90,6 +110,19 @@ const MAX_SCHEMA_DEPTH: usize = 8;
 /// The largest server name or tool name segment.
 const MAX_NAME_SEGMENT: usize = 32;
 
+/// How a server speaks on its stdio pipes.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ServerKind {
+    /// The T2 host protocol: the tools arrive in the initialize result.
+    #[default]
+    Local,
+    /// The Model Context Protocol (T3): `server/discover`, or a legacy
+    /// `initialize` for a server that predates per-request metadata, then
+    /// `tools/list`.
+    Mcp,
+}
+
 /// One configured external server.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct ServerSpec {
@@ -106,6 +139,19 @@ pub struct ServerSpec {
     /// The spawn-and-handshake deadline in milliseconds; clamped too.
     #[serde(default)]
     pub startup_timeout_ms: Option<u64>,
+    /// The wire protocol the server speaks.
+    #[serde(default)]
+    pub kind: ServerKind,
+    /// The child's environment allowlist. `None` inherits the agent's
+    /// environment (the T2 local default); `Some` clears it and passes `PATH`
+    /// plus the named variables only (an MCP server, T3).
+    #[serde(default)]
+    pub env: Option<Vec<String>>,
+    /// The tools this server may expose. `None` offers every discovered tool;
+    /// `Some` offers only the named ones. A grant can only narrow the set -
+    /// the host still asks for approval on every call.
+    #[serde(default)]
+    pub allow: Option<Vec<String>>,
 }
 
 impl ServerSpec {
@@ -127,7 +173,25 @@ impl ServerSpec {
         )
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.kind == ServerKind::Mcp {
+            for name in self.env.iter().flatten() {
+                if name.trim().is_empty() || name.contains('=') {
+                    bail!(
+                        "the server {:?} has an unusable environment name {name:?}",
+                        self.name
+                    );
+                }
+            }
+            for name in self.allow.iter().flatten() {
+                if !valid_tool_segment(name) {
+                    bail!(
+                        "the server {:?} allows {name:?}, which is not a tool name",
+                        self.name
+                    );
+                }
+            }
+        }
         if !valid_segment(&self.name) {
             bail!(
                 "the server name {:?} must be 1-{MAX_NAME_SEGMENT} letters, digits, '-' or '_' \
@@ -239,9 +303,36 @@ impl ExternalHost {
                     );
                     continue;
                 }
+                if registry.contains(tool.name()) {
+                    eprintln!(
+                        "[External] {} is already registered; skipping",
+                        declaration.namespaced
+                    );
+                    continue;
+                }
                 registry.register(tool);
             }
         }
+    }
+
+    /// Stop one server and mark its tools unavailable (T3). A removed MCP
+    /// server stops being offered on the next turn without a restart.
+    pub async fn deactivate_server(&self, name: &str) -> bool {
+        for server in &self.servers {
+            if server.spec.name == name {
+                server.deactivate().await;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The configured server names, in start order.
+    pub fn server_names(&self) -> Vec<String> {
+        self.servers
+            .iter()
+            .map(|server| server.spec.name.clone())
+            .collect()
     }
 
     /// Kill and reap every child. Safe to call more than once.
@@ -267,6 +358,9 @@ struct ExternalServer {
     spec: ServerSpec,
     tools: Vec<ToolDeclaration>,
     runtime: Mutex<Option<Connection>>,
+    /// False once the server leaves the configuration (T3). Its tools stay in
+    /// the registry's manifest set but are no longer offered or callable.
+    active: AtomicBool,
 }
 
 /// One tool a server declared during the handshake.
@@ -300,12 +394,26 @@ impl ExternalServer {
             );
         }
 
-        let tools = declarations(&spec.name, &handshake);
+        let tools = declarations(&spec, &handshake);
         Ok(Self {
             spec,
             tools,
             runtime: Mutex::new(Some(connection)),
+            active: AtomicBool::new(true),
         })
+    }
+
+    fn is_active(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
+    }
+
+    /// Mark the server gone and stop its child. Safe to call twice.
+    async fn deactivate(&self) {
+        self.active.store(false, Ordering::SeqCst);
+        let mut guard = self.runtime.lock().await;
+        if let Some(connection) = guard.take() {
+            connection.terminate().await;
+        }
     }
 
     fn external_tool(self: &Arc<Self>, declaration: &ToolDeclaration) -> ExternalTool {
@@ -329,6 +437,12 @@ impl ExternalServer {
 
     /// Call one tool, restarting the server first if it is not running.
     async fn call(&self, tool_name: &str, arguments: &Value) -> Result<String, String> {
+        if !self.is_active() {
+            return Err(format!(
+                "the {:?} server is no longer in the configuration",
+                self.spec.name
+            ));
+        }
         let mut guard = self.runtime.lock().await;
 
         // A process that exited since the last call is replaced, not reused.
@@ -360,7 +474,7 @@ impl ExternalServer {
                 "jsonrpc": "2.0",
                 "id": id,
                 "method": "tools/call",
-                "params": { "name": tool_name, "arguments": arguments },
+                "params": connection.handshake.call_params(tool_name, arguments),
             });
             timeout(self.spec.call_timeout(), connection.request(id, request)).await
         };
@@ -402,6 +516,7 @@ impl ExternalServer {
     }
 
     async fn shutdown(&self) {
+        self.active.store(false, Ordering::SeqCst);
         let mut guard = self.runtime.lock().await;
         if let Some(connection) = guard.take() {
             connection.terminate().await;
@@ -420,6 +535,10 @@ struct ExternalTool {
 impl Tool for ExternalTool {
     fn manifest(&self) -> ToolManifest {
         self.manifest
+    }
+
+    fn is_available(&self) -> bool {
+        self.server.is_active()
     }
 
     async fn execute(&self, input: &str) -> Result<ToolResult> {
@@ -461,12 +580,37 @@ struct Handshake {
     server: String,
     version: String,
     tools: Vec<ServerTool>,
+    protocol: WireProtocol,
 }
 
 impl Handshake {
     fn has_tool(&self, name: &str) -> bool {
         self.tools.iter().any(|tool| tool.name == name)
     }
+
+    /// The `tools/call` parameters for this server's era (T3).
+    fn call_params(&self, tool_name: &str, arguments: &Value) -> Value {
+        match &self.protocol {
+            WireProtocol::McpModern { version } => json!({
+                "name": tool_name,
+                "arguments": arguments,
+                "_meta": modern_meta(version),
+            }),
+            _ => json!({ "name": tool_name, "arguments": arguments }),
+        }
+    }
+}
+
+/// Which wire protocol answered the handshake.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum WireProtocol {
+    /// The T2 local protocol.
+    #[default]
+    Local,
+    /// MCP 2026-07-28 and later: stateless, with per-request `_meta`.
+    McpModern { version: String },
+    /// MCP 2025-11-25 and earlier: an initialize handshake.
+    McpLegacy { version: String },
 }
 
 /// One tool in the handshake.
@@ -486,6 +630,60 @@ struct Connection {
     handshake: Handshake,
 }
 
+/// A JSON-RPC failure that still carries the server's error code.
+///
+/// The MCP era probe needs the code: -32022 identifies a modern server that
+/// speaks another revision, while any other error identifies a legacy server
+/// that must be served with an initialize handshake (T3).
+#[derive(Debug)]
+enum RpcError {
+    Transport(anyhow::Error),
+    Json {
+        code: i64,
+        message: String,
+        data: Value,
+    },
+}
+
+impl RpcError {
+    fn into_anyhow(self) -> anyhow::Error {
+        match self {
+            RpcError::Transport(error) => error,
+            RpcError::Json {
+                code,
+                message,
+                data,
+            } => {
+                let detail = if data.is_null() || data == Value::Object(Default::default()) {
+                    String::new()
+                } else {
+                    format!(" ({data})")
+                };
+                anyhow!("the external server returned error {code}: {message}{detail}")
+            }
+        }
+    }
+}
+
+/// The per-request metadata the 2026-07-28 MCP revision requires.
+fn modern_meta(version: &str) -> Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": version,
+        "io.modelcontextprotocol/clientInfo": { "name": "hyusk", "version": CORE_VERSION },
+        "io.modelcontextprotocol/clientCapabilities": {},
+    })
+}
+
+/// What the MCP era probe learned.
+enum Probe {
+    Modern {
+        version: String,
+        server: String,
+        server_version: String,
+    },
+    Legacy,
+}
+
 impl Connection {
     async fn start(spec: &ServerSpec) -> Result<Self> {
         let mut command = tokio::process::Command::new(&spec.command);
@@ -497,6 +695,21 @@ impl Connection {
             // a chatty server from filling the caller's terminal.
             .stderr(Stdio::null())
             .kill_on_drop(true);
+
+        // An MCP server gets only PATH and the variables the operator allowed
+        // (T3). A local server keeps the T2 default of inheriting the agent's
+        // environment.
+        if let Some(allow) = &spec.env {
+            command.env_clear();
+            if let Some(path) = std::env::var_os("PATH") {
+                command.env("PATH", path);
+            }
+            for name in allow {
+                if let Some(value) = std::env::var_os(name) {
+                    command.env(name, value);
+                }
+            }
+        }
 
         let mut child = command.spawn().with_context(|| {
             format!(
@@ -520,7 +733,14 @@ impl Connection {
             next_id: 0,
             handshake: Handshake::default(),
         };
-        connection.handshake = connection.initialize(spec.startup_timeout()).await?;
+        connection.handshake = match spec.kind {
+            ServerKind::Local => connection.initialize_local(spec.startup_timeout()).await?,
+            ServerKind::Mcp => {
+                connection
+                    .initialize_mcp(&spec.name, spec.startup_timeout())
+                    .await?
+            }
+        };
         Ok(connection)
     }
 
@@ -533,7 +753,7 @@ impl Connection {
         self.next_id
     }
 
-    async fn initialize(&mut self, deadline: Duration) -> Result<Handshake> {
+    async fn initialize_local(&mut self, deadline: Duration) -> Result<Handshake> {
         let id = self.next_id();
         let request = json!({
             "jsonrpc": "2.0",
@@ -555,8 +775,238 @@ impl Connection {
         parse_handshake(&result)
     }
 
-    async fn request(&mut self, id: u64, value: Value) -> Result<Value> {
-        let mut line = serde_json::to_vec(&value).context("serialising a protocol request")?;
+    /// Detect the MCP era and discover the server's tools (T3).
+    ///
+    /// The 2026-07-28 revision is stateless: `server/discover` must answer. A
+    /// legacy server answers that request with any other error, or not at all,
+    /// and is then served with the initialize handshake it expects. A modern
+    /// server that speaks only another revision is reported with its list; the
+    /// late probe answer is skipped by request id if a timeout falls through.
+    async fn initialize_mcp(&mut self, configured: &str, deadline: Duration) -> Result<Handshake> {
+        match self.mcp_probe(deadline).await? {
+            Probe::Modern {
+                version,
+                server,
+                server_version,
+            } => {
+                let tools = self.list_tools_modern(&version, deadline).await?;
+                Ok(Handshake {
+                    server: if server.is_empty() {
+                        configured.to_string()
+                    } else {
+                        server
+                    },
+                    version: server_version,
+                    tools,
+                    protocol: WireProtocol::McpModern { version },
+                })
+            }
+            Probe::Legacy => {
+                let (server, server_version) = self.initialize_mcp_legacy(deadline).await?;
+                self.notify(json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                }))
+                .await?;
+                let tools = self.list_tools_legacy(deadline).await?;
+                Ok(Handshake {
+                    server: if server.is_empty() {
+                        configured.to_string()
+                    } else {
+                        server
+                    },
+                    version: server_version,
+                    tools,
+                    protocol: WireProtocol::McpLegacy {
+                        version: MCP_LEGACY_PROTOCOL_VERSION.to_string(),
+                    },
+                })
+            }
+        }
+    }
+
+    async fn mcp_probe(&mut self, deadline: Duration) -> Result<Probe> {
+        let id = self.next_id();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "server/discover",
+            "params": { "_meta": modern_meta(MCP_PROTOCOL_VERSION) },
+        });
+        let result = timeout(deadline, self.request_raw(id, request)).await;
+        match result {
+            Ok(Ok(result)) => {
+                let supported: Vec<String> = result
+                    .get("supportedVersions")
+                    .and_then(Value::as_array)
+                    .map(|versions| {
+                        versions
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !supported.is_empty()
+                    && !supported
+                        .iter()
+                        .any(|version| version == MCP_PROTOCOL_VERSION)
+                {
+                    bail!(
+                        "the MCP server supports {supported:?}; this client speaks {MCP_PROTOCOL_VERSION:?}"
+                    );
+                }
+                let server = result
+                    .pointer("/_meta/io.modelcontextprotocol/serverInfo/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let server_version = result
+                    .pointer("/_meta/io.modelcontextprotocol/serverInfo/version")
+                    .and_then(Value::as_str)
+                    .unwrap_or("0.0.0")
+                    .to_string();
+                Ok(Probe::Modern {
+                    version: MCP_PROTOCOL_VERSION.to_string(),
+                    server,
+                    server_version,
+                })
+            }
+            Ok(Err(RpcError::Json {
+                code: -32022, data, ..
+            })) => {
+                let supported: Vec<String> = data
+                    .get("supported")
+                    .and_then(Value::as_array)
+                    .map(|versions| {
+                        versions
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                bail!("the MCP server rejected {MCP_PROTOCOL_VERSION:?}; it offers {supported:?}")
+            }
+            // A legacy server rejects the modern request, stays silent, or
+            // closes the pipe; the initialize handshake is the fallback.
+            Ok(Err(_)) | Err(_) => Ok(Probe::Legacy),
+        }
+    }
+
+    async fn initialize_mcp_legacy(&mut self, deadline: Duration) -> Result<(String, String)> {
+        let id = self.next_id();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_LEGACY_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": { "name": "hyusk", "version": CORE_VERSION },
+            },
+        });
+        let result = timeout(deadline, self.request(id, request))
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "the MCP initialize did not finish within {} ms",
+                    deadline.as_millis()
+                )
+            })??;
+        let server = result
+            .pointer("/serverInfo/name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let version = result
+            .pointer("/serverInfo/version")
+            .and_then(Value::as_str)
+            .unwrap_or("0.0.0")
+            .to_string();
+        Ok((server, version))
+    }
+
+    async fn list_tools_modern(
+        &mut self,
+        version: &str,
+        deadline: Duration,
+    ) -> Result<Vec<ServerTool>> {
+        let mut tools = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        for _ in 0..MAX_LIST_PAGES {
+            let id = self.next_id();
+            let mut params = json!({ "_meta": modern_meta(version) });
+            if let Some(cursor) = &cursor {
+                params["cursor"] = Value::String(cursor.clone());
+            }
+            let request = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/list",
+                "params": params,
+            });
+            let result = timeout(deadline, self.request(id, request))
+                .await
+                .map_err(|_| {
+                    anyhow!(
+                        "the MCP tools/list did not answer within {} ms",
+                        deadline.as_millis()
+                    )
+                })??;
+            collect_listed_tools(&result, &mut tools)?;
+            cursor = result
+                .get("nextCursor")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if cursor.is_none() || tools.len() >= MAX_TOOLS_PER_SERVER {
+                break;
+            }
+        }
+
+        Ok(tools)
+    }
+
+    async fn list_tools_legacy(&mut self, deadline: Duration) -> Result<Vec<ServerTool>> {
+        let mut tools = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        for _ in 0..MAX_LIST_PAGES {
+            let id = self.next_id();
+            let mut params = json!({});
+            if let Some(cursor) = &cursor {
+                params["cursor"] = Value::String(cursor.clone());
+            }
+            let request = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/list",
+                "params": params,
+            });
+            let result = timeout(deadline, self.request(id, request))
+                .await
+                .map_err(|_| {
+                    anyhow!(
+                        "the MCP tools/list did not answer within {} ms",
+                        deadline.as_millis()
+                    )
+                })??;
+            collect_listed_tools(&result, &mut tools)?;
+            cursor = result
+                .get("nextCursor")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if cursor.is_none() || tools.len() >= MAX_TOOLS_PER_SERVER {
+                break;
+            }
+        }
+
+        Ok(tools)
+    }
+
+    async fn notify(&mut self, value: Value) -> Result<()> {
+        let mut line = serde_json::to_vec(&value).context("serialising a protocol note")?;
         line.push(b'\n');
         self.stdin
             .write_all(&line)
@@ -566,13 +1016,36 @@ impl Connection {
             .flush()
             .await
             .context("flushing to the external server")?;
-        self.read_response(id).await
+        Ok(())
     }
 
-    async fn read_response(&mut self, id: u64) -> Result<Value> {
+    async fn request(&mut self, id: u64, value: Value) -> Result<Value> {
+        self.request_raw(id, value)
+            .await
+            .map_err(RpcError::into_anyhow)
+    }
+
+    async fn request_raw(&mut self, id: u64, value: Value) -> Result<Value, RpcError> {
+        let mut line =
+            serde_json::to_vec(&value).map_err(|error| RpcError::Transport(error.into()))?;
+        line.push(b'\n');
+        self.stdin
+            .write_all(&line)
+            .await
+            .map_err(|error| RpcError::Transport(error.into()))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|error| RpcError::Transport(error.into()))?;
+        self.read_response_raw(id).await
+    }
+
+    async fn read_response_raw(&mut self, id: u64) -> Result<Value, RpcError> {
         loop {
-            let Some(line) = self.read_line().await? else {
-                bail!("the external server closed its output");
+            let Some(line) = self.read_line().await.map_err(RpcError::Transport)? else {
+                return Err(RpcError::Transport(anyhow!(
+                    "the external server closed its output"
+                )));
             };
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
                 // A server that prints a banner or a log line is not speaking;
@@ -584,11 +1057,17 @@ impl Connection {
             }
             if let Some(error) = message.get("error") {
                 let code = error.get("code").and_then(Value::as_i64).unwrap_or(0);
-                let text = error
+                let message = error
                     .get("message")
                     .and_then(Value::as_str)
-                    .unwrap_or("unknown error");
-                bail!("the external server returned error {code}: {text}");
+                    .unwrap_or("unknown error")
+                    .to_string();
+                let data = error.get("data").cloned().unwrap_or(Value::Null);
+                return Err(RpcError::Json {
+                    code,
+                    message,
+                    data,
+                });
             }
             return Ok(message.get("result").cloned().unwrap_or(Value::Null));
         }
@@ -677,37 +1156,66 @@ fn parse_handshake(result: &Value) -> Result<Handshake> {
     let mut seen = HashSet::new();
     let mut parsed = Vec::new();
     for tool in tools {
-        let Some(name) = tool.get("name").and_then(Value::as_str) else {
+        let Some(parsed_tool) = parse_listed_tool(tool) else {
             continue;
         };
-        if !valid_tool_segment(name) || !seen.insert(name.to_string()) {
+        if !seen.insert(parsed_tool.name.clone()) {
             // An unusable or duplicate name is one skipped tool, not a failed
             // server: the other tools still work.
             continue;
         }
-        let description = tool
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let schema = tool
-            .get("inputSchema")
-            .cloned()
-            .unwrap_or_else(|| json!({"type": "object"}));
-        parsed.push(ServerTool {
-            name: name.to_string(),
-            description: description.to_string(),
-            schema,
-        });
+        parsed.push(parsed_tool);
     }
 
     Ok(Handshake {
         server,
         version,
         tools: parsed,
+        protocol: WireProtocol::Local,
     })
 }
 
-fn declarations(server: &str, handshake: &Handshake) -> Vec<ToolDeclaration> {
+/// One `tools/list` tool, bounded and with a usable name.
+fn parse_listed_tool(tool: &Value) -> Option<ServerTool> {
+    let name = tool.get("name").and_then(Value::as_str)?;
+    if !valid_tool_segment(name) {
+        return None;
+    }
+    let description = tool
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let schema = tool
+        .get("inputSchema")
+        .cloned()
+        .unwrap_or_else(|| json!({"type": "object"}));
+    Some(ServerTool {
+        name: name.to_string(),
+        description: description.to_string(),
+        schema,
+    })
+}
+
+/// Append one `tools/list` page, dropping duplicates and the overflow.
+fn collect_listed_tools(result: &Value, tools: &mut Vec<ServerTool>) -> Result<()> {
+    let page = result
+        .get("tools")
+        .and_then(Value::as_array)
+        .context("the MCP tools/list result has no tools array")?;
+    for tool in page {
+        if tools.len() >= MAX_TOOLS_PER_SERVER {
+            break;
+        }
+        if let Some(parsed) = parse_listed_tool(tool) {
+            if !tools.iter().any(|known| known.name == parsed.name) {
+                tools.push(parsed);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn declarations(spec: &ServerSpec, handshake: &Handshake) -> Vec<ToolDeclaration> {
     let version = if manifest::valid_version(&handshake.version) {
         handshake.version.clone()
     } else {
@@ -715,12 +1223,22 @@ fn declarations(server: &str, handshake: &Handshake) -> Vec<ToolDeclaration> {
         // requires major.minor.patch, so an unknown version is `0.0.0`.
         "0.0.0".to_string()
     };
+    let curated = spec.kind == ServerKind::Mcp;
 
     handshake
         .tools
         .iter()
         .filter_map(|tool| {
-            let namespaced = format!("{EXTERNAL_PREFIX}{server}.{}", tool.name);
+            if let Some(allow) = &spec.allow {
+                if !allow.iter().any(|allowed| allowed == &tool.name) {
+                    eprintln!(
+                        "[External] Skipping {}.{}: it is not in the server's allow list",
+                        spec.name, tool.name
+                    );
+                    return None;
+                }
+            }
+            let namespaced = format!("{EXTERNAL_PREFIX}{}.{}", spec.name, tool.name);
             if namespaced.len() > MAX_NAMESPACED_NAME {
                 eprintln!("[External] Skipping {namespaced}: the name is too long");
                 return None;
@@ -728,12 +1246,97 @@ fn declarations(server: &str, handshake: &Handshake) -> Vec<ToolDeclaration> {
             Some(ToolDeclaration {
                 name: tool.name.clone(),
                 namespaced,
-                description: sanitise_description(&tool.description, &tool.name, server),
+                description: if curated {
+                    curate_description(&spec.name, &tool.name, &tool.schema)
+                } else {
+                    sanitise_description(&tool.description, &tool.name, &spec.name)
+                },
                 schema: tool.schema.clone(),
                 version: version.clone(),
             })
         })
         .collect()
+}
+
+/// The model-facing description of an MCP tool (T3).
+///
+/// A server's own description is untrusted text, and its annotations are only
+/// hints (the MCP specification says clients must not trust them from an
+/// untrusted server), so the host writes the sentence from the tool name and
+/// the schema it validated. The text always says whether the tool reads or
+/// changes data, and it never promises that a call is free.
+fn curate_description(server: &str, tool: &str, schema: &Value) -> String {
+    let tokens: Vec<String> = tool
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+
+    let read_verbs = [
+        "list", "get", "read", "status", "diff", "log", "show", "search", "fetch", "find", "query",
+        "describe", "inspect", "stat", "view",
+    ];
+    let write_verbs = [
+        "delete",
+        "remove",
+        "write",
+        "create",
+        "move",
+        "rename",
+        "commit",
+        "push",
+        "exec",
+        "run",
+        "send",
+        "update",
+        "set",
+        "add",
+        "install",
+        "uninstall",
+        "truncate",
+        "drop",
+        "wipe",
+        "reset",
+        "replace",
+        "upload",
+    ];
+
+    let reads = tokens
+        .iter()
+        .any(|token| read_verbs.contains(&token.as_str()));
+    let writes = tokens
+        .iter()
+        .any(|token| write_verbs.contains(&token.as_str()));
+
+    let mut text = if writes {
+        format!(
+            "Changes data: {tool} on the {server} MCP server. The host asks for approval              before every call."
+        )
+    } else if reads {
+        format!(
+            "Read-only {tool} on the {server} MCP server. Its description was written by              Hyusk; the server's own text is not shown."
+        )
+    } else {
+        format!(
+            "{tool} on the {server} MCP server. Its description was written by Hyusk              because a server's text is untrusted, so the host asks for approval before              every call."
+        )
+    };
+
+    let arguments: Vec<String> = schema
+        .pointer("/properties")
+        .and_then(Value::as_object)
+        .map(|properties| {
+            properties
+                .keys()
+                .take(8)
+                .map(|name| format!("`{name}`"))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !arguments.is_empty() {
+        text.push_str(&format!(" Arguments: {}.", arguments.join(", ")));
+    }
+    text
 }
 
 /// Reduce a server's description to one bounded line.
@@ -967,6 +1570,9 @@ mod tests {
             ],
             timeout_ms: Some(timeout_ms),
             startup_timeout_ms: Some(5_000),
+            kind: ServerKind::Local,
+            env: None,
+            allow: None,
         }
     }
 

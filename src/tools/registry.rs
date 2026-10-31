@@ -83,9 +83,20 @@ impl ToolRegistry {
         );
     }
 
+    /// Whether a name is registered, available or not. The external host uses
+    /// this to refuse a duplicate name without conflating a deactivated server
+    /// with an unregistered one.
+    pub fn contains(&self, name: &str) -> bool {
+        self.tools.contains_key(name)
+    }
+
+    /// A currently offered tool. A tool whose server was removed from the
+    /// configuration (T3) is registered but not available, so it is not found
+    /// and a stale call fails closed.
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools
             .get(name)
+            .filter(|registered| registered.tool.is_available())
             .map(|registered| registered.tool.clone())
     }
 
@@ -101,6 +112,11 @@ impl ToolRegistry {
 
     /// Every manifest, in name order. The version of a registered tool is
     /// therefore visible without building its tool again (T1).
+    ///
+    /// Test-only now that `specs` filters by availability (T3): production
+    /// callers ask for the model-facing specifications, which must omit a
+    /// removed server's tools.
+    #[cfg(test)]
     pub fn manifests(&self) -> Vec<ToolManifest> {
         let mut manifests: Vec<_> = self
             .tools
@@ -114,9 +130,18 @@ impl ToolRegistry {
     /// The model-facing tool specifications, generated from the manifests.
     ///
     /// One source of truth: what the model is told is the declaration the
-    /// registry validated, not a second copy in the tool.
+    /// registry validated, not a second copy in the tool. An unavailable tool
+    /// is omitted, so a server removed from the configuration disappears from
+    /// the model's list on the next turn (T3).
     pub fn specs(&self) -> Vec<serde_json::Value> {
-        self.manifests()
+        let mut manifests: Vec<_> = self
+            .tools
+            .values()
+            .filter(|registered| registered.tool.is_available())
+            .map(|registered| registered.manifest)
+            .collect();
+        manifests.sort_by_key(|manifest| manifest.name);
+        manifests
             .iter()
             .map(|manifest| {
                 json!({
@@ -356,6 +381,43 @@ mod tests {
             problems[0].contains("declares the input capability false"),
             "{problems:?}"
         );
+    }
+
+    /// T3: a tool whose server left the configuration is still registered
+    /// (its manifest stays validated) but is not offered or callable.
+    struct UnavailableTool(ToolManifest);
+
+    #[async_trait]
+    impl Tool for UnavailableTool {
+        fn manifest(&self) -> ToolManifest {
+            self.0
+        }
+
+        fn is_available(&self) -> bool {
+            false
+        }
+
+        async fn execute(&self, _input: &str) -> Result<super::super::ToolResult> {
+            Ok(super::super::ToolResult::success("unreachable"))
+        }
+    }
+
+    #[test]
+    fn an_unavailable_tool_is_not_offered() {
+        let mut registry = ToolRegistry::new();
+        registry.register(named("alpha"));
+        registry.register(UnavailableTool(manifest::stub("beta")));
+
+        assert!(registry.get("alpha").is_some());
+        assert!(
+            registry.get("beta").is_none(),
+            "an unavailable tool must not be found"
+        );
+        let specs = registry.specs();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0]["function"]["name"], "alpha");
+        // The manifest set still carries it, so conformance keeps covering it.
+        assert_eq!(registry.manifests().len(), 2);
     }
 
     #[test]
