@@ -801,9 +801,15 @@ kill-switch documentation.
 
 ## T4 — Trust model, contract tests, kill switch
 
-- Status: open · Wave 3 · Size: medium
-- Depends on: T3
-- Evidence: `docs/tools.md`
+- Status: done 2026-10-31 · Wave 3 · Size: medium
+- Commit: `1926af8`
+- Depends on: T3 (closed)
+- Evidence: confirmed before the change: `docs/tools.md` had no "External
+  providers" heading and no threat model (the T2 and MCP sections described
+  their protocols and some rules, but not assets, residual risk, the operator
+  checklist, or the kill switch), no contract test ran a guarantee against both
+  provider kinds, and `HYUSK_MCP=0` was only exercised at the value-parser
+  level.
 
 **Problem.** External providers add a trust boundary that the current docs do
 not describe.
@@ -815,15 +821,99 @@ tests for providers.
 
 **Acceptance criteria**
 
-- [ ] `docs/tools.md` has an "External providers" section with the threat model.
-- [ ] The kill switch is documented and tested.
-- [ ] Contract tests run against the fixture servers.
+- [x] `docs/tools.md` has an "External providers" section with the threat model
+  (assets, what crosses the boundary, who writes descriptions, what the host
+  enforces, what a server can still do, the kill switch, and the checklist
+  before adding one).
+- [x] The kill switch is documented and tested
+  (`the_kill_switch_starts_nothing` proves a disabled provider reads nothing
+  and spawns no server; the live file removal is covered by T3's removal test).
+- [x] Contract tests run against the fixture servers
+  (`src/tools/contract_tests.rs` drives both `external_server.sh` and
+  `mcp_server.sh` through one table).
 
 **Tests**
 
-- [ ] Kill-switch test; fixture contract tests.
+- [x] Kill-switch test: `tools::mcp::tests::the_kill_switch_starts_nothing`.
+- [x] Fixture contract tests:
+  `every_provider_kind_registers_namespaced_conformant_tools`,
+  `every_provider_kind_asks_for_every_tool`,
+  `every_provider_kind_refuses_malformed_arguments_before_the_server`,
+  `every_provider_kind_calls_a_tool`, and
+  `every_provider_kind_reaps_its_children_on_shutdown`.
 
-**Files.** `docs/tools.md`, `src/tools/external.rs`, tests.
+**Files.** `docs/tools.md`, `src/tools/contract_tests.rs` (new),
+`src/tools/mcp.rs`, `src/tools/mod.rs`, `src/main.rs`,
+`tests/fixtures/mcp_server.sh`, `docs/development.md`, `AGENTS.md`,
+`CHANGELOG.md`, `issues/README.md`, `docs/architecture-roadmap.md`.
+
+**Notes (2026-10-31).** The "External providers" section is the operator-facing
+half of T2/T3: it names the assets (provider keys, session, memory, the armed
+approval, the audit), the data in each direction (command and environment in;
+handshake metadata, tools, results, and errors out), the fact that MCP
+descriptions are host-written while a local plugin's text is only sanitised and
+still untrusted, the enforced rules in one table, the residual risk of a
+process that is not sandboxed (an approved call has the user's privileges; its
+result may carry prompt injection), the kill switch, and a seven-step checklist.
+
+Kill switch, in the four forms the docs now state:
+
+- `HYUSK_MCP=0` at startup: `McpProvider::start_if_enabled` takes the parsed
+  value and returns `None` before reading the file, so nothing is spawned. The
+  composition root passes `tools::mcp::enabled()`.
+- Removing a server from `mcp.json`, or deleting the file: the T3 watcher
+  deactivates it, and the next turn's specs no longer include it.
+- Unsetting `HYUSK_EXTERNAL_SERVERS`: local servers are only started at
+  startup, so a restart disables them.
+- Stopping the agent: shutdown kills and reaps every child.
+
+The switch stops future calls. The docs say plainly what it does not do: it does
+not retract an armed confirmation, remove results already in the session, or
+undo a server's side effects.
+
+Contract tests: `src/tools/contract_tests.rs` is a `#[cfg(test)]` module beside
+the tools (not an integration test), so it runs in every suite and can use the
+registry's test-only manifest view. It boxes the local host and the MCP
+provider behind one `Provider` enum and asserts the same five properties for
+both. The fixture that needed a change is `mcp_server.sh`, which gained an
+optional request log so the "the server never saw the malformed call" assertion
+has evidence for the MCP kind too.
+
+Decisions and deviations:
+
+- **The contract is about host guarantees, not wire compatibility.** The two
+  providers speak different protocols on purpose; the shared contract is what a
+  user relies on whichever kind is configured. Redaction, truncation, crash
+  restart, and timeouts stay in the T2/T3 unit suites, which can drive their
+  specific fixture modes; the contract suite covers the common surface.
+- **The trust model documents a local server's inherited environment.** T2's
+  local servers inherit the agent's environment (T2's decision; T3's MCP
+  servers get the allowlist), so the docs say to run only reviewed local
+  plugins or a cleaned environment. That is a residual risk, not a change.
+- **The kill switch is not a revocation.** Documented rather than implying
+  more than the code does.
+
+Drift: the issue's `Files` list named `external.rs` and "tests"; the work also
+touched `main.rs`, `mcp.rs`, `mod.rs`, the MCP fixture, and the documentation
+counts, and the new contract module.
+
+**Verification.** `cargo fmt --all -- --check` clean; `cargo check --all-targets
+--offline` clean. Default suite: 469 passing, 6 ignored (463 before; six new
+tests: five contract plus the kill switch). `--features mobile`: 482 passing, 6
+ignored. `--features workflow-editor`: 474 passing, 7 ignored. Both features:
+487 passing, 7 ignored. `cargo clippy --all-targets --offline` clean; with
+`--features mobile` only the three pre-existing `result_large_err` warnings.
+Probes, each backed up with `cp` and restored in the same bash call (`cmp`,
+marker count, and fmt re-checked):
+
+- making `start_if_enabled` ignore its `enabled` argument failed
+  `the_kill_switch_starts_nothing`;
+- making `validate_arguments` return `Ok(())` failed
+  `every_provider_kind_refuses_malformed_arguments_before_the_server` with
+  "local (T2): ext.fixture.echo accepted {\"text\":5}".
+
+Manual check still open: a real MCP server and a live kill-switch run against
+the service (the fixtures are the only servers these tests ran).
 
 ## M1 — Memory schema v2
 
