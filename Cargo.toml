@@ -26,6 +26,11 @@ resolver = "2"
 
 [features]
 default = []
+# The opt-in Android link: the TLS WebSocket server, the pairing file, and the
+# model-facing `mobile` tool. Off by default, so a plain agent build neither
+# compiles the transport nor touches a pairing file (P5). The Android app stays
+# in the repository and is not built here.
+mobile = ["dep:rustls", "dep:tokio-rustls", "dep:hmac", "dep:sha2", "dep:rand"]
 # The native GTK4/libadwaita workflow editor. Off by default: an agent build
 # must not compile the toolkit, and `scripts/install-workflow-app.sh` builds
 # the bin with this feature. `platform_tests` in `src/main.rs` guards the
@@ -46,11 +51,14 @@ base64 = "0.22"
 chrono = "0.4"
 futures-util = "0.3"
 tokio-tungstenite = "0.21"
-tokio-rustls = "0.26"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-hmac = "0.12"
-sha2 = "0.10"
-rand = "0.8"
+# Only the `mobile` link feature needs these; the browser tool uses
+# `tokio-tungstenite` for CDP, but the TLS server and its HMAC pairing live
+# behind the feature.
+tokio-rustls = { version = "0.26", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
+rand = { version = "0.8", optional = true }
 whisper-rs = "0.16"
 cpal = "0.15"       # Audio input/output
 eframe = "0.33"

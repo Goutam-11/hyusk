@@ -68,6 +68,7 @@ if [[ "$enable" == true ]]; then
         systemctl --user restart hyusk.service
     fi
     printf 'Laptop link enabled. Open the Hyusk butterfly menu → Connect phone → Generate fresh code.\n'
+    printf 'The running binary must be built with the mobile feature (P5): ./scripts/install-autostart.sh --features mobile\n'
     exit 0
 fi
 
@@ -84,4 +85,5 @@ HYUSK_LINK_TLS_KEY=$key
 Or run this script with --enable to update .env and restart the service.
 Then open the Hyusk butterfly menu → Connect phone → Generate fresh code.
 The pairing secret expires after five minutes and works once.
+The link is a build feature (P5): install with ./scripts/install-autostart.sh --features mobile.
 EOF

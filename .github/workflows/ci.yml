@@ -67,3 +67,11 @@ jobs:
         run: |
           cargo check --all-targets --features workflow-editor
           cargo test --bin hyusk-workflows --features workflow-editor
+
+      # The mobile link is behind its own feature (P5), so this step compiles
+      # the TLS transport, the pairing code, and the mobile tool and runs their
+      # tests; the default build above has none of them.
+      - name: Build and test the mobile link feature
+        run: |
+          cargo check --all-targets --features mobile
+          cargo test --bin hyusk_agent --features mobile

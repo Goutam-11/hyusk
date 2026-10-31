@@ -91,7 +91,7 @@ for the microphone at the same time.
 | `agent/control.rs` | Approval, model-selection, and paused-task state shared with the event loop so control events never wait for a turn (lock order: agent then control). |
 | `apps.rs` | Installed-application discovery for the workflow editor and aliases. |
 | `credentials.rs` | Login-keyring lookup and storage for provider keys. |
-| `link/` | Opt-in TLS WebSocket server, pairing auth, and phone command channel. |
+| `link/` | Opt-in TLS WebSocket server, pairing auth, and phone command channel; behind the `mobile` feature (P5). |
 | `paths.rs` | Private per-user runtime directory: owner-only directories and files for generated audio, screenshots, and model output. |
 | `status.rs` | Publishes `hyusk-status.json` for the GNOME and Noctalia indicators; card text is scrubbed of secret values and credential paths before it is stored or shown, and the file itself is written by `persist.rs`. |
 | `model/openrouter.rs` | Sends OpenAI-compatible HTTP requests, handles model catalogs and retry policy. |

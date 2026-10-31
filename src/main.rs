@@ -9,6 +9,7 @@ compile_error!(
 mod agent;
 mod apps;
 mod credentials;
+#[cfg(feature = "mobile")]
 mod link;
 mod model;
 mod paths;
@@ -41,9 +42,12 @@ use model::openrouter::OpenRouterClient;
 use model::SharedActiveModel;
 
 use tools::{
-    computer::ComputerTool, media::MediaTool, memory::MemoryTool, mobile::MobileTool,
-    process::ProcessTool, shell::ShellTool, ToolRegistry,
+    computer::ComputerTool, media::MediaTool, memory::MemoryTool, process::ProcessTool,
+    shell::ShellTool, ToolRegistry,
 };
+
+#[cfg(feature = "mobile")]
+use tools::mobile::MobileTool;
 
 #[cfg(target_os = "linux")]
 use tools::accessibility::AccessibilityTool;
@@ -161,11 +165,17 @@ fn control_path() -> std::path::PathBuf {
     std::path::Path::new(&directory).join("hyusk-control.json")
 }
 
+#[cfg(feature = "mobile")]
 fn pairing_path() -> Option<std::path::PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(|directory| std::path::PathBuf::from(directory).join("hyusk-pairing.json"))
 }
 
+/// Write the single-use pairing payload into the runtime directory, owner-only.
+///
+/// Only compiled with the `mobile` feature (P5): a default build has no link
+/// server to pair with, so it must not leave or read a pairing file.
+#[cfg(feature = "mobile")]
 fn publish_pairing(payload: &link::PairingPayload) -> Result<()> {
     use std::io::Write;
     #[cfg(unix)]
@@ -186,6 +196,111 @@ fn publish_pairing(payload: &link::PairingPayload) -> Result<()> {
     file.sync_all()?;
     std::fs::rename(temp, path)?;
     Ok(())
+}
+
+/// Start the opt-in laptop link and return it for the tool registry and
+/// shutdown (P5).
+///
+/// Compiled only with the `mobile` feature: the TLS/WebSocket transport, the
+/// pairing payload, and the model-facing `mobile` tool are otherwise absent,
+/// and nothing here touches `hyusk-pairing.json`.
+#[cfg(feature = "mobile")]
+async fn start_mobile_link(agent_tx: &mpsc::Sender<HyuskEvent>) -> Option<Arc<link::LinkServer>> {
+    let link_enabled = std::env::var("HYUSK_LINK_ENABLED")
+        .map(|value| {
+            !matches!(
+                value.to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no"
+            )
+        })
+        .unwrap_or(false);
+
+    // Do not leave a stale code from the previous run for the panels to show.
+    if let Some(path) = pairing_path() {
+        let _ = std::fs::remove_file(path);
+    }
+
+    if !link_enabled {
+        return None;
+    }
+
+    let (command_tx, mut command_rx) = mpsc::channel(32);
+    let (outbound_tx, _) = tokio::sync::broadcast::channel(32);
+    let channels = link::LinkChannels::new(agent_tx.clone(), command_tx, outbound_tx.clone());
+    let server = match link::start_link_server(channels).await {
+        Ok(server) => Arc::new(server),
+        Err(error) => {
+            eprintln!("[Link] Mobile link disabled: {error}");
+            return None;
+        }
+    };
+
+    println!("[Link] Listening on {}", server.local_addr());
+    if let Err(error) = publish_pairing(&server.pairing_payload()) {
+        eprintln!("[Link] Could not publish pairing code: {error:#}");
+    }
+
+    let mut status_updates = status::subscribe();
+    let status_outbound = outbound_tx.clone();
+    tokio::spawn(async move {
+        while let Ok(snapshot) = status_updates.recv().await {
+            let _ = status_outbound.send(link::OutboundNotification::event(
+                serde_json::json!({"kind": "status", "status": snapshot}),
+            ));
+        }
+    });
+
+    let link_agent_tx = agent_tx.clone();
+    tokio::spawn(async move {
+        while let Some(command) = command_rx.recv().await {
+            match command {
+                link::LinkCommand::Approval(value) => {
+                    // The phone sends the same decision as a panel; the
+                    // runtime validates it against the armed confirmation and
+                    // never turns it into a message.
+                    let _ = link_agent_tx
+                        .send(HyuskEvent::ApprovalDecision {
+                            approved: value.approved,
+                            // The phone link stays once-only.
+                            scope: ApprovalScope::Once,
+                        })
+                        .await;
+                }
+                link::LinkCommand::Invoke(value) => {
+                    eprintln!(
+                        "[Link] Ignored unsupported inbound device.invoke: {}",
+                        value.name
+                    );
+                }
+                link::LinkCommand::InvocationResult(value) => {
+                    let message = if value.success {
+                        format!("Phone action {} completed", value.invocation_id)
+                    } else {
+                        format!(
+                            "Phone action {} failed: {}",
+                            value.invocation_id,
+                            value.error.as_deref().unwrap_or("unknown error")
+                        )
+                    };
+                    status::card("mobile", message, false);
+                }
+                link::LinkCommand::MemorySync(value) => {
+                    eprintln!(
+                        "[Link] Memory sync received ({} item(s)); merge support is pending",
+                        value.items.len()
+                    );
+                }
+                link::LinkCommand::WorkflowSync(value) => {
+                    eprintln!(
+                        "[Link] Workflow sync received ({} item(s)); merge support is pending",
+                        value.workflows.len()
+                    );
+                }
+            }
+        }
+    });
+
+    Some(server)
 }
 
 fn catalog_cache_path() -> std::path::PathBuf {
@@ -617,6 +732,8 @@ async fn nova_sonic_test_mode() -> Result<()> {
 struct ToolSetup<'a> {
     events: &'a mpsc::Sender<HyuskEvent>,
     active_model: SharedActiveModel,
+    /// The running laptop link, when the `mobile` feature is compiled in (P5).
+    #[cfg(feature = "mobile")]
     link_server: Option<Arc<link::LinkServer>>,
     brave_search_key: Option<String>,
     /// The external tool host, started before the registry so its handshake
@@ -638,6 +755,7 @@ async fn build_tools(setup: ToolSetup<'_>) -> ToolRegistry {
     let ToolSetup {
         events,
         active_model,
+        #[cfg(feature = "mobile")]
         link_server,
         brave_search_key,
         external_host,
@@ -675,7 +793,9 @@ async fn build_tools(setup: ToolSetup<'_>) -> ToolRegistry {
         Err(error) => eprintln!("[Web] Native search unavailable: {error}"),
     }
 
-    // The phone tool exists only while the opt-in link server is running.
+    // The phone tool exists only in a `mobile` build, and then only while the
+    // opt-in link server is running (P5).
+    #[cfg(feature = "mobile")]
     if let Some(server) = link_server {
         tools.register(MobileTool::new(server));
     }
@@ -817,97 +937,14 @@ async fn main() -> Result<()> {
     let (agent_tx, agent_rx) = mpsc::channel::<HyuskEvent>(32);
 
     // ==========================================
-    // Android/mobile link
+    // Android/mobile link (feature-gated, P5)
     // ==========================================
 
-    let link_enabled = std::env::var("HYUSK_LINK_ENABLED")
-        .map(|value| {
-            !matches!(
-                value.to_ascii_lowercase().as_str(),
-                "0" | "false" | "off" | "no"
-            )
-        })
-        .unwrap_or(false);
-    if let Some(path) = pairing_path() {
-        let _ = std::fs::remove_file(path);
-    }
-    let mut link_server: Option<Arc<link::LinkServer>> = None;
-    if link_enabled {
-        let (command_tx, mut command_rx) = mpsc::channel(32);
-        let (outbound_tx, _) = tokio::sync::broadcast::channel(32);
-        let channels = link::LinkChannels::new(agent_tx.clone(), command_tx, outbound_tx.clone());
-        match link::start_link_server(channels).await {
-            Ok(server) => {
-                let server = Arc::new(server);
-                println!("[Link] Listening on {}", server.local_addr());
-                if let Err(error) = publish_pairing(&server.pairing_payload()) {
-                    eprintln!("[Link] Could not publish pairing code: {error:#}");
-                }
-                link_server = Some(server);
-
-                let mut status_updates = status::subscribe();
-                let status_outbound = outbound_tx.clone();
-                tokio::spawn(async move {
-                    while let Ok(snapshot) = status_updates.recv().await {
-                        let _ = status_outbound.send(link::OutboundNotification::event(
-                            serde_json::json!({"kind": "status", "status": snapshot}),
-                        ));
-                    }
-                });
-
-                let link_agent_tx = agent_tx.clone();
-                tokio::spawn(async move {
-                    while let Some(command) = command_rx.recv().await {
-                        match command {
-                            link::LinkCommand::Approval(value) => {
-                                // The phone sends the same decision as a panel;
-                                // the runtime validates it against the armed
-                                // confirmation and never turns it into a message.
-                                let _ = link_agent_tx
-                                    .send(HyuskEvent::ApprovalDecision {
-                                        approved: value.approved,
-                                        // The phone link stays once-only.
-                                        scope: ApprovalScope::Once,
-                                    })
-                                    .await;
-                            }
-                            link::LinkCommand::Invoke(value) => {
-                                eprintln!(
-                                    "[Link] Ignored unsupported inbound device.invoke: {}",
-                                    value.name
-                                );
-                            }
-                            link::LinkCommand::InvocationResult(value) => {
-                                let message = if value.success {
-                                    format!("Phone action {} completed", value.invocation_id)
-                                } else {
-                                    format!(
-                                        "Phone action {} failed: {}",
-                                        value.invocation_id,
-                                        value.error.as_deref().unwrap_or("unknown error")
-                                    )
-                                };
-                                status::card("mobile", message, false);
-                            }
-                            link::LinkCommand::MemorySync(value) => {
-                                eprintln!(
-                                    "[Link] Memory sync received ({} item(s)); merge support is pending",
-                                    value.items.len()
-                                );
-                            }
-                            link::LinkCommand::WorkflowSync(value) => {
-                                eprintln!(
-                                    "[Link] Workflow sync received ({} item(s)); merge support is pending",
-                                    value.workflows.len()
-                                );
-                            }
-                        }
-                    }
-                });
-            }
-            Err(error) => eprintln!("[Link] Mobile link disabled: {error}"),
-        }
-    }
+    // The whole link-standup block lives in `start_mobile_link`, which only
+    // exists with the `mobile` feature: a default build has no transport, no
+    // pairing file, and no model-facing `mobile` tool.
+    #[cfg(feature = "mobile")]
+    let link_server = start_mobile_link(&agent_tx).await;
 
     // ==========================================
     // Tools
@@ -934,6 +971,7 @@ async fn main() -> Result<()> {
     let tools = build_tools(ToolSetup {
         events: &agent_tx,
         active_model: active_api_model.clone(),
+        #[cfg(feature = "mobile")]
         link_server: link_server.clone(),
         brave_search_key,
         external_host: external_host.clone(),
@@ -1069,6 +1107,7 @@ async fn main() -> Result<()> {
     });
 
     let control_tx = agent_tx.clone();
+    #[cfg(feature = "mobile")]
     let control_link = link_server.clone();
     tokio::spawn(async move {
         let path = control_path();
@@ -1150,6 +1189,7 @@ async fn main() -> Result<()> {
                 "refresh_models" => {
                     tokio::spawn(refresh_catalogs());
                 }
+                #[cfg(feature = "mobile")]
                 "pair_phone" => {
                     if let Some(server) = control_link.as_ref() {
                         if let Err(error) = publish_pairing(&server.refresh_pairing()) {
@@ -1162,6 +1202,14 @@ async fn main() -> Result<()> {
                             false,
                         );
                     }
+                }
+                #[cfg(not(feature = "mobile"))]
+                "pair_phone" => {
+                    status::card(
+                        "device",
+                        "This build has no mobile link. Rebuild with --features mobile.",
+                        false,
+                    );
                 }
                 "dismiss_card" => status::dismiss(),
                 "approve" | "approve_turn" | "deny" => {
@@ -1510,9 +1558,11 @@ async fn main() -> Result<()> {
 
     let _ = agent_tx.send(HyuskEvent::Shutdown).await;
 
+    #[cfg(feature = "mobile")]
     if let Some(server) = link_server.and_then(Arc::into_inner) {
         server.shutdown().await;
     }
+    #[cfg(feature = "mobile")]
     if let Some(path) = pairing_path() {
         let _ = std::fs::remove_file(path);
     }
@@ -1638,6 +1688,7 @@ mod tool_policy_tests {
                 "fixture",
                 OpenRouterClient::new("unused".into(), "http://127.0.0.1:1".into()),
             ),
+            #[cfg(feature = "mobile")]
             link_server: None,
             brave_search_key: None,
             external_host: None,
@@ -1680,6 +1731,12 @@ mod tool_policy_tests {
         for name in ["accessibility", "gnome_doctor", "window"] {
             assert!(tools.get(name).is_some(), "{name} was not registered");
         }
+        // P5: the link and its model-facing tool exist only in a mobile build.
+        #[cfg(not(feature = "mobile"))]
+        assert!(
+            tools.get("mobile").is_none(),
+            "a default build must not register the mobile tool"
+        );
     }
 
     /// T1: every registered tool declares a conformant manifest, the model
@@ -1933,5 +1990,64 @@ mod platform_tests {
                 "{dependency} must be optional so a default build skips it"
             );
         }
+    }
+
+    /// P5: the link server, its TLS transport, the pairing file, and the
+    /// model-facing `mobile` tool sit behind one feature, off by default. The
+    /// test cannot prove the compiler skips the module; `cargo tree` and the
+    /// default test count do, and this keeps the wiring from drifting.
+    #[test]
+    fn the_mobile_link_is_behind_its_feature() {
+        let manifest = std::fs::read_to_string(manifest_dir().join("Cargo.toml"))
+            .expect("read the package manifest");
+
+        let features = manifest_section(&manifest, "[features]");
+        assert!(
+            features.contains("mobile = ["),
+            "Cargo.toml has no mobile feature"
+        );
+        for dependency in [
+            "dep:rustls",
+            "dep:tokio-rustls",
+            "dep:hmac",
+            "dep:sha2",
+            "dep:rand",
+        ] {
+            assert!(
+                features.contains(dependency),
+                "the mobile feature must enable {dependency}"
+            );
+        }
+
+        let dependencies = manifest_section(&manifest, "[dependencies]");
+        for dependency in ["rustls", "tokio-rustls", "hmac", "sha2", "rand"] {
+            let prefix = format!("{dependency} = ");
+            let line = dependencies
+                .lines()
+                .find(|line| line.trim_start().starts_with(&prefix))
+                .unwrap_or_else(|| panic!("{dependency} is not a dependency"));
+            assert!(
+                line.contains("optional = true"),
+                "{dependency} must be optional so a default build skips it"
+            );
+        }
+
+        let main = std::fs::read_to_string(manifest_dir().join("src/main.rs"))
+            .expect("read the composition root");
+        assert!(
+            main.contains("#[cfg(feature = \"mobile\")]\nmod link;"),
+            "the link module must be feature-gated in main.rs"
+        );
+        assert!(
+            main.contains("#[cfg(feature = \"mobile\")]\nfn pairing_path()"),
+            "the pairing file must be feature-gated in main.rs"
+        );
+
+        let tools = std::fs::read_to_string(manifest_dir().join("src/tools/mod.rs"))
+            .expect("read the tool modules");
+        assert!(
+            tools.contains("#[cfg(feature = \"mobile\")]\npub mod mobile;"),
+            "the mobile tool must be feature-gated"
+        );
     }
 }

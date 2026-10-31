@@ -4,6 +4,20 @@ Mobile Link is JSON-RPC 2.0 over a certificate-pinned secure WebSocket. The
 phone initiates connections to laptop Hyusk over LAN or Tailscale; there is no
 cloud relay.
 
+## Building the laptop side
+
+The link is the `mobile` Cargo feature and is off by default (P5), so a plain
+agent build has no TLS listener, no pairing file, and no `mobile` tool:
+
+```bash
+cargo build --release --features mobile
+```
+
+`scripts/setup-mobile-link.sh --enable` writes the `HYUSK_LINK_*` settings and
+restarts the service, but the running binary must have been built with the
+feature; the panel's pair button reports a build without the link. Link tests
+run under the same feature.
+
 ## Pairing and authentication
 
 The laptop creates a TLS identity and a five-minute, single-use pairing secret.

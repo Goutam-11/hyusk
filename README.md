@@ -48,7 +48,7 @@ fresh clone of this repository builds, tests, and installs on its own with
 | Guarded long-running model/tool loops | Implemented; configurable round/time limits, cancellation, and no-progress detection |
 | Background model/Codex tasks | Implemented; bounded concurrency with list, cancel, completion cards, and announcements |
 | Persistent reminders and workflow schedules | Implemented; one-shot jobs survive service restarts |
-| Android companion link | Implemented; opt-in TLS WebSocket pairing over LAN/Tailscale with typed remote phone actions |
+| Android companion link | Implemented behind the `mobile` build feature; opt-in TLS WebSocket pairing over LAN/Tailscale with typed remote phone actions |
 | Android companion app | Implemented under `android/`; Material 3 command deck, Accessibility control, voice session, notification replies, encrypted local settings/cache |
 
 The `models/` directory currently contains Whisper and Piper assets plus the
@@ -96,8 +96,8 @@ Running the binary starts these components:
 2. Register the desktop, shell, media, memory, scheduling, and task tools.
    `browser` registers when its CDP configuration loads; on Linux,
    `accessibility`, `window`, and `gnome_doctor` register unconditionally and
-   report unavailability at call time. `mobile` joins only with the Android
-   link.
+   report unavailability at call time. `mobile` joins only in a build with the
+   `mobile` feature and the Android link enabled.
 3. Check for a default microphone.
 4. Initialize speech-to-text from `STT_MODEL` when available.
 5. Start the agent event task, catalog refresh, and control-file poller.
@@ -214,6 +214,14 @@ the equivalent one-time command:
 
 ```bash
 ./scripts/setup-mobile-link.sh --enable
+```
+
+The link is compiled only into a build with the `mobile` feature; the default
+`scripts/install-autostart.sh` build leaves it out. Install the agent with the
+feature when you use the phone:
+
+```bash
+./scripts/install-autostart.sh --features mobile
 ```
 
 Then choose **Generate fresh code** and **Copy pairing code** in the extension.

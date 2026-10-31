@@ -4,6 +4,16 @@
 
 ### Added
 
+- The mobile link is now the `mobile` Cargo feature and is off by default (P5).
+  A plain agent build compiles no TLS WebSocket transport, registers no
+  `mobile` tool, and never reads or writes `hyusk-pairing.json`; the pinning,
+  HMAC, and rustls dependencies are optional behind the feature. `--features
+  mobile` restores the previous behaviour, and `scripts/install-autostart.sh`
+  now takes `--features mobile` so an installed service can include the link.
+  A `pair_phone` request from a panel in a build without the link reports that
+  instead of doing nothing, and the Android app and its sync messages stay in
+  the repository behind the feature. Docs, the protocol reference, and CI's
+  feature build say how to build with it.
 - Tools can now arrive from an external server without a rebuild (T2). One
   host spawns each server configured in `HYUSK_EXTERNAL_SERVERS` (inline JSON or
   a file path), performs a JSON-RPC 2.0 handshake over stdio, and registers what

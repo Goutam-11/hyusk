@@ -10,6 +10,33 @@ UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 UNIT_PATH="$UNIT_DIR/hyusk.service"
 BINARY="$PROJECT_DIR/target/release/hyusk_agent"
 
+# Optional surfaces are Cargo features, so the installer has to pass the
+# choice through: `--features mobile` installs the phone link (P5), and the
+# default build leaves it out.
+BUILD_FEATURES=()
+VOICE_AUDIO=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --voice-audio)
+      VOICE_AUDIO=true
+      shift
+      ;;
+    --features)
+      if [[ -z "${2:-}" ]]; then
+        echo "Missing a feature list after --features." >&2
+        exit 1
+      fi
+      BUILD_FEATURES=(--features "$2")
+      shift 2
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      echo "Usage: $0 [--voice-audio] [--features <list>]" >&2
+      exit 1
+      ;;
+  esac
+done
+
 if [[ ! -f "$UNIT_SOURCE" ]]; then
   echo "Missing service template: $UNIT_SOURCE" >&2
   exit 1
@@ -27,7 +54,7 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 echo "Building Hyusk release binary..."
-cargo build --release --manifest-path "$PROJECT_DIR/Cargo.toml"
+cargo build --release --manifest-path "$PROJECT_DIR/Cargo.toml" "${BUILD_FEATURES[@]}"
 
 mkdir -p "$UNIT_DIR"
 sed \
@@ -37,7 +64,7 @@ sed \
 
 # Optional dedicated noise/echo cancellation. Existing audio overrides are
 # otherwise preserved, including users who deliberately choose raw capture.
-if [[ "${1:-}" == "--voice-audio" ]]; then
+if [[ "$VOICE_AUDIO" == true ]]; then
   mkdir -p "$UNIT_DIR/hyusk.service.d"
   sed -e "s|@WORKDIR@|$PROJECT_DIR|g" \
     "$PROJECT_DIR/systemd/hyusk-audio.conf.in" \

@@ -50,16 +50,24 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 
 # The GTK workflow editor is behind a feature (P3), so its build and tests are
-# the one feature-enabled run:
+# the workflow feature-enabled run:
 cargo check --all-targets --offline --features workflow-editor
 cargo test --all-targets --offline --features workflow-editor -- --test-threads=4
+
+# The mobile link is behind the `mobile` feature (P5): a default build has no
+# TLS transport, pairing file, or model-facing `mobile` tool.
+cargo check --all-targets --offline --features mobile
+cargo test --all-targets --offline --features mobile -- --test-threads=4
 ```
 
-Current baseline: **465 tests passing, 6 ignored** for the default suite; the
-workflow editor adds five tests (one ignored) under `--features
-workflow-editor`, for **470 passing, 7 ignored**. Clippy is clean except three
-pre-existing `result_large_err` warnings in `src/link/server.rs`. CI runs fmt,
-clippy, the default tests, and that one feature build on Ubuntu.
+Current baseline: **453 tests passing, 6 ignored** for the default suite;
+`--features mobile` restores the link (466 passing, 6 ignored). The workflow
+editor adds five tests (one ignored) under `--features workflow-editor`, for
+**458 passing, 7 ignored**; both features together are **471 passing, 7
+ignored**. Default clippy is clean (the three pre-existing `result_large_err`
+warnings live behind `mobile` in `src/link/server.rs` and reappear with that
+feature). CI runs fmt, clippy, the default tests, and the feature builds on
+Ubuntu.
 
 Several tests touch session/memory/status paths, so isolate them:
 
@@ -114,9 +122,16 @@ tests live in `#[cfg(test)]` modules beside the code.
   the declared schema before sending, results are truncated and redacted, calls
   and startup are bounded, a crash or timeout restarts the process, and
   shutdown kills and reaps every child. A core tool may not use the namespace.
-- The model-facing `mobile` schema exposes only `list`/`invoke`. Pairing codes
-  belong to the GNOME/Noctalia indicators (`hyusk-pairing.json`, `pair_phone`),
-  never to a model tool result or session history.
+- Mobile link (P5): the TLS WebSocket server (`src/link/`), the pairing payload,
+  the model-facing `mobile` tool, and the HMAC/rustls dependencies are the
+  `mobile` feature, off by default. A default build must not register the tool
+  or read or write `hyusk-pairing.json`: `pairing_path`, `publish_pairing`, and
+  `start_mobile_link` carry the feature gate, and a `pair_phone` control action
+  in a build without the link reports that. The model-facing `mobile` schema
+  exposes only `list`/`invoke`. Pairing codes belong to the GNOME/Noctalia
+  indicators (`hyusk-pairing.json`, `pair_phone`), never to a model tool result
+  or session history.
+  `platform_tests::the_mobile_link_is_behind_its_feature` guards the wiring.
 - Approved calls execute the stored arguments, not a fresh model call. Task
   delegation pins the canonical workspace root via `approval_arguments`.
 - Workflows execute deterministic `Action` steps from `src/agent/commands.rs`;
@@ -323,12 +338,12 @@ designed in `docs/architecture-roadmap.md`. Wave 1 is complete: P1 (the
 experimental shell agent), P2 (macOS branches and the Linux declaration), P3
 (the `workflow-editor` feature), and T1 (tool manifests) are closed. Wave 2 is
 under way: M1 (memory schema v2), M2 (hybrid retrieval), G1 (preference notes),
-M3 (consolidation), M4 (explain and export), and T2 (the external tool host)
-are closed. The remaining work is P5 (the mobile feature) and P6 (Nova Sonic),
-which is behind it, T3 (the MCP provider) and T4 (its trust model), which build
-on T2, and G2 (the propose-diff loop). P4 (the orb feature) is deferred, because
-this installation uses the GNOME extension and the Noctalia widget rather than
-the orb.
+M3 (consolidation), M4 (explain and export), T2 (the external tool host), and P5
+(the mobile feature) are closed. The remaining work is P6 (Nova Sonic), which is
+behind P5, T3 (the MCP provider) and T4 (its trust model), which build on T2,
+and G2 (the propose-diff loop). P4 (the orb feature) is deferred, because this
+installation uses the GNOME extension and the Noctalia widget rather than the
+orb.
 
 ## Memory and session notes
 

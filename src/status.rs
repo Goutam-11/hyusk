@@ -57,6 +57,12 @@ fn publisher() -> &'static tokio::sync::broadcast::Sender<Status> {
     PUBLISHER.get_or_init(|| tokio::sync::broadcast::channel(32).0)
 }
 
+/// A live status feed, used by the mobile link's event fan-out (P5).
+///
+/// The only subscriber is the link server, which is compiled only with the
+/// `mobile` feature; without it the publisher still records status, but no one
+/// holds a receiver.
+#[cfg(feature = "mobile")]
 pub fn subscribe() -> tokio::sync::broadcast::Receiver<Status> {
     publisher().subscribe()
 }

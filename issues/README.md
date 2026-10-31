@@ -111,13 +111,13 @@ tracked in [ARCHITECTURE_ISSUE.md](ARCHITECTURE_ISSUE.md). Waves order work
 inside that track and are independent of the phases above. Wave 1 was completed
 on 2026-10-31: `P1`, `P2`, `P3`, and `T1` are closed. Wave 2 is under way:
 `M1` (memory schema v2), `T2` (the external tool host), `M2` (hybrid
-retrieval), `G1` (preference notes), `M3` (consolidation), and `M4` (explain and
-export) are closed, and `P5` (the mobile feature) remains; `M2`, `G1`, `M3`, and
-`M4` landed ahead of `P5`/`T2` because they depended only on the memory work.
-`P4` (the orb overlay) is deferred because this installation uses the GNOME
-extension and the Noctalia widget, and `P5`'s dependency on it was only the
-shared `Cargo.toml` area. The remaining items are `P5`, `P6` (which needs
-`P5`), `T3` and `T4` (which build on `T2`), and `G2`.
+retrieval), `G1` (preference notes), `M3` (consolidation), `M4` (explain and
+export), and `P5` (the mobile feature) are closed; `M2`, `G1`, `M3`, `M4`, and
+`P5` landed ahead of the remaining Wave 2 order because they depended only on
+the memory and build work. `P4` (the orb overlay) is deferred because this
+installation uses the GNOME extension and the Noctalia widget, and `P5`'s
+dependency on it was only the shared `Cargo.toml` area. The remaining items are
+`P6` (which needs `P5`), `T3` and `T4` (which build on `T2`), and `G2`.
 
 | ID | Title | Wave | Depends on |
 | --- | --- | --- | --- |

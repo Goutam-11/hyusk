@@ -9,6 +9,7 @@ pub mod gnome_doctor;
 pub mod manifest;
 pub mod media;
 pub mod memory;
+#[cfg(feature = "mobile")]
 pub mod mobile;
 #[cfg(target_os = "linux")]
 pub mod portal;
