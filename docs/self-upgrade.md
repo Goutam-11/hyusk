@@ -140,6 +140,13 @@ Checks: fmt/check/clippy; <feature> suite N passing, M ignored;
 Risk: <what could regress>; rollback: revert <hash> and restart.
 ```
 
+The pull request itself uses
+[`.github/PULL_REQUEST_TEMPLATE.md`](../.github/PULL_REQUEST_TEMPLATE.md): the
+same three headings (`Why`, `What changed`, `Validation and proof`), the probe
+table, and one small diagram when the cause or the flow is not obvious from
+prose. The proposal block above is the short form for an in-session hand-off;
+the pull request is the durable record a reviewer reads later.
+
 ## Review checklist
 
 - The diff is limited to the issue; no silent extras.

@@ -4,6 +4,12 @@
 
 ### Added
 
+- Every pull request now starts from `.github/PULL_REQUEST_TEMPLATE.md`, the
+  review format this repository asks for: `Why`, `What changed`, and
+  `Validation and proof`, with the four validation checkboxes, a probe table,
+  and one small diagram when the cause or the flow is not obvious from prose.
+  `docs/self-upgrade.md` points at it and explains how it relates to the
+  shorter in-session proposal block.
 - The propose-diff loop is written down (G2) in
   [`docs/self-upgrade.md`](docs/self-upgrade.md): the agent works on a branch,
   runs fmt, check, clippy, the isolated tests, and the feature builds, and
