@@ -2401,6 +2401,7 @@ impl Tool for MemoryTool {
             `forget` to delete an entry by id. \
             The SQLite store survives restarts and a readable Markdown view is generated \
             under the user's data directory.",
+            summary: "Remember, search, explain, and forget durable notes, facts, and preferences.",
             schema: Schema::Fn(memory_schema),
             risk: &[RiskClass::Read, RiskClass::Mutate],
             capabilities: &[],

@@ -402,6 +402,7 @@ impl Tool for WindowTool {
             focused window). This is the reliable way to manage windows on \
             Wayland; prefer it over blind alt+tab or accessibility, which cannot \
             raise windows.",
+            summary: "List, focus, or close desktop windows through the compositor.",
             schema: Schema::Fn(window_schema),
             risk: &[RiskClass::Read, RiskClass::Mutate],
             capabilities: &[],

@@ -238,6 +238,7 @@ impl Tool for AccessibilityTool {
             (Chromium/Electron, or any app while toolkit-accessibility is off) \
             expose no tree; responses include `warnings` when that is the case, \
             and you should then fall back to the `computer` tool.",
+            summary: "Read and drive native app windows, elements, and text through AT-SPI.",
             schema: Schema::Fn(accessibility_schema),
             risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Input],
             capabilities: &[Capability::Input, Capability::Accessibility],

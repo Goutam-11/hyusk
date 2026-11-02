@@ -474,6 +474,7 @@ impl Tool for GnomeDoctorTool {
             name: "gnome_doctor",
             version: CORE_VERSION,
             description: "Run read-only checks for GNOME computer-use readiness: session type, Python/AT-SPI, toolkit accessibility, the Hyusk shell extension, RemoteDesktop portal, optional Tesseract OCR, and the local .env file mode. Does not request permissions or change settings.",
+            summary: "Report which desktop capabilities are missing and what to try next.",
             schema: Schema::Fn(gnome_doctor_schema),
             risk: &[RiskClass::Read],
             capabilities: &[],

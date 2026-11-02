@@ -15,7 +15,6 @@ pub trait Tool: Send + Sync {
 
     // Defaults, read back from the manifest:
     fn name(&self) -> &str;
-    fn description(&self) -> &str;
 }
 ```
 
@@ -37,7 +36,8 @@ does not compile. A `ToolManifest` carries:
 | --- | --- |
 | `name` | The name a model call uses; it must equal `Tool::name`. |
 | `version` | A `major.minor.patch` declaration version (`CORE_VERSION` for the built-in tools). |
-| `description` | The model-facing description, and the first line of the prompt's tool guide. |
+| `description` | The model-facing description, sent with the tool specification. |
+| `summary` | The one line the prompt's tool guide shows for this tool; hand-written, at most `MAX_SUMMARY_CHARS` (200). |
 | `schema` | A `Schema`: `Fn` for a built-in tool's function, or `Owned` for a schema received in an external handshake. |
 | `risk` | At least one of `read`, `mutate`, `input`, `execute`, `network`, `system`. |
 | `capabilities` | The OS capabilities the tool needs, from the D3 vocabulary: `input`, `screenshot`, `accessibility`. |
@@ -45,10 +45,10 @@ does not compile. A `ToolManifest` carries:
 
 The registry validates each manifest when the tool registers and panics with one
 message on a programmer error: an empty name, a version that is not
-`major.minor.patch`, an empty or oversized description, a schema that is not an
-object schema, a `required` entry that `properties` does not declare, or no
-risk class. `register` also refuses a manifest whose name disagrees with the
-tool, a duplicate name, an external tool outside the `ext.` namespace, and a
+`major.minor.patch`, an empty or oversized description or summary, a schema that
+is not an object schema, a `required` entry that `properties` does not declare,
+or no risk class. `register` also refuses a manifest whose name disagrees with
+the tool, a duplicate name, an external tool outside the `ext.` namespace, and a
 core tool that squats it.
 
 `ToolRegistry::conformance()` runs the set-level checks at startup and in the
@@ -1042,6 +1042,7 @@ impl Tool for Ping {
             name: "ping",
             version: CORE_VERSION,
             description: "Echo a short message without touching the host.",
+            summary: "Echo a message back without touching the host.",
             schema: Schema::Fn(ping_schema),
             risk: &[RiskClass::Read],
             capabilities: &[],
@@ -1057,7 +1058,10 @@ impl Tool for Ping {
 ```
 
 Then add `pub mod ping;` to `tools/mod.rs` and call
-`tools.register(Ping);` during startup. A tool that types text or presses keys
+`tools.register(Ping);` during startup. The `summary` is the one line the system
+prompt repeats for every offered tool on every turn, so write it by hand, keep
+it under 200 characters, and do not let it repeat the description. A tool that
+types text or presses keys
 declares `Capability::Input` in its manifest and its actions in the policy
 row's `input_paths`; `conformance()` fails if only one of the two is present.
 Restart the binary so the new spec is sent to the model. A tool that arrives

@@ -130,7 +130,8 @@ impl Tool for MediaTool {
         ToolManifest {
             name: "media",
             version: CORE_VERSION,
-            description: "Control media playback on the local desktop via MPRIS. Works with Spotify, YouTube Music in a browser, VLC, mpv, and any other MPRIS player. Requires `playerctl` to be installed. `status` returns the current track (artist, title, album) and whether it is playing; `position` returns the playback position; `shuffle`, `repeat`, and `seek` adjust playback.",
+            description: "Control media playback on the local desktop via MPRIS. Works with Spotify, YouTube Music in a browser, VLC, mpv, and any other MPRIS player. Requires `playerctl` to be installed. `play`, `pause`, `play_pause`, `next`, `previous`, and `stop` control the player. `status` returns the current track (artist, title, album) and whether it is playing; `position` returns the playback position; `seek` takes an `offset` such as +10 or -5 seconds; `volume` takes a `level` from 0 to 100, and `volume_up`/`volume_down` step it; `shuffle` toggles; `repeat` takes a `mode` of off, one, or all.",
+            summary: "Control any MPRIS player: play, pause, skip, volume, seek, shuffle, and repeat.",
             schema: Schema::Fn(media_schema),
             risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Execute],
             capabilities: &[],

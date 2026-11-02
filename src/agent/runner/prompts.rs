@@ -11,22 +11,17 @@ pub(super) fn build_tool_specs(tools: &ToolRegistry) -> Vec<Value> {
     tools.specs()
 }
 
-/// Names and one-line purposes of every registered tool, for the prompt.
+/// Names and one-line purposes of every offered tool, for the prompt.
+///
+/// The line is the manifest's `summary`, not a cut-down description: the old
+/// version took everything before the first `". "`, which mis-split any
+/// description containing "e.g. " and silently hid the rest of the sentence.
+/// `iter` already yields the tools in name order.
 pub(super) fn build_tool_guide(tools: &ToolRegistry) -> String {
-    let mut tools: Vec<_> = tools.iter().collect();
-
-    tools.sort_by_key(|tool| tool.name().to_string());
-
-    let mut guide = String::new();
-
-    for tool in tools {
-        let description = tool.description();
-        let summary = description.split(". ").next().unwrap_or(description).trim();
-
-        guide.push_str(&format!("- {}: {}\n", tool.name(), summary));
-    }
-
-    guide
+    tools
+        .iter()
+        .map(|tool| format!("- {}: {}\n", tool.name(), tool.manifest().summary))
+        .collect()
 }
 
 pub(super) async fn append_desktop_context(prompt: &mut String) {
@@ -315,8 +310,41 @@ fn user_profile_context() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_desktop_context_with, approval_guidance_block, build_system_prompt};
+    use super::{
+        append_desktop_context_with, approval_guidance_block, build_system_prompt, build_tool_guide,
+    };
     use crate::tools::safety::{approval_guidance, Decision, ToolName};
+    use crate::tools::ToolRegistry;
+
+    /// A tool whose description would fool a `". "` split, which is what the
+    /// guide used to do.
+    struct Summarised;
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for Summarised {
+        fn manifest(&self) -> crate::tools::manifest::ToolManifest {
+            crate::tools::manifest::ToolManifest {
+                description: "A fixture tool, e.g. one whose description runs on.",
+                summary: "Fixture summary.",
+                ..crate::tools::manifest::stub("summarised")
+            }
+        }
+
+        async fn execute(&self, _input: &str) -> anyhow::Result<crate::tools::ToolResult> {
+            Ok(crate::tools::ToolResult::success("ok"))
+        }
+    }
+
+    /// The guide carries the declared summary. Cutting the description at its
+    /// first `". "` used to produce "A fixture tool, e.g." here and hide the
+    /// rest of the sentence.
+    #[test]
+    fn the_tool_guide_uses_the_manifest_summary() {
+        let mut tools = ToolRegistry::new();
+        tools.register(Summarised);
+
+        assert_eq!(build_tool_guide(&tools), "- summarised: Fixture summary.\n");
+    }
 
     fn system_prompt() -> String {
         build_system_prompt("- fixture tool: test\n", "check the build", false)

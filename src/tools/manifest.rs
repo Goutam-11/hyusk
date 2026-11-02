@@ -29,6 +29,13 @@ pub const CORE_VERSION: &str = "1.0.0";
 /// prose is a cost, not a feature. The current tools are well under this.
 pub const MAX_DESCRIPTION_CHARS: usize = 2_000;
 
+/// The longest summary a manifest may carry.
+///
+/// The summary is the one line the system prompt repeats for every offered
+/// tool on every turn, so it stays a line: one sentence naming what the tool is
+/// for, not a second description.
+pub const MAX_SUMMARY_CHARS: usize = 200;
+
 /// Where a tool comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -116,6 +123,14 @@ pub struct ToolManifest {
     pub version: &'static str,
     /// The model-facing description.
     pub description: &'static str,
+    /// The one line the prompt's tool guide shows for this tool.
+    ///
+    /// Written by hand rather than cut out of the description: the guide used
+    /// to take everything before the first `". "`, which mis-splits a
+    /// description containing "e.g. " and silently drops the rest of the
+    /// sentence. A field makes the intended one-liner explicit, and
+    /// [`conformance`](ToolManifest::conformance) checks it.
+    pub summary: &'static str,
     /// The JSON Schema for the arguments, either a core function or a value
     /// received in the T2 handshake.
     pub schema: Schema,
@@ -134,6 +149,8 @@ pub enum ManifestError {
     InvalidVersion(&'static str),
     EmptyDescription,
     LongDescription(usize),
+    EmptySummary,
+    LongSummary(usize),
     SchemaNotObject,
     SchemaTypeNotObject,
     SchemaPropertiesNotObject,
@@ -154,6 +171,11 @@ impl fmt::Display for ManifestError {
             ManifestError::LongDescription(length) => write!(
                 formatter,
                 "the description is {length} characters, over the {MAX_DESCRIPTION_CHARS} limit"
+            ),
+            ManifestError::EmptySummary => write!(formatter, "the summary is empty"),
+            ManifestError::LongSummary(length) => write!(
+                formatter,
+                "the summary is {length} characters, over the {MAX_SUMMARY_CHARS} limit"
             ),
             ManifestError::SchemaNotObject => write!(formatter, "the schema is not an object"),
             ManifestError::SchemaTypeNotObject => {
@@ -213,6 +235,18 @@ impl ToolManifest {
             return Err(ManifestError::LongDescription(length));
         }
 
+        let summary = self.summary.trim();
+
+        if summary.is_empty() {
+            return Err(ManifestError::EmptySummary);
+        }
+
+        let length = summary.chars().count();
+
+        if length > MAX_SUMMARY_CHARS {
+            return Err(ManifestError::LongSummary(length));
+        }
+
         if self.risk.is_empty() {
             return Err(ManifestError::NoRiskClass);
         }
@@ -268,6 +302,7 @@ pub fn stub(name: &'static str) -> ToolManifest {
         name,
         version: "0.0.0",
         description: "test tool",
+        summary: "test tool",
         schema: Schema::Fn(stub_schema),
         risk: &[RiskClass::Read],
         capabilities: &[],
@@ -302,6 +337,7 @@ mod tests {
             name: "fixture",
             version: CORE_VERSION,
             description: "A fixture tool.",
+            summary: "A fixture tool.",
             schema: Schema::Fn(schema),
             risk: &[RiskClass::Read, RiskClass::Mutate],
             capabilities: &[Capability::Input],
@@ -377,6 +413,30 @@ mod tests {
         assert_eq!(
             manifest.conformance(),
             Err(ManifestError::LongDescription(MAX_DESCRIPTION_CHARS + 1))
+        );
+    }
+
+    /// The summary is the line the prompt carries for every tool, so a blank or
+    /// oversized one is refused instead of reaching the model.
+    #[test]
+    fn the_summary_must_be_one_short_line() {
+        assert_eq!(
+            ToolManifest {
+                summary: "   ",
+                ..manifest()
+            }
+            .conformance(),
+            Err(ManifestError::EmptySummary)
+        );
+
+        let long = "x".repeat(MAX_SUMMARY_CHARS + 1);
+        assert_eq!(
+            ToolManifest {
+                summary: Box::leak(long.into_boxed_str()),
+                ..manifest()
+            }
+            .conformance(),
+            Err(ManifestError::LongSummary(MAX_SUMMARY_CHARS + 1))
         );
     }
 

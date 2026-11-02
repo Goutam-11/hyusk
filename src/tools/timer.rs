@@ -52,6 +52,7 @@ impl Tool for TimerTool {
             version: CORE_VERSION,
             description:
                 "Set, cancel, or list Hyusk timers. A finished timer shows a desktop notification.",
+            summary: "Set, cancel, or list short Hyusk timers.",
             schema: Schema::Fn(timer_schema),
             risk: &[RiskClass::Mutate],
             capabilities: &[],
