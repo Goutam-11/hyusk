@@ -9,6 +9,10 @@ Rules:
   under about eight nodes: a `flowchart` for a decision, a `sequenceDiagram`
   when two writers or two callers race, a before/after pair when the bug is a
   wrong branch. Delete the skeleton if it does not earn its space.
+- Keep node labels plain: a double quote inside `{}` or `[]` ends the label and
+  GitHub rejects the whole diagram (`B{cut at first ". "}` fails). Either quote
+  the entire label (`B{"cut at first '. '"}`) or leave the quotes out
+  (`B{cut at first period}`). PR #13 shipped a broken diagram this way.
 - Every number comes from a run, not from memory.
 - Say plainly what was not verified. An honest gap is cheaper than a wrong
   guarantee.

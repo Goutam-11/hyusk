@@ -20,7 +20,9 @@
   `Validation and proof`, with the four validation checkboxes, a probe table,
   and one small diagram when the cause or the flow is not obvious from prose.
   `docs/self-upgrade.md` points at it and explains how it relates to the
-  shorter in-session proposal block.
+  shorter in-session proposal block. The diagram rules now say a node label
+  takes plain words: a double quote inside `{}` or `[]` ends the label and
+  GitHub rejects the whole diagram, which is how PR #13 shipped a broken one.
 - The propose-diff loop is written down (G2) in
   [`docs/self-upgrade.md`](docs/self-upgrade.md): the agent works on a branch,
   runs fmt, check, clippy, the isolated tests, and the feature builds, and
