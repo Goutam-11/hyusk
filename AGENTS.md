@@ -68,11 +68,11 @@ cargo check --all-targets --offline --features sonic
 cargo test --all-targets --offline --features sonic -- --test-threads=4
 ```
 
-Current baseline: **459 tests passing, 6 ignored** for the default suite.
-`--features sonic` restores the second loop (472 passing, 6 ignored), and
-`--features mobile` restores the link (472 passing, 6 ignored). The workflow
+Current baseline: **462 tests passing, 6 ignored** for the default suite.
+`--features sonic` restores the second loop (475 passing, 6 ignored), and
+`--features mobile` restores the link (475 passing, 6 ignored). The workflow
 editor adds five tests (one ignored) under `--features workflow-editor`, for
-**464 passing, 7 ignored**; all features together are **490 passing, 7
+**467 passing, 7 ignored**; all features together are **493 passing, 7
 ignored**. Default and `--features sonic` clippy are clean; the three
 pre-existing `result_large_err` warnings live behind `mobile` in
 `src/link/server.rs` and appear with that feature. CI runs fmt, clippy, the

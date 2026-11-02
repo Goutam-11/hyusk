@@ -187,6 +187,7 @@ impl Tool for SchedulerTool {
             name: "scheduler",
             version: CORE_VERSION,
             description: "Schedule one-time reminders, named deterministic workflows, or an LLM agent task, persist them across restarts, list schedules, and cancel them. Use after_seconds or a Unix timestamp at_unix.",
+            summary: "Schedule reminders, workflows, or an agent task, and list or cancel them.",
             schema: Schema::Fn(scheduler_schema),
             risk: &[RiskClass::Read, RiskClass::Mutate],
             capabilities: &[],

@@ -1840,6 +1840,36 @@ mod tool_policy_tests {
                 && manifest.version == tools::manifest::CORE_VERSION));
     }
 
+    /// The description and the summary reach the model verbatim, so stray
+    /// whitespace is a defect rather than a cosmetic one: the corrupted
+    /// descriptions fixed on 2026-10-30 were runs of nine spaces left behind by
+    /// a broken Rust line continuation, and nothing caught them.
+    #[tokio::test]
+    async fn the_model_facing_text_is_clean() {
+        let tools = test_tools().await;
+
+        for tool in tools.iter() {
+            let manifest = tool.manifest();
+
+            for (field, text) in [
+                ("description", manifest.description),
+                ("summary", manifest.summary),
+            ] {
+                assert_eq!(
+                    text,
+                    text.trim(),
+                    "{} has leading or trailing whitespace in its {field}",
+                    tool.name()
+                );
+                assert!(
+                    !text.contains("  "),
+                    "{} has a run of spaces in its {field}",
+                    tool.name()
+                );
+            }
+        }
+    }
+
     /// `mobile` is registered only while the opt-in link server runs, so it
     /// cannot be built here; its policy row is asserted directly.
     #[test]

@@ -40,6 +40,7 @@ impl Tool for MobileTool {
             name: "mobile",
             version: CORE_VERSION,
             description: "List paired Android devices or invoke one structured phone action. The phone enforces local confirmation for consequential actions. Never place raw shell in arguments.",
+            summary: "List paired phones and invoke one structured phone action.",
             schema: Schema::Fn(mobile_schema),
             risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Network],
             capabilities: &[],

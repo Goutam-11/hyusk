@@ -2241,6 +2241,7 @@ impl Tool for ComputerTool {
             attached to the conversation as an image; inspect it directly instead \
             of calling `ocr`. This tool can affect the user's real desktop; use it \
             only for actions the user asked for.",
+            summary: "Drive the desktop at pixel level: screenshots, OCR, mouse, keyboard, clipboard, and waits.",
             schema: Schema::Fn(computer_schema),
             risk: &[
                 RiskClass::Read,

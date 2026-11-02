@@ -40,22 +40,19 @@ impl ToolResult {
 
 #[async_trait]
 pub trait Tool: Send + Sync {
-    /// The tool's declaration (T1): name, version, description, schema, risk
-    /// classes, capability needs, and source.
+    /// The tool's declaration (T1): name, version, description, summary,
+    /// schema, risk classes, capability needs, and source.
     ///
     /// There is no default, so a tool cannot compile without one. The registry
-    /// checks it when the tool registers, and the name, description, and schema
-    /// the model sees are read back from here rather than declared twice.
+    /// checks it when the tool registers, and the name, description, summary,
+    /// and schema the model sees are read back from here rather than declared
+    /// twice.
     fn manifest(&self) -> ToolManifest;
 
     async fn execute(&self, input: &str) -> Result<ToolResult>;
 
     fn name(&self) -> &str {
         self.manifest().name
-    }
-
-    fn description(&self) -> &str {
-        self.manifest().description
     }
 
     /// Whether the registry should currently offer this tool to the model and

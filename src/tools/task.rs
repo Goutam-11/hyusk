@@ -216,6 +216,7 @@ impl Tool for TaskTool {
             name: "task",
             version: CORE_VERSION,
             description: "Delegate, list, or cancel background work. `research` is read-only. `workspace` lets an installed Codex CLI inspect and edit one approved project directory in workspace-write sandbox mode, without desktop or personal-data access. The main assistant remains available and announces completion.",
+            summary: "Delegate read-only research or an approved workspace task to the background.",
             schema: Schema::Fn(task_schema),
             risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Execute, RiskClass::Network],
             capabilities: &[],

@@ -4,6 +4,17 @@
 
 ### Added
 
+- Every tool manifest now carries a `summary`, the one line the system prompt's
+  tool guide shows for that tool. The guide used to cut the description at its
+  first `". "`, which mis-splits any description containing "e.g. " and hid the
+  rest of the sentence; a declared summary removes the parser, is checked by
+  `conformance()` (non-empty, at most 200 characters) and is covered by a test
+  with a description that would have fooled the old split. `media`'s
+  description now names all fourteen of its actions instead of five, and a
+  registry test fails on a description or summary carrying a run of spaces or
+  edge whitespace, which is what let the 2026-10-30 corrupted descriptions
+  through. The trait's now-unused `description()` accessor is gone; read the
+  manifest instead.
 - Every pull request now starts from `.github/PULL_REQUEST_TEMPLATE.md`, the
   review format this repository asks for: `Why`, `What changed`, and
   `Validation and proof`, with the four validation checkboxes, a probe table,

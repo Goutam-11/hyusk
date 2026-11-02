@@ -116,6 +116,7 @@ impl Tool for ProcessTool {
             name: "process",
             version: CORE_VERSION,
             description: "Launch a local application or process by name without going through the shell. Use this for browsers, GUI apps, editors, music players, and any long-running program. The action is `launch`. The process does not block the agent.",
+            summary: "Launch a desktop application by name without a shell.",
             schema: Schema::Fn(process_schema),
             risk: &[RiskClass::Execute, RiskClass::System],
             capabilities: &[],

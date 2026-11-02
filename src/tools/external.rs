@@ -417,10 +417,14 @@ impl ExternalServer {
     }
 
     fn external_tool(self: &Arc<Self>, declaration: &ToolDeclaration) -> ExternalTool {
+        // The host writes both strings; a server's own description is never
+        // shown (T3), so the summary is the same line the description carries.
+        let description = leak_str(declaration.description.clone());
         let manifest = ToolManifest {
             name: leak_str(declaration.namespaced.clone()),
             version: leak_str(declaration.version.clone()),
-            description: leak_str(declaration.description.clone()),
+            description,
+            summary: description,
             schema: Schema::Owned(leak_value(declaration.schema.clone())),
             risk: &[RiskClass::Execute],
             // The host does not let a server claim a desktop capability; the

@@ -149,6 +149,7 @@ impl Tool for WebSearchTool {
             name: "web_search",
             version: CORE_VERSION,
             description: "Search the live web directly without opening or controlling a browser. Use this for current events, changing facts, online documentation, recommendations, and source-backed answers. Results contain titles, URLs, and snippets; mention source names in the answer.",
+            summary: "Search the live web and return titles, URLs, and snippets.",
             schema: Schema::Fn(web_search_schema),
             risk: &[RiskClass::Read, RiskClass::Network],
             capabilities: &[],
