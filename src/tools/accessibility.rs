@@ -13,7 +13,9 @@ use tokio::{
 };
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{Capability, RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{
+    Capability, RiskClass, Schema, Source, ToolAction, ToolManifest, CORE_VERSION,
+};
 
 /*
  * Walking a large AT-SPI tree is slow (every node is a D-Bus round trip);
@@ -240,6 +242,58 @@ impl Tool for AccessibilityTool {
             and you should then fall back to the `computer` tool.",
             summary: "Read and drive native app windows, elements, and text through AT-SPI.",
             schema: Schema::Fn(accessibility_schema),
+            actions: Some(&[
+                ToolAction {
+                    name: "active",
+                    required: &[],
+                    optional: &["read", "max_chars"],
+                },
+                ToolAction {
+                    name: "apps",
+                    required: &[],
+                    optional: &[],
+                },
+                ToolAction {
+                    name: "windows",
+                    required: &[],
+                    optional: &[],
+                },
+                ToolAction {
+                    name: "tree",
+                    required: &[],
+                    optional: &["app", "max_depth", "max_nodes"],
+                },
+                ToolAction {
+                    name: "find",
+                    required: &[],
+                    optional: &["app", "name", "role", "text", "limit"],
+                },
+                ToolAction {
+                    name: "read",
+                    required: &[],
+                    optional: &["app", "path", "max_chars"],
+                },
+                ToolAction {
+                    name: "click",
+                    required: &[],
+                    optional: &["app", "path", "name", "role", "text", "action_name"],
+                },
+                ToolAction {
+                    name: "focus",
+                    required: &[],
+                    optional: &["app", "path", "name", "role", "text"],
+                },
+                ToolAction {
+                    name: "set_text",
+                    required: &["text"],
+                    optional: &["app", "path", "name", "role"],
+                },
+                ToolAction {
+                    name: "get_text",
+                    required: &[],
+                    optional: &["app", "path", "name", "role", "text"],
+                },
+            ]),
             risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Input],
             capabilities: &[Capability::Input, Capability::Accessibility],
             source: Source::Core,

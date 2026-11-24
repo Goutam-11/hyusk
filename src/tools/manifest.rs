@@ -111,6 +111,21 @@ impl Schema {
     }
 }
 
+/// One action a dispatching tool accepts, with the arguments it needs (T1/W2).
+///
+/// The table is the single place that says which arguments belong to which
+/// action; the schema cannot express it without a branch per action, and the
+/// descriptions are prose the model has to read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ToolAction {
+    /// The value a call puts in `action`.
+    pub name: &'static str,
+    /// Arguments the action cannot run without.
+    pub required: &'static [&'static str],
+    /// Arguments the action reads when they are present.
+    pub optional: &'static [&'static str],
+}
+
 /// One tool's declaration.
 ///
 /// `Copy` because every field is a constant, so the registry can hand a
@@ -134,6 +149,11 @@ pub struct ToolManifest {
     /// The JSON Schema for the arguments, either a core function or a value
     /// received in the T2 handshake.
     pub schema: Schema,
+    /// The actions a dispatching tool accepts, with their arguments.
+    ///
+    /// `None` for a tool with one shape (`shell`, `process`, `web_search`), so
+    /// the table never has to describe a tool that has nothing to dispatch on.
+    pub actions: Option<&'static [ToolAction]>,
     /// At least one class; an unclassified tool is a bug.
     pub risk: &'static [RiskClass],
     /// The OS capabilities the tool needs, from the D3 vocabulary.
@@ -157,6 +177,9 @@ pub enum ManifestError {
     RequiredNotAString,
     RequiredNotDeclared(String),
     NoRiskClass,
+    ActionWithoutRow(String),
+    MissingActionTable,
+    ArgumentNotInSchema { action: String, argument: String },
 }
 
 impl fmt::Display for ManifestError {
@@ -192,6 +215,18 @@ impl fmt::Display for ManifestError {
                 "the schema requires {name:?} but does not declare it in properties"
             ),
             ManifestError::NoRiskClass => write!(formatter, "no risk class is declared"),
+            ManifestError::MissingActionTable => write!(
+                formatter,
+                "the schema declares actions but the manifest has no action table"
+            ),
+            ManifestError::ActionWithoutRow(name) => write!(
+                formatter,
+                "the schema declares the action {name:?} but the action table has no row for it"
+            ),
+            ManifestError::ArgumentNotInSchema { action, argument } => write!(
+                formatter,
+                "the table's {action:?} row names {argument:?}, which the schema does not declare"
+            ),
         }
     }
 }
@@ -268,6 +303,38 @@ impl ToolManifest {
             None => None,
         };
 
+        if let Some(properties) = properties {
+            let declared = properties
+                .get("action")
+                .and_then(|action| action.get("enum"))
+                .and_then(Value::as_array);
+
+            if declared.is_some() && self.actions.is_none() && self.source == Source::Core {
+                return Err(ManifestError::MissingActionTable);
+            }
+
+            if let (Some(actions), Some(declared)) = (self.actions, declared) {
+                for entry in declared {
+                    if let Some(name) = entry.as_str() {
+                        if !actions.iter().any(|row| row.name == name) {
+                            return Err(ManifestError::ActionWithoutRow(name.to_string()));
+                        }
+                    }
+                }
+
+                for row in actions {
+                    for argument in row.required.iter().chain(row.optional.iter()) {
+                        if !properties.contains_key(*argument) {
+                            return Err(ManifestError::ArgumentNotInSchema {
+                                action: row.name.to_string(),
+                                argument: (*argument).to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         let Some(required) = object.get("required") else {
             return Ok(());
         };
@@ -293,6 +360,49 @@ impl ToolManifest {
     pub fn has_capability(&self, capability: Capability) -> bool {
         self.capabilities.contains(&capability)
     }
+
+    /// Why a call cannot run, or `None` when it can.
+    ///
+    /// Checked once before dispatch (W2), so a model's missing argument fails
+    /// with one message naming the action and what it accepts, instead of
+    /// reaching the tool and coming back with tool-specific wording after a
+    /// whole round trip.
+    pub fn argument_error(&self, arguments: &Value) -> Option<String> {
+        let actions = self.actions?;
+        let action = arguments.get("action")?.as_str()?;
+        let Some(row) = actions.iter().find(|row| row.name == action) else {
+            let names: Vec<&str> = actions.iter().map(|row| row.name).collect();
+
+            return Some(format!(
+                "unknown action '{action}'; this tool accepts: {}",
+                names.join(", ")
+            ));
+        };
+
+        let missing: Vec<&str> = row
+            .required
+            .iter()
+            .copied()
+            .filter(|name| arguments.get(*name).is_none())
+            .collect();
+
+        if missing.is_empty() {
+            return None;
+        }
+
+        let accepted: Vec<&str> = row
+            .required
+            .iter()
+            .chain(row.optional.iter())
+            .copied()
+            .collect();
+
+        Some(format!(
+            "action '{action}' requires {}; it accepts: {}",
+            missing.join(", "),
+            accepted.join(", ")
+        ))
+    }
 }
 
 /// A minimal valid manifest for a test double.
@@ -304,6 +414,7 @@ pub fn stub(name: &'static str) -> ToolManifest {
         description: "test tool",
         summary: "test tool",
         schema: Schema::Fn(stub_schema),
+        actions: None,
         risk: &[RiskClass::Read],
         capabilities: &[],
         source: Source::Core,
@@ -332,6 +443,20 @@ mod tests {
         })
     }
 
+    /// A schema that declares two actions, for the table-coverage checks.
+    fn two_action_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "action": { "type": "string", "enum": ["scroll", "drag"] },
+                "amount": { "type": "integer" },
+                "from": { "type": "object" },
+                "to": { "type": "object" }
+            },
+            "required": ["action"]
+        })
+    }
+
     fn manifest() -> ToolManifest {
         ToolManifest {
             name: "fixture",
@@ -339,6 +464,7 @@ mod tests {
             description: "A fixture tool.",
             summary: "A fixture tool.",
             schema: Schema::Fn(schema),
+            actions: None,
             risk: &[RiskClass::Read, RiskClass::Mutate],
             capabilities: &[Capability::Input],
             source: Source::Core,
@@ -400,6 +526,110 @@ mod tests {
         for (manifest, expected) in cases {
             assert_eq!(manifest.conformance(), Err(expected));
         }
+    }
+
+    const SCROLL_TABLE: &[ToolAction] = &[ToolAction {
+        name: "scroll",
+        required: &["amount"],
+        optional: &["axis"],
+    }];
+
+    fn dispatching_manifest() -> ToolManifest {
+        ToolManifest {
+            actions: Some(SCROLL_TABLE),
+            ..manifest()
+        }
+    }
+
+    /// W2: a missing argument is answered once, by the gate, naming the action
+    /// and what that action accepts.
+    #[test]
+    fn a_missing_required_argument_names_the_action_and_what_it_accepts() {
+        let error = dispatching_manifest()
+            .argument_error(&json!({"action": "scroll"}))
+            .expect("a scroll without `amount` must be refused");
+
+        assert!(error.contains("scroll"), "{error}");
+        assert!(error.contains("amount"), "{error}");
+        assert!(error.contains("axis"), "{error}");
+    }
+
+    /// W2: a call naming an action outside the table is refused by the gate,
+    /// not carried to the tool and rejected there with different wording.
+    #[test]
+    fn an_unknown_action_names_the_actions_that_exist() {
+        let error = dispatching_manifest()
+            .argument_error(&json!({"action": "scroll_to"}))
+            .expect("an action outside the table must be refused");
+
+        assert!(error.contains("scroll_to"), "{error}");
+        assert!(error.contains("scroll"), "{error}");
+    }
+
+    /// W2: the table and the schema's action enum are the same set, so the
+    /// gate can never describe an action the tool refuses, or miss one it
+    /// accepts.
+    #[test]
+    fn a_table_must_have_a_row_for_every_declared_action() {
+        let manifest = ToolManifest {
+            schema: Schema::Fn(two_action_schema),
+            actions: Some(SCROLL_TABLE),
+            ..manifest()
+        };
+
+        assert_eq!(
+            manifest.conformance(),
+            Err(ManifestError::ActionWithoutRow("drag".to_string()))
+        );
+    }
+
+    /// W2: the table cannot name an argument the schema hides from the model,
+    /// because the model could never send it.
+    #[test]
+    fn a_table_argument_must_be_declared_in_the_schema() {
+        const TABLE: &[ToolAction] = &[
+            ToolAction {
+                name: "scroll",
+                required: &["amount"],
+                optional: &["axis"],
+            },
+            ToolAction {
+                name: "drag",
+                required: &["from"],
+                optional: &["to"],
+            },
+        ];
+
+        let manifest = ToolManifest {
+            schema: Schema::Fn(two_action_schema),
+            actions: Some(TABLE),
+            ..manifest()
+        };
+
+        assert_eq!(
+            manifest.conformance(),
+            Err(ManifestError::ArgumentNotInSchema {
+                action: "scroll".to_string(),
+                argument: "axis".to_string(),
+            })
+        );
+    }
+
+    /// W2: a core tool that dispatches on `action` cannot leave the gate blind.
+    /// An external tool is exempt: its arguments are validated against the
+    /// schema it declared in the handshake (T2).
+    #[test]
+    fn a_core_tool_with_actions_must_declare_a_table() {
+        let manifest = ToolManifest {
+            schema: Schema::Fn(two_action_schema),
+            actions: None,
+            ..manifest()
+        };
+
+        assert_eq!(
+            manifest.conformance(),
+            Err(ManifestError::MissingActionTable)
+        );
     }
 
     #[test]
@@ -479,6 +709,7 @@ mod tests {
         for (schema, expected) in cases {
             let manifest = ToolManifest {
                 schema: Schema::Fn(schema),
+                actions: None,
                 ..manifest()
             };
             assert_eq!(manifest.conformance(), Err(expected));

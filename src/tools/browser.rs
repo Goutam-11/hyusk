@@ -9,7 +9,9 @@ use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{Capability, RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{
+    Capability, RiskClass, Schema, Source, ToolAction, ToolManifest, CORE_VERSION,
+};
 
 const DEFAULT_CDP_URL: &str = "http://127.0.0.1:9222";
 const CDP_TIMEOUT: Duration = Duration::from_secs(12);
@@ -468,6 +470,17 @@ impl Tool for BrowserTool {
             description: "Control the separate Hyusk browser profile over local CDP. Use status to diagnose, start to open/reuse the managed automation browser, and new_tab to recover from an unresponsive page without closing existing tabs. Read DOM, navigate, click, fill, and press keys. Never kill browser processes with shell commands.",
             summary: "Control the separate Hyusk browser over CDP: tabs, DOM text, navigation, clicks, and form entry.",
             schema: Schema::Fn(browser_schema),
+            actions: Some(&[
+                ToolAction { name: "status", required: &[], optional: &[] },
+                ToolAction { name: "start", required: &[], optional: &[] },
+                ToolAction { name: "new_tab", required: &[], optional: &[] },
+                ToolAction { name: "tabs", required: &[], optional: &[] },
+                ToolAction { name: "read", required: &["target_id"], optional: &[] },
+                ToolAction { name: "navigate", required: &["target_id", "url"], optional: &[] },
+                ToolAction { name: "click", required: &["target_id", "selector"], optional: &[] },
+                ToolAction { name: "fill", required: &["target_id", "selector", "text"], optional: &[] },
+                ToolAction { name: "press_key", required: &["target_id", "key"], optional: &[] },
+            ]),
             risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Input],
             capabilities: &[Capability::Input],
             source: Source::Core,

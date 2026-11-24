@@ -19,7 +19,9 @@ use tokio::process::Command;
 use tokio::time::sleep;
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{Capability, RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{
+    Capability, RiskClass, Schema, Source, ToolAction, ToolManifest, CORE_VERSION,
+};
 
 const MAX_TEXT_BYTES: usize = 100_000;
 const MAX_CLICKS: u32 = 20;
@@ -2243,6 +2245,30 @@ impl Tool for ComputerTool {
             only for actions the user asked for.",
             summary: "Drive the desktop at pixel level: screenshots, OCR, mouse, keyboard, clipboard, and waits.",
             schema: Schema::Fn(computer_schema),
+            actions: Some(&[
+                ToolAction { name: "status", required: &[], optional: &[] },
+                ToolAction { name: "screens", required: &[], optional: &[] },
+                ToolAction { name: "cursor", required: &[], optional: &[] },
+                ToolAction { name: "find_text", required: &["text"], optional: &["path", "region", "include_cursor"] },
+                ToolAction { name: "click_text", required: &["text"], optional: &["button", "path", "region", "include_cursor"] },
+                ToolAction { name: "batch", required: &["steps"], optional: &[] },
+                ToolAction { name: "clipboard_set", required: &["text"], optional: &[] },
+                ToolAction { name: "clipboard_get", required: &[], optional: &[] },
+                ToolAction { name: "clipboard_clear", required: &[], optional: &[] },
+                ToolAction { name: "open_url", required: &["url"], optional: &[] },
+                ToolAction { name: "focus_window", required: &["title"], optional: &[] },
+                ToolAction { name: "screenshot", required: &[], optional: &["region", "include_cursor", "inline_image"] },
+                ToolAction { name: "app_state", required: &[], optional: &["region", "include_cursor", "inline_image", "max_depth", "max_nodes"] },
+                ToolAction { name: "ocr", required: &[], optional: &["path", "region", "include_cursor"] },
+                ToolAction { name: "mouse_move", required: &["x", "y"], optional: &["relative"] },
+                ToolAction { name: "mouse_click", required: &[], optional: &["button", "x", "y", "count"] },
+                ToolAction { name: "mouse_drag", required: &["from", "to"], optional: &["button"] },
+                ToolAction { name: "scroll", required: &["amount"], optional: &["axis", "x", "y"] },
+                ToolAction { name: "type_text", required: &["text"], optional: &[] },
+                ToolAction { name: "key_press", required: &["key"], optional: &["count"] },
+                ToolAction { name: "key_combo", required: &["keys"], optional: &["count"] },
+                ToolAction { name: "wait", required: &[], optional: &["milliseconds"] },
+            ]),
             risk: &[
                 RiskClass::Read,
                 RiskClass::Mutate,

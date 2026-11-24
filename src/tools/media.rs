@@ -7,7 +7,7 @@ use tokio::process::Command;
 const PLAYERCTL_TIMEOUT: Duration = Duration::from_secs(3);
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{RiskClass, Schema, Source, ToolAction, ToolManifest, CORE_VERSION};
 
 pub struct MediaTool;
 
@@ -133,6 +133,22 @@ impl Tool for MediaTool {
             description: "Control media playback on the local desktop via MPRIS. Works with Spotify, YouTube Music in a browser, VLC, mpv, and any other MPRIS player. Requires `playerctl` to be installed. `play`, `pause`, `play_pause`, `next`, `previous`, and `stop` control the player. `status` returns the current track (artist, title, album) and whether it is playing; `position` returns the playback position; `seek` takes an `offset` such as +10 or -5 seconds; `volume` takes a `level` from 0 to 100, and `volume_up`/`volume_down` step it; `shuffle` toggles; `repeat` takes a `mode` of off, one, or all.",
             summary: "Control any MPRIS player: play, pause, skip, volume, seek, shuffle, and repeat.",
             schema: Schema::Fn(media_schema),
+            actions: Some(&[
+                ToolAction { name: "play", required: &[], optional: &[] },
+                ToolAction { name: "pause", required: &[], optional: &[] },
+                ToolAction { name: "play_pause", required: &[], optional: &[] },
+                ToolAction { name: "next", required: &[], optional: &[] },
+                ToolAction { name: "previous", required: &[], optional: &[] },
+                ToolAction { name: "stop", required: &[], optional: &[] },
+                ToolAction { name: "status", required: &[], optional: &[] },
+                ToolAction { name: "volume", required: &["level"], optional: &[] },
+                ToolAction { name: "volume_up", required: &[], optional: &[] },
+                ToolAction { name: "volume_down", required: &[], optional: &[] },
+                ToolAction { name: "shuffle", required: &[], optional: &[] },
+                ToolAction { name: "repeat", required: &[], optional: &["mode"] },
+                ToolAction { name: "seek", required: &["offset"], optional: &[] },
+                ToolAction { name: "position", required: &[], optional: &[] },
+            ]),
             risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Execute],
             capabilities: &[],
             source: Source::Core,

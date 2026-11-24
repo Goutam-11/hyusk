@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{RiskClass, Schema, Source, ToolAction, ToolManifest, CORE_VERSION};
 
 const SERVICE: &str = "org.hyusk.Shell";
 const PATH: &str = "/org/hyusk/Shell";
@@ -404,6 +404,28 @@ impl Tool for WindowTool {
             raise windows.",
             summary: "List, focus, or close desktop windows through the compositor.",
             schema: Schema::Fn(window_schema),
+            actions: Some(&[
+                ToolAction {
+                    name: "list",
+                    required: &[],
+                    optional: &[],
+                },
+                ToolAction {
+                    name: "active",
+                    required: &[],
+                    optional: &[],
+                },
+                ToolAction {
+                    name: "activate",
+                    required: &["query"],
+                    optional: &[],
+                },
+                ToolAction {
+                    name: "close",
+                    required: &[],
+                    optional: &["query"],
+                },
+            ]),
             risk: &[RiskClass::Read, RiskClass::Mutate],
             capabilities: &[],
             source: Source::Core,

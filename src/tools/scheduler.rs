@@ -24,7 +24,7 @@ use tokio::{
 use crate::types::HyuskEvent;
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{RiskClass, Schema, Source, ToolAction, ToolManifest, CORE_VERSION};
 
 const MAX_SCHEDULES: usize = 500;
 const MAX_REMINDER_CHARS: usize = 500;
@@ -189,6 +189,11 @@ impl Tool for SchedulerTool {
             description: "Schedule one-time reminders, named deterministic workflows, or an LLM agent task, persist them across restarts, list schedules, and cancel them. Use after_seconds or a Unix timestamp at_unix.",
             summary: "Schedule reminders, workflows, or an agent task, and list or cancel them.",
             schema: Schema::Fn(scheduler_schema),
+            actions: Some(&[
+                ToolAction { name: "schedule", required: &["type"], optional: &["text", "workflow", "prompt", "after_seconds", "at_unix"] },
+                ToolAction { name: "list", required: &[], optional: &[] },
+                ToolAction { name: "cancel", required: &["id"], optional: &[] },
+            ]),
             risk: &[RiskClass::Read, RiskClass::Mutate],
             capabilities: &[],
             source: Source::Core,

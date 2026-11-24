@@ -8,7 +8,7 @@ use tokio::process::{Child, Command};
 use tokio::time::sleep;
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{RiskClass, Schema, Source, ToolAction, ToolManifest, CORE_VERSION};
 
 pub struct ProcessTool;
 
@@ -118,6 +118,11 @@ impl Tool for ProcessTool {
             description: "Launch a local application or process by name without going through the shell. Use this for browsers, GUI apps, editors, music players, and any long-running program. The action is `launch`. The process does not block the agent.",
             summary: "Launch a desktop application by name without a shell.",
             schema: Schema::Fn(process_schema),
+            actions: Some(&[ToolAction {
+                name: "launch",
+                required: &["program"],
+                optional: &["args"],
+            }]),
             risk: &[RiskClass::Execute, RiskClass::System],
             capabilities: &[],
             source: Source::Core,

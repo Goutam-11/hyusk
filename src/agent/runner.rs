@@ -1490,6 +1490,16 @@ async fn execute_tool(
         )));
     };
 
+    // W2: one gate before dispatch, so a malformed call has no side effect and
+    // comes back with the action's accepted arguments rather than the tool's
+    // own wording after a round trip. A body that is not JSON is left to the
+    // tool, which reports it in its own terms.
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) {
+        if let Some(error) = tool.manifest().argument_error(&value) {
+            return Ok(ToolResult::failure(error));
+        }
+    }
+
     match tokio::select! {
         biased;
         _ = cancel.cancelled() => None,
@@ -1617,6 +1627,55 @@ mod tests {
     };
 
     struct CountingTool(Arc<AtomicUsize>);
+
+    const SCROLL_ACTIONS: &[crate::tools::manifest::ToolAction] =
+        &[crate::tools::manifest::ToolAction {
+            name: "scroll",
+            required: &["amount"],
+            optional: &["axis"],
+        }];
+
+    /// Records whether it ran, so a test can prove the gate stopped the call
+    /// before any side effect.
+    struct RecordingTool(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Tool for RecordingTool {
+        fn manifest(&self) -> crate::tools::manifest::ToolManifest {
+            crate::tools::manifest::ToolManifest {
+                actions: Some(SCROLL_ACTIONS),
+                ..crate::tools::manifest::stub("recording")
+            }
+        }
+
+        async fn execute(&self, _input: &str) -> Result<ToolResult> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolResult::success("ran"))
+        }
+    }
+
+    /// W2: the gate runs before the tool, so a call missing an argument has no
+    /// side effect and comes back with one message naming what it accepts.
+    #[tokio::test]
+    async fn a_call_missing_a_required_argument_never_reaches_the_tool() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(RecordingTool(Arc::clone(&calls)));
+        let cancel = CancellationToken::new();
+
+        let result = super::execute_tool(&tools, "recording", r#"{"action":"scroll"}"#, &cancel)
+            .await
+            .expect("executing a known tool returns a result");
+
+        assert!(!result.success, "the call must be refused: {result:?}");
+        let error = result.error.unwrap_or_default();
+        assert!(error.contains("amount"), "{error}");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "the tool must not run for an invalid call"
+        );
+    }
 
     struct HangingTool {
         calls: Arc<AtomicUsize>,
