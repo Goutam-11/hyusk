@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{RiskClass, Schema, Source, ToolAction, ToolManifest, CORE_VERSION};
 
 const MAX_ENTRIES: usize = 5_000;
 const MAX_GRAPH: usize = 5_000;
@@ -2403,6 +2403,53 @@ impl Tool for MemoryTool {
             under the user's data directory.",
             summary: "Remember, search, explain, and forget durable notes, facts, and preferences.",
             schema: Schema::Fn(memory_schema),
+            actions: Some(&[
+                ToolAction {
+                    name: "remember",
+                    required: &["text"],
+                    optional: &["tags", "kind", "scope", "topic"],
+                },
+                ToolAction {
+                    name: "search",
+                    required: &["query"],
+                    optional: &["limit"],
+                },
+                ToolAction {
+                    name: "graph_add",
+                    required: &["subject", "relation", "object"],
+                    optional: &[],
+                },
+                ToolAction {
+                    name: "graph_query",
+                    required: &[],
+                    optional: &["subject", "relation", "object", "limit"],
+                },
+                ToolAction {
+                    name: "list",
+                    required: &[],
+                    optional: &["limit"],
+                },
+                ToolAction {
+                    name: "forget",
+                    required: &["id"],
+                    optional: &[],
+                },
+                ToolAction {
+                    name: "preferences",
+                    required: &[],
+                    optional: &[],
+                },
+                ToolAction {
+                    name: "why",
+                    required: &["id"],
+                    optional: &[],
+                },
+                ToolAction {
+                    name: "export",
+                    required: &[],
+                    optional: &[],
+                },
+            ]),
             risk: &[RiskClass::Read, RiskClass::Mutate],
             capabilities: &[],
             source: Source::Core,

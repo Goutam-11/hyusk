@@ -39,6 +39,7 @@ does not compile. A `ToolManifest` carries:
 | `description` | The model-facing description, sent with the tool specification. |
 | `summary` | The one line the prompt's tool guide shows for this tool; hand-written, at most `MAX_SUMMARY_CHARS` (200). |
 | `schema` | A `Schema`: `Fn` for a built-in tool's function, or `Owned` for a schema received in an external handshake. |
+| `actions` | The action table for a tool that dispatches on `action`: one row per action with its required and optional arguments. `None` for a single-shape tool. A core tool whose schema declares an `action` enum must declare one. |
 | `risk` | At least one of `read`, `mutate`, `input`, `execute`, `network`, `system`. |
 | `capabilities` | The OS capabilities the tool needs, from the D3 vocabulary: `input`, `screenshot`, `accessibility`. |
 | `source` | `core` for the tools in this binary; `external` for a handshake tool, which must be named `ext.<server>.<tool>`. |
@@ -47,9 +48,25 @@ The registry validates each manifest when the tool registers and panics with one
 message on a programmer error: an empty name, a version that is not
 `major.minor.patch`, an empty or oversized description or summary, a schema that
 is not an object schema, a `required` entry that `properties` does not declare,
-or no risk class. `register` also refuses a manifest whose name disagrees with
+an action table that misses a declared action or names an argument the schema
+does not carry, or no risk class. `register` also refuses a manifest whose name disagrees with
 the tool, a duplicate name, an external tool outside the `ext.` namespace, and a
 core tool that squats it.
+
+## Action arguments
+
+A tool that dispatches on `action` declares a `ToolAction` row per action:
+`required` are the arguments it cannot run without, `optional` the ones it reads
+when present. The table is one declaration the model-facing text, the gate, and
+the docs agree on.
+
+`ToolManifest::argument_error` is the gate: it runs once in `execute_tool`
+before the call is dispatched, so a call missing a required argument, or naming
+an action outside the table, fails with one message naming the action and what
+it accepts — with no side effect and without spending a model round trip. A
+table that misses an action or names an undeclared argument fails at
+registration instead. An external tool declares no table: the host validates it
+against the schema the server sent (T2).
 
 `ToolRegistry::conformance()` runs the set-level checks at startup and in the
 tests: every registered tool needs an approval policy row, and a tool that
@@ -1044,6 +1061,7 @@ impl Tool for Ping {
             description: "Echo a short message without touching the host.",
             summary: "Echo a message back without touching the host.",
             schema: Schema::Fn(ping_schema),
+            actions: None,
             risk: &[RiskClass::Read],
             capabilities: &[],
             source: Source::Core,
@@ -1061,6 +1079,9 @@ Then add `pub mod ping;` to `tools/mod.rs` and call
 `tools.register(Ping);` during startup. The `summary` is the one line the system
 prompt repeats for every offered tool on every turn, so write it by hand, keep
 it under 200 characters, and do not let it repeat the description. A tool that
+dispatches on `action` also declares an `actions` table with one row per action,
+or it fails at registration; one that takes a single shape leaves it `None`.
+A tool that
 types text or presses keys
 declares `Capability::Input` in its manifest and its actions in the policy
 row's `input_paths`; `conformance()` fails if only one of the two is present.

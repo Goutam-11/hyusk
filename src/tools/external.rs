@@ -426,6 +426,9 @@ impl ExternalServer {
             description,
             summary: description,
             schema: Schema::Owned(leak_value(declaration.schema.clone())),
+            // An external tool's arguments are validated against the schema it
+            // declared in the handshake, so it needs no action table here.
+            actions: None,
             risk: &[RiskClass::Execute],
             // The host does not let a server claim a desktop capability; the
             // D3/D6 tables stay the only place that grants one.

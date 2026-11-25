@@ -15,7 +15,7 @@ use tokio::{process::Command, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{RiskClass, Schema, Source, ToolAction, ToolManifest, CORE_VERSION};
 
 pub struct TimerTool {
     timers: Arc<Mutex<HashMap<String, ActiveTimer>>>,
@@ -54,6 +54,28 @@ impl Tool for TimerTool {
                 "Set, cancel, or list Hyusk timers. A finished timer shows a desktop notification.",
             summary: "Set, cancel, or list short Hyusk timers.",
             schema: Schema::Fn(timer_schema),
+            actions: Some(&[
+                ToolAction {
+                    name: "set",
+                    required: &["seconds"],
+                    optional: &["label"],
+                },
+                ToolAction {
+                    name: "cancel",
+                    required: &[],
+                    optional: &[],
+                },
+                ToolAction {
+                    name: "list",
+                    required: &[],
+                    optional: &[],
+                },
+                ToolAction {
+                    name: "show_time",
+                    required: &[],
+                    optional: &[],
+                },
+            ]),
             risk: &[RiskClass::Mutate],
             capabilities: &[],
             source: Source::Core,

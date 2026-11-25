@@ -183,6 +183,7 @@ impl Tool for ShellTool {
             description: "Run a shell command. Pass the command as the `command` argument. Use mode `foreground` (default) to wait for completion, or `detached` to launch a GUI app, browser, editor, or long-running server and return its PID without waiting.",
             summary: "Run a shell command and wait, or launch it detached.",
             schema: Schema::Fn(shell_schema),
+            actions: None,
             risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Execute, RiskClass::System],
             capabilities: &[],
             source: Source::Core,

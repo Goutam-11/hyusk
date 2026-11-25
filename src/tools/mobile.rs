@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::link::LinkServer;
 
 use super::{Tool, ToolResult};
-use crate::tools::manifest::{RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
+use crate::tools::manifest::{RiskClass, Schema, Source, ToolAction, ToolManifest, CORE_VERSION};
 
 pub struct MobileTool {
     server: Arc<LinkServer>,
@@ -42,6 +42,10 @@ impl Tool for MobileTool {
             description: "List paired Android devices or invoke one structured phone action. The phone enforces local confirmation for consequential actions. Never place raw shell in arguments.",
             summary: "List paired phones and invoke one structured phone action.",
             schema: Schema::Fn(mobile_schema),
+            actions: Some(&[
+                ToolAction { name: "list", required: &[], optional: &[] },
+                ToolAction { name: "invoke", required: &["phone_action"], optional: &["device_id", "arguments", "timeout_ms"] },
+            ]),
             risk: &[RiskClass::Read, RiskClass::Mutate, RiskClass::Network],
             capabilities: &[],
             source: Source::Core,

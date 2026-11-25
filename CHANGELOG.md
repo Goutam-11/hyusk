@@ -4,6 +4,18 @@
 
 ### Added
 
+- A tool that dispatches on `action` now declares an `actions` table in its
+  manifest, and `execute_tool` checks it once before dispatch (W2). A call
+  missing a required argument, or naming an action outside the table, fails
+  with one message naming the action and what it accepts, with no side effect
+  and without spending a model round trip; previously such a call either ran
+  with a default or failed inside the tool after the whole round trip.
+  `conformance()` refuses a table that misses a declared action, names an
+  argument the schema does not carry, or is missing for a core tool whose
+  schema declares an action enum. Eleven tools carry a table - `computer`,
+  `media`, `accessibility`, `browser`, `window`, `task`, `scheduler`,
+  `memory`, `timer`, `mobile`, `process` - and an external tool is exempt
+  because the host validates it against the schema from its handshake (T2).
 - Every tool manifest now carries a `summary`, the one line the system prompt's
   tool guide shows for that tool. The guide used to cut the description at its
   first `". "`, which mis-splits any description containing "e.g. " and hid the
