@@ -242,7 +242,8 @@ fn web_search_schema() -> Value {
                 "description": "Optional recency filter. Supported when Brave Search is configured."
             }
         },
-        "required": ["query"]
+        "required": ["query"],
+        "additionalProperties": false
     })
 }
 

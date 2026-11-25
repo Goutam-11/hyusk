@@ -382,7 +382,8 @@ fn scheduler_schema() -> Value {
             },
             "id": { "type": "integer", "minimum": 1 }
         },
-        "required": ["action"]
+        "required": ["action"],
+        "additionalProperties": false
     })
 }
 

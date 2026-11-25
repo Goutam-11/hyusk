@@ -48,8 +48,9 @@ The registry validates each manifest when the tool registers and panics with one
 message on a programmer error: an empty name, a version that is not
 `major.minor.patch`, an empty or oversized description or summary, a schema that
 is not an object schema, a `required` entry that `properties` does not declare,
-an action table that misses a declared action or names an argument the schema
-does not carry, or no risk class. `register` also refuses a manifest whose name disagrees with
+an action table that misses a declared action, names an argument the schema
+does not carry, or leaves a property no action accepts, a core schema that is
+not closed, or no risk class. `register` also refuses a manifest whose name disagrees with
 the tool, a duplicate name, an external tool outside the `ext.` namespace, and a
 core tool that squats it.
 
@@ -61,11 +62,17 @@ when present. The table is one declaration the model-facing text, the gate, and
 the docs agree on.
 
 `ToolManifest::argument_error` is the gate: it runs once in `execute_tool`
-before the call is dispatched, so a call missing a required argument, or naming
-an action outside the table, fails with one message naming the action and what
-it accepts — with no side effect and without spending a model round trip. A
-table that misses an action or names an undeclared argument fails at
-registration instead. An external tool declares no table: the host validates it
+before the call is dispatched, so a call missing a required argument, naming an
+action outside the table, or carrying a key the action does not accept fails
+with one message naming the action and what it does accept — with no side
+effect and without spending a model round trip. A single-shape tool is checked
+the same way against its schema's properties, so `additionalProperties: false`
+is enforced rather than merely declared.
+
+Every core schema sets `additionalProperties: false`, and a table that misses a
+declared action, names an argument the schema does not carry, or leaves a
+declared property that no action accepts fails at registration. An external
+tool declares no table and may keep an open schema: the host validates it
 against the schema the server sent (T2).
 
 `ToolRegistry::conformance()` runs the set-level checks at startup and in the

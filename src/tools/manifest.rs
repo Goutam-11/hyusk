@@ -180,6 +180,8 @@ pub enum ManifestError {
     ActionWithoutRow(String),
     MissingActionTable,
     ArgumentNotInSchema { action: String, argument: String },
+    SchemaNotClosed,
+    OrphanProperty(String),
 }
 
 impl fmt::Display for ManifestError {
@@ -215,6 +217,14 @@ impl fmt::Display for ManifestError {
                 "the schema requires {name:?} but does not declare it in properties"
             ),
             ManifestError::NoRiskClass => write!(formatter, "no risk class is declared"),
+            ManifestError::OrphanProperty(name) => write!(
+                formatter,
+                "the schema declares {name:?} but no action accepts it"
+            ),
+            ManifestError::SchemaNotClosed => write!(
+                formatter,
+                "the schema does not set additionalProperties to false"
+            ),
             ManifestError::MissingActionTable => write!(
                 formatter,
                 "the schema declares actions but the manifest has no action table"
@@ -295,6 +305,12 @@ impl ToolManifest {
             return Err(ManifestError::SchemaTypeNotObject);
         }
 
+        if self.source == Source::Core
+            && object.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+        {
+            return Err(ManifestError::SchemaNotClosed);
+        }
+
         let properties = match object.get("properties") {
             Some(properties) => match properties.as_object() {
                 Some(properties) => Some(properties),
@@ -330,6 +346,18 @@ impl ToolManifest {
                                 argument: (*argument).to_string(),
                             });
                         }
+                    }
+                }
+
+                for key in properties.keys() {
+                    let named = key == "action"
+                        || actions.iter().any(|row| {
+                            row.required.contains(&key.as_str())
+                                || row.optional.contains(&key.as_str())
+                        });
+
+                    if !named {
+                        return Err(ManifestError::OrphanProperty(key.clone()));
                     }
                 }
             }
@@ -368,7 +396,9 @@ impl ToolManifest {
     /// reaching the tool and coming back with tool-specific wording after a
     /// whole round trip.
     pub fn argument_error(&self, arguments: &Value) -> Option<String> {
-        let actions = self.actions?;
+        let Some(actions) = self.actions else {
+            return self.undeclared_key_error(arguments);
+        };
         let action = arguments.get("action")?.as_str()?;
         let Some(row) = actions.iter().find(|row| row.name == action) else {
             let names: Vec<&str> = actions.iter().map(|row| row.name).collect();
@@ -378,6 +408,31 @@ impl ToolManifest {
                 names.join(", ")
             ));
         };
+
+        let accepted: Vec<&str> = row
+            .required
+            .iter()
+            .chain(row.optional.iter())
+            .copied()
+            .collect();
+
+        if let Some(map) = arguments.as_object() {
+            let mut unknown: Vec<&str> = map
+                .keys()
+                .map(String::as_str)
+                .filter(|key| *key != "action" && !accepted.contains(key))
+                .collect();
+
+            if !unknown.is_empty() {
+                unknown.sort_unstable();
+
+                return Some(format!(
+                    "action '{action}' does not accept {}; it accepts: {}",
+                    unknown.join(", "),
+                    accepted.join(", ")
+                ));
+            }
+        }
 
         let missing: Vec<&str> = row
             .required
@@ -390,21 +445,42 @@ impl ToolManifest {
             return None;
         }
 
-        let accepted: Vec<&str> = row
-            .required
-            .iter()
-            .chain(row.optional.iter())
-            .copied()
-            .collect();
-
         Some(format!(
             "action '{action}' requires {}; it accepts: {}",
             missing.join(", "),
             accepted.join(", ")
         ))
     }
-}
 
+    /// A single-shape tool has no action row, so its closure is checked against
+    /// the schema's own properties.
+    fn undeclared_key_error(&self, arguments: &Value) -> Option<String> {
+        let schema = self.schema.build();
+        let properties = schema.get("properties")?.as_object()?;
+        let supplied = arguments.as_object()?;
+
+        let mut unknown: Vec<&str> = supplied
+            .keys()
+            .map(String::as_str)
+            .filter(|key| !properties.contains_key(*key))
+            .collect();
+
+        if unknown.is_empty() {
+            return None;
+        }
+
+        unknown.sort_unstable();
+
+        let mut accepted: Vec<&str> = properties.keys().map(String::as_str).collect();
+        accepted.sort_unstable();
+
+        Some(format!(
+            "this tool does not accept {}; it accepts: {}",
+            unknown.join(", "),
+            accepted.join(", ")
+        ))
+    }
+}
 /// A minimal valid manifest for a test double.
 #[cfg(test)]
 pub fn stub(name: &'static str) -> ToolManifest {
@@ -424,7 +500,7 @@ pub fn stub(name: &'static str) -> ToolManifest {
 /// The empty object schema a test double accepts.
 #[cfg(test)]
 pub fn stub_schema() -> Value {
-    serde_json::json!({ "type": "object" })
+    serde_json::json!({ "type": "object", "additionalProperties": false })
 }
 
 #[cfg(test)]
@@ -433,6 +509,19 @@ mod tests {
     use serde_json::json;
 
     fn schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "action": { "type": "string" },
+                "text": { "type": "string" }
+            },
+            "required": ["action"],
+            "additionalProperties": false
+        })
+    }
+
+    /// The same shape as [`schema`], left open to unknown keys.
+    fn open_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
@@ -453,7 +542,8 @@ mod tests {
                 "from": { "type": "object" },
                 "to": { "type": "object" }
             },
-            "required": ["action"]
+            "required": ["action"],
+            "additionalProperties": false
         })
     }
 
@@ -566,6 +656,18 @@ mod tests {
         assert!(error.contains("scroll"), "{error}");
     }
 
+    /// #7: a key the action does not accept is refused, so a misspelled
+    /// argument cannot be dropped silently and leave the action on a default.
+    #[test]
+    fn an_argument_the_action_does_not_accept_is_refused() {
+        let error = dispatching_manifest()
+            .argument_error(&json!({"action": "scroll", "amount": 3, "amout": 4}))
+            .expect("a misspelled argument must be refused");
+
+        assert!(error.contains("amout"), "{error}");
+        assert!(error.contains("amount"), "{error}");
+    }
+
     /// W2: the table and the schema's action enum are the same set, so the
     /// gate can never describe an action the tool refuses, or miss one it
     /// accepts.
@@ -632,6 +734,67 @@ mod tests {
         );
     }
 
+    /// #7: an open object lets a provider invent keys the tool then ignores.
+    #[test]
+    fn a_core_schema_must_close_its_object() {
+        let core = ToolManifest {
+            schema: Schema::Fn(open_schema),
+            ..manifest()
+        };
+        assert_eq!(core.conformance(), Err(ManifestError::SchemaNotClosed));
+
+        // An external tool's schema arrives in the handshake and may be open;
+        // the host validates its arguments itself (T2).
+        let external = ToolManifest {
+            schema: Schema::Fn(open_schema),
+            source: Source::External,
+            name: "ext.fixture.tool",
+            ..manifest()
+        };
+        assert_eq!(external.conformance(), Ok(()));
+    }
+
+    /// #7: the closure is enforced for a single-shape tool too, not only for a
+    /// tool whose actions carry a table.
+    #[test]
+    fn a_single_shape_tool_refuses_a_key_its_schema_does_not_declare() {
+        let error = manifest()
+            .argument_error(&json!({"text": "hello", "tex": "typo"}))
+            .expect("a key the schema does not declare must be refused");
+
+        assert!(error.contains("tex"), "{error}");
+        assert!(error.contains("text"), "{error}");
+    }
+
+    fn orphan_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "action": { "type": "string", "enum": ["scroll"] },
+                "amount": { "type": "integer" },
+                "axis": { "type": "string" },
+                "unused": { "type": "string" }
+            },
+            "required": ["action"],
+            "additionalProperties": false
+        })
+    }
+
+    /// #7: a parameter no action reads is advertised to the model for nothing.
+    #[test]
+    fn a_property_no_action_accepts_is_refused() {
+        let manifest = ToolManifest {
+            schema: Schema::Fn(orphan_schema),
+            actions: Some(SCROLL_TABLE),
+            ..manifest()
+        };
+
+        assert_eq!(
+            manifest.conformance(),
+            Err(ManifestError::OrphanProperty("unused".to_string()))
+        );
+    }
+
     #[test]
     fn a_long_description_is_refused() {
         let long = "x".repeat(MAX_DESCRIPTION_CHARS + 1);
@@ -673,19 +836,19 @@ mod tests {
     #[test]
     fn the_schema_must_be_an_object_with_declared_required_fields() {
         fn not_an_array() -> Value {
-            json!({ "type": "object", "required": "action" })
+            json!({ "type": "object", "required": "action", "additionalProperties": false })
         }
         fn not_declared() -> Value {
-            json!({ "type": "object", "properties": {}, "required": ["action"] })
+            json!({ "type": "object", "properties": {}, "required": ["action"], "additionalProperties": false })
         }
         fn not_a_string() -> Value {
-            json!({ "type": "object", "properties": { "action": {} }, "required": [7] })
+            json!({ "type": "object", "properties": { "action": {} }, "required": [7], "additionalProperties": false })
         }
         fn not_a_type() -> Value {
             json!({ "properties": {} })
         }
         fn properties_not_an_object() -> Value {
-            json!({ "type": "object", "properties": [] })
+            json!({ "type": "object", "properties": [], "additionalProperties": false })
         }
         fn scalar() -> Value {
             json!(["not", "an", "object"])

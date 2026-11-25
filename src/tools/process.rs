@@ -161,7 +161,8 @@ fn process_schema() -> serde_json::Value {
                 "description": "Optional command-line arguments."
             }
         },
-        "required": ["action", "program"]
+        "required": ["action", "program"],
+        "additionalProperties": false
     })
 }
 

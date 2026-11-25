@@ -2451,7 +2451,8 @@ fn computer_schema() -> Value {
                 "description": "Wait duration for `wait`. Defaults to 1000 ms."
             }
         },
-        "required": ["action"]
+        "required": ["action"],
+        "additionalProperties": false
     })
 }
 

@@ -219,7 +219,8 @@ fn shell_schema() -> serde_json::Value {
                 "description": "foreground waits and returns output; detached returns the PID and does not wait."
             }
         },
-        "required": ["command"]
+        "required": ["command"],
+        "additionalProperties": false
     })
 }
 

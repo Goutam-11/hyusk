@@ -557,7 +557,8 @@ fn browser_schema() -> Value {
         "selector":{"type":"string","minLength":1,"description":"Non-empty CSS selector for click or fill."},
         "text":{"type":"string","description":"Text to place into an input, textarea, or editable region."},
         "key":{"type":"string","enum":["Enter","Tab","Escape","Backspace","Delete","ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Home","End","PageUp","PageDown","Ctrl+A"]}
-    },"required":["action"]})
+    },"required":["action"],
+    "additionalProperties": false})
 }
 
 fn require_non_empty(field: &str, value: &str) -> Result<()> {

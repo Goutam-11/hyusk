@@ -234,7 +234,8 @@ fn timer_schema() -> serde_json::Value {
             },
             "label": { "type": "string" }
         },
-        "required": ["action"]
+        "required": ["action"],
+        "additionalProperties": false
     })
 }
 

@@ -4,6 +4,14 @@
 
 ### Added
 
+- Core tool schemas now close their objects (`additionalProperties: false`),
+  and the gate refuses a key no action of that tool accepts (W2/#7). A
+  single-shape tool is checked against its schema's properties and a
+  dispatching tool against its action row, so a misspelled argument such as
+  `amout` is refused instead of being dropped and leaving the action on a
+  default. `conformance()` also refuses a property that no action row accepts;
+  none of the built-in tools had one, so no parameter was removed. External
+  tools keep their handshake schema and the host's own validation (T2).
 - A tool that dispatches on `action` now declares an `actions` table in its
   manifest, and `execute_tool` checks it once before dispatch (W2). A call
   missing a required argument, or naming an action outside the table, fails
