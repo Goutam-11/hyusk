@@ -1772,11 +1772,11 @@ mod tool_policy_tests {
             "timer",
             "web_search",
         ] {
-            assert!(tools.get(name).is_some(), "{name} was not registered");
+            assert!(tools.contains(name), "{name} was not registered");
         }
         #[cfg(target_os = "linux")]
         for name in ["accessibility", "gnome_doctor", "window"] {
-            assert!(tools.get(name).is_some(), "{name} was not registered");
+            assert!(tools.contains(name), "{name} was not registered");
         }
         // P5: the link and its model-facing tool exist only in a mobile build.
         #[cfg(not(feature = "mobile"))]
@@ -1823,7 +1823,13 @@ mod tool_policy_tests {
         // The spec the model is given is the manifest, so the name, description
         // and schema cannot be a second copy.
         let specs = tools.specs();
-        let manifests = tools.manifests();
+        // W5: `specs` offers only available tools, while `manifests` is the
+        // whole registered set, so compare against the offered subset.
+        let manifests: Vec<_> = tools
+            .manifests()
+            .into_iter()
+            .filter(|manifest| tools.get(manifest.name).is_some())
+            .collect();
         assert_eq!(specs.len(), manifests.len());
         for (spec, manifest) in specs.iter().zip(manifests.iter()) {
             assert_eq!(spec["type"], "function");

@@ -463,6 +463,11 @@ const SNAPSHOT_SCRIPT: &str = r#"(() => {
 
 #[async_trait]
 impl Tool for BrowserTool {
+    /// W5: offered only when the probe found a backend for it.
+    fn is_available(&self) -> bool {
+        crate::tools::availability::reason("browser").is_none()
+    }
+
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "browser",

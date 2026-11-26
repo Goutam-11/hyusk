@@ -1,5 +1,6 @@
 #[cfg(target_os = "linux")]
 pub mod accessibility;
+pub mod availability;
 pub mod browser;
 pub mod capabilities;
 pub mod computer;

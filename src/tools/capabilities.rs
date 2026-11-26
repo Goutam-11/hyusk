@@ -106,12 +106,25 @@ impl CapabilityRegistry {
 
     /// The one line the model prompt and `gnome_doctor` both show.
     pub fn line(&self) -> String {
-        format!(
+        let mut line = format!(
             "capabilities: input {}; screenshot {}; accessibility {}",
             self.input.render(),
             self.screenshot.render(),
             self.accessibility.render()
-        )
+        );
+
+        // W5: a tool that cannot work is not offered, so name it and the
+        // reason here instead of letting the model plan around it.
+        let absent = crate::tools::availability::format_absent(
+            &crate::tools::availability::absent_snapshot(),
+        );
+
+        if !absent.is_empty() {
+            line.push_str("; unavailable tools: ");
+            line.push_str(&absent);
+        }
+
+        line
     }
 
     /// True when a recorded capability is denied or unsupported.
@@ -229,9 +242,14 @@ mod tests {
     #[test]
     fn state_transitions_are_recorded_with_their_backend() {
         let mut registry = CapabilityRegistry::default();
-        assert_eq!(
-            registry.line(),
-            "capabilities: input unknown; screenshot unknown; accessibility unknown"
+        // W5 appends the unavailable-tool list, so assert the capability part
+        // rather than the whole line.
+        assert!(
+            registry.line().starts_with(
+                "capabilities: input unknown; screenshot unknown; accessibility unknown"
+            ),
+            "{}",
+            registry.line()
         );
         // Unknown allows the attempt.
         assert!(registry.refusal("computer", &call("mouse_click")).is_none());
