@@ -470,10 +470,7 @@ impl ToolManifest {
             })
             .collect();
 
-        Some(format!(
-            "One of: {}. Send action 'help' for every action's arguments.",
-            listed.join(", ")
-        ))
+        Some(format!("Actions: {}.", listed.join(", ")))
     }
 
     /// The tool's actions as text, for the free `help` action (#6).

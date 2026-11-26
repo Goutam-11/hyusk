@@ -4,6 +4,14 @@
 
 ### Added
 
+- The model-facing payload has a budget and a test that enforces it (W7/#10).
+  `SPEC_PAYLOAD_BUDGET_BYTES` caps the whole spec set at 20 KiB, and the test
+  names the largest contributor when it is exceeded. The per-tool "send action
+  help" boilerplate moved from every schema into a single line of the prompt's
+  tool guide, which took the set from 19,513 to 17,601 bytes and bought 2,879
+  bytes of headroom. Two more checks join the wire walk: every declared
+  property carries a type, and the action hints stay in the schema while the
+  help pointer stays in the prompt.
 - The desktop tools are now offered only when they can work (W5/#8).
   `browser`, `accessibility` and `window` are probed once at startup - a
   loopback connection for the CDP endpoint, the AT-SPI bridge script plus a

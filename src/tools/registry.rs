@@ -17,6 +17,17 @@ struct RegisteredTool {
     manifest: ToolManifest,
 }
 
+/// The most bytes the model-facing specifications may take (test-only: the
+/// payload test is the one place that asserts it).
+///
+/// Every round of every turn carries the whole set, so growth is a real cost
+/// rather than a style question. The cap sits just above the current set
+/// (about 18.6 KiB after the action hints were trimmed); a tool that pushes it
+/// over fails the payload test with the largest contributor named, which is the
+/// moment to decide whether the new tool is worth the tokens.
+#[cfg(test)]
+pub const SPEC_PAYLOAD_BUDGET_BYTES: usize = 20 * 1024;
+
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
@@ -470,7 +481,9 @@ mod tests {
 
         assert!(description.contains("scroll"), "{description}");
         assert!(description.contains("amount"), "{description}");
-        assert!(description.contains("help"), "{description}");
+        // #10: the help pointer is stated once in the prompt guide instead of
+        // being repeated in every tool's schema.
+        assert!(!description.contains("help"), "{description}");
     }
 
     #[test]
