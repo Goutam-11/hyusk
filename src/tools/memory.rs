@@ -2784,7 +2784,8 @@ fn memory_schema() -> Value {
                 "description": "Maximum results. Defaults to 8."
             }
         },
-        "required": ["action"]
+        "required": ["action"],
+        "additionalProperties": false
     })
 }
 

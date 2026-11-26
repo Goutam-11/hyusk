@@ -125,7 +125,8 @@ fn mobile_schema() -> Value {
             "arguments": { "type": "object" },
             "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 60000 }
         },
-        "required": ["action"]
+        "required": ["action"],
+        "additionalProperties": false
     })
 }
 

@@ -433,7 +433,8 @@ fn task_schema() -> Value {
             "timeout_seconds": { "type": "integer", "minimum": 30, "maximum": 3600, "description": "Optional execution limit. Defaults to three minutes for research and fifteen minutes for workspace tasks." },
             "id": { "type": "integer", "minimum": 1, "description": "Task number to cancel." }
         },
-        "required": ["action"]
+        "required": ["action"],
+        "additionalProperties": false
     })
 }
 

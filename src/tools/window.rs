@@ -586,7 +586,8 @@ fn window_schema() -> Value {
                 "description": "Prefer an exact `id:<number>` from `list` for `activate`/`close`; app name or window-title substring also works. Empty closes the focused window."
             }
         },
-        "required": ["action"]
+        "required": ["action"],
+        "additionalProperties": false
     })
 }
 

@@ -441,7 +441,8 @@ fn accessibility_schema() -> Value {
                 "description": "Maximum nodes to visit. Defaults to 2000 for `tree`."
             }
         },
-        "required": ["action"]
+        "required": ["action"],
+        "additionalProperties": false
     })
 }
 

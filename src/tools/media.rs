@@ -258,7 +258,8 @@ fn media_schema() -> serde_json::Value {
                 "description": "Seek '+10' or '-5' seconds relative to now; unsigned values are absolute seconds. Trailing-sign playerctl notation ('10+', '5-') is also accepted."
             }
         },
-        "required": ["action"]
+        "required": ["action"],
+        "additionalProperties": false
     })
 }
 
