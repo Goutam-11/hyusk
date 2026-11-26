@@ -10,6 +10,9 @@ separate `hyusk` workspace CLI.
   [`issues/README.md`](../issues/README.md).
 - [Tools](tools.md) documents the tool contracts, examples, extension process,
   and security implications.
+- [Integration API](integration.md) is the versioned contract for
+  `hyusk-status.json` and `hyusk-control.json`, with examples for a bar widget,
+  a keybind, and a script.
 - [Development](development.md) covers setup, build commands, validation, and
   troubleshooting.
 - [The propose-diff loop](self-upgrade.md) states how the agent may change the
@@ -18,10 +21,12 @@ separate `hyusk` workspace CLI.
   human-only.
 - [Voice and UI](voice-and-ui.md) describes the wake-word, STT, TTS, and
   overlay pipeline and its remaining limitations.
-- [GNOME top-bar indicator](gnome-indicator.md) documents the Shell extension,
-  its menus, and the runtime state/status/control files.
+- [GNOME top-bar indicator](gnome-indicator.md) documents the Shell extension
+  and its menus; the runtime status/control file shapes are in the
+  [integration API](integration.md).
 - [Noctalia bar widget](noctalia-indicator.md) covers the niri/Hyprland/Sway
-  widget and its model and API-key panel.
+  widget and its model and API-key panel; its file contract is the
+  [integration API](integration.md).
 - [Browser control](browser-control.md) covers the CDP automation profile used
   by the `browser` tool.
 - [Android companion](android-agent.md) documents the phone app, and the

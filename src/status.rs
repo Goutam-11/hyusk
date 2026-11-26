@@ -8,8 +8,13 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Default, Serialize)]
+/// The status-file schema this build writes. Readers must ignore unknown
+/// fields and keep accepting an absent `schema` as 1 during the transition.
+pub const SCHEMA: u32 = 1;
+
+#[derive(Clone, Serialize)]
 pub struct Status {
+    schema: u32,
     revision: u64,
     state: String,
     active_provider: String,
@@ -18,6 +23,22 @@ pub struct Status {
     latest: Option<Card>,
     catalogs: Vec<Catalog>,
     timer: Option<Timer>,
+}
+
+impl Default for Status {
+    fn default() -> Self {
+        Self {
+            schema: SCHEMA,
+            revision: 0,
+            state: String::new(),
+            active_provider: String::new(),
+            active_model: String::new(),
+            awaiting_reply: false,
+            latest: None,
+            catalogs: Vec::new(),
+            timer: None,
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -192,6 +213,14 @@ mod tests {
         );
         assert!(!scrubbed.contains("ghp_0123456789abcdef"), "{scrubbed}");
         assert!(scrubbed.contains("oauth2:[redacted]@"), "{scrubbed}");
+    }
+
+    #[test]
+    fn the_status_file_carries_schema_one() {
+        let value = serde_json::to_value(Status::default()).expect("status serializes");
+        assert_eq!(value["schema"], 1);
+        assert_eq!(value["revision"], 0);
+        assert!(value.get("state").is_some());
     }
 
     #[test]

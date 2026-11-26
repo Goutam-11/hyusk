@@ -4,6 +4,16 @@
 
 ### Added
 
+- The indicator runtime files now have a documented, versioned contract (#24).
+  `docs/integration.md` documents `hyusk-status.json` (schema 1, read-only, one
+  atomic writer) and `hyusk-control.json` (schema 1, single-use revision,
+  validated), with examples for a bar widget, a niri keybind, and a script. The
+  agent parses control commands through one `control_file` module that
+  `hyusk_agent ctl <pause|resume|stop|approve|approve-turn|deny|dismiss>` also
+  uses, so a hand-written command and a plugin command take the same path;
+  malformed input is rejected, and a rewritten control file is atomic and
+  `0600`. The status file gains a `schema` field (additive; readers ignore
+  unknown fields).
 - The diagnostic tool is now `desktop_doctor` and reports the detected session
   first (#23): compositor, display kind, and the window backend with the actions
   it advertises, then the generic probes (AT-SPI, RemoteDesktop portal, CDP,
