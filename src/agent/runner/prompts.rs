@@ -18,10 +18,17 @@ pub(super) fn build_tool_specs(tools: &ToolRegistry) -> Vec<Value> {
 /// description containing "e.g. " and silently hid the rest of the sentence.
 /// `iter` already yields the tools in name order.
 pub(super) fn build_tool_guide(tools: &ToolRegistry) -> String {
-    tools
+    let mut guide: String = tools
         .iter()
         .map(|tool| format!("- {}: {}\n", tool.name(), tool.manifest().summary))
-        .collect()
+        .collect();
+
+    // Said once here instead of repeating it in every tool's schema (#10).
+    guide.push_str(
+        "Send action \"help\" to a tool to get its full argument table, including optional fields.\n",
+    );
+
+    guide
 }
 
 pub(super) async fn append_desktop_context(prompt: &mut String) {
@@ -343,7 +350,13 @@ mod tests {
         let mut tools = ToolRegistry::new();
         tools.register(Summarised);
 
-        assert_eq!(build_tool_guide(&tools), "- summarised: Fixture summary.\n");
+        let guide = build_tool_guide(&tools);
+
+        assert!(
+            guide.starts_with("- summarised: Fixture summary.\n"),
+            "{guide}"
+        );
+        assert!(guide.contains("action \"help\""), "{guide}");
     }
 
     fn system_prompt() -> String {

@@ -1855,6 +1855,61 @@ mod tool_policy_tests {
                 && manifest.version == tools::manifest::CORE_VERSION));
     }
 
+    /// W7: the whole spec set is carried on every round, so it has a budget.
+    /// The failure names the largest contributor, not just the total.
+    #[tokio::test]
+    async fn the_spec_payload_stays_within_its_budget() {
+        let tools = test_tools().await;
+        let specs = tools.specs();
+
+        let mut sized: Vec<(usize, String)> = specs
+            .iter()
+            .map(|spec| {
+                (
+                    serde_json::to_string(spec).expect("serialise spec").len(),
+                    spec["function"]["name"].as_str().unwrap_or("?").to_string(),
+                )
+            })
+            .collect();
+
+        let total: usize = sized.iter().map(|(bytes, _)| bytes).sum();
+        sized.sort_unstable_by_key(|(bytes, _)| std::cmp::Reverse(*bytes));
+        let largest = sized
+            .first()
+            .map(|(bytes, name)| format!("{name} at {bytes} bytes"))
+            .unwrap_or_default();
+
+        assert!(
+            total <= tools::registry::SPEC_PAYLOAD_BUDGET_BYTES,
+            "the spec payload is {total} bytes, over the {} budget; largest contributor: {largest}",
+            tools::registry::SPEC_PAYLOAD_BUDGET_BYTES
+        );
+    }
+
+    /// W7: a property without a type is a schema the model has to guess at.
+    #[tokio::test]
+    async fn every_spec_property_declares_a_type() {
+        let tools = test_tools().await;
+
+        for spec in tools.specs() {
+            let name = spec["function"]["name"].as_str().unwrap_or("?");
+
+            let properties = spec["function"]["parameters"]["properties"]
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+
+            for (property, schema) in properties {
+                assert!(
+                    schema.get("type").is_some()
+                        || schema.get("enum").is_some()
+                        || schema.get("items").is_some(),
+                    "{name}.{property} declares no type"
+                );
+            }
+        }
+    }
+
     /// The description and the summary reach the model verbatim, so stray
     /// whitespace is a defect rather than a cosmetic one: the corrupted
     /// descriptions fixed on 2026-10-30 were runs of nine spaces left behind by
