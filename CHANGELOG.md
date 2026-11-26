@@ -4,6 +4,17 @@
 
 ### Added
 
+- Compositor knowledge now lives in one place (#21). `src/desktop/` detects the
+  session once from `NIRI_SOCKET`, `XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`,
+  and `WAYLAND_DISPLAY`, and exposes a `WindowsBackend` that the `window` tool
+  and the per-turn desktop context call. The niri IPC and Hyusk GNOME extension
+  paths moved behind it with the same actions and replies; `computer
+  focus_window` takes its ordered fallback from the session instead of probing
+  a fixed program list, and the availability probe no longer re-detects the
+  desktop. Detection is a pure function over an environment fixture, and a
+  recorded niri payload and a recorded extension payload pin both adapters.
+  Behaviour on niri and GNOME is unchanged; the next adapter (niri `last`,
+  `workspace`, `output`) needs no change outside `src/desktop/`.
 - The model-facing payload has a budget and a test that enforces it (W7/#10).
   `SPEC_PAYLOAD_BUDGET_BYTES` caps the whole spec set at 20 KiB, and the test
   names the largest contributor when it is exceeded. The per-tool "send action

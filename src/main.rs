@@ -9,6 +9,7 @@ compile_error!(
 mod agent;
 mod apps;
 mod credentials;
+mod desktop;
 #[cfg(feature = "mobile")]
 mod link;
 mod model;

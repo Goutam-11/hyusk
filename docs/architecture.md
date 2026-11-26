@@ -91,6 +91,7 @@ for the microphone at the same time.
 | `agent/control.rs` | Approval, model-selection, and paused-task state shared with the event loop so control events never wait for a turn (lock order: agent then control). |
 | `apps.rs` | Installed-application discovery for the workflow editor and aliases. |
 | `credentials.rs` | Login-keyring lookup and storage for provider keys. |
+| `desktop/` | Detects the session and compositor once, and owns the window adapters: niri IPC and the GNOME extension behind one `WindowsBackend` trait. |
 | `link/` | Opt-in TLS WebSocket server, pairing auth, and phone command channel; behind the `mobile` feature (P5). |
 | `paths.rs` | Private per-user runtime directory: owner-only directories and files for generated audio, screenshots, and model output. |
 | `status.rs` | Publishes `hyusk-status.json` for the GNOME and Noctalia indicators; card text is scrubbed of secret values and credential paths before it is stored or shown, and the file itself is written by `persist.rs`. |
@@ -106,7 +107,7 @@ for the microphone at the same time.
 | `tools/portal.rs` | Linux-only XDG RemoteDesktop and Screenshot portal integration. |
 | `tools/browser.rs` | Controls a dedicated browser profile over CDP instead of screenshots. |
 | `tools/accessibility.rs` | Drives AT-SPI2 through the `pyatspi` bridge. |
-| `tools/window.rs` | Lists and activates windows over niri IPC or the extension's D-Bus. |
+| `tools/window.rs` | Dispatches window actions to the detected compositor adapter in `desktop/`. |
 | `tools/gnome_doctor.rs` | Read-only checks for GNOME window, accessibility, and capture support. |
 | `tools/memory.rs` | SQLite memory (schema v2: provenance, kind, confidence, supersession, an embeddings table, and an idempotent additive migration), FTS search, and knowledge-graph triples; the database is `0600` in an owner-only directory and stored text is redacted. |
 | `tools/safety.rs` | Holds the explicit per-tool approval table (unknown names ask), classifies risky calls, and arms one-shot confirmations that expire. |

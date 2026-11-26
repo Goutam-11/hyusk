@@ -1763,48 +1763,44 @@ async fn focus_window(title: &str) -> Result<ToolResult> {
         return Ok(ToolResult::failure("Window title must not be empty."));
     }
 
-    let candidates: Vec<(&str, Vec<String>)> = vec![
-        (
-            "hyprctl",
-            vec![
-                "dispatch".to_string(),
-                "focuswindow".to_string(),
-                format!("title:{trimmed}"),
-            ],
-        ),
-        ("wmctrl", vec!["-a".to_string(), trimmed.to_string()]),
-        (
-            "xdotool",
-            vec![
-                "search".to_string(),
-                "--name".to_string(),
-                trimmed.to_string(),
-                "windowactivate".to_string(),
-            ],
-        ),
-    ];
-
+    // The session decides which focus commands can work here; the tool no
+    // longer probes a fixed list on every compositor (#21).
+    let session = crate::desktop::session();
+    let commands = session.focus_commands(trimmed);
+    let hint = session.focus_unavailable_hint();
     let mut errors = Vec::new();
 
-    for (program, args) in candidates {
-        match Command::new(program).args(&args).output().await {
+    for command in &commands {
+        match Command::new(command.program)
+            .args(&command.args)
+            .output()
+            .await
+        {
             Ok(output) if output.status.success() => {
                 return Ok(ToolResult::success(format!(
-                    "Focused a window matching '{trimmed}' with {program}."
+                    "Focused a window matching '{trimmed}' with {}.",
+                    command.program
                 )));
             }
 
             Ok(output) => errors.push(format!(
-                "{program}: {}",
+                "{}: {}",
+                command.program,
                 String::from_utf8_lossy(&output.stderr).trim()
             )),
 
-            Err(error) => errors.push(format!("{program}: {error}")),
+            Err(error) => errors.push(format!("{}: {error}", command.program)),
         }
     }
 
+    if commands.is_empty() {
+        return Ok(ToolResult::failure(format!(
+            "Could not focus a window matching '{trimmed}'. {hint}."
+        )));
+    }
+
     Ok(ToolResult::failure(format!(
-        "Could not focus a window matching '{trimmed}'. Tried: {}. GNOME Wayland does not expose a generic window-focus API.",
+        "Could not focus a window matching '{trimmed}'. Tried: {}. {hint}.",
         errors.join("; ")
     )))
 }
