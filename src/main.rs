@@ -1829,7 +1829,16 @@ mod tool_policy_tests {
             assert_eq!(spec["type"], "function");
             assert_eq!(spec["function"]["name"], manifest.name);
             assert_eq!(spec["function"]["description"], manifest.description);
-            assert_eq!(spec["function"]["parameters"], manifest.schema.build());
+
+            // #6: the action description is rendered from the table, so the
+            // spec is the manifest schema with that one field replaced.
+            let mut expected = manifest.schema.build();
+
+            if let Some(hint) = manifest.action_hint() {
+                expected["properties"]["action"]["description"] = serde_json::json!(hint);
+            }
+
+            assert_eq!(spec["function"]["parameters"], expected);
         }
 
         // The version is visible in the registry without building the tool.

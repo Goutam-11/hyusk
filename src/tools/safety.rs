@@ -567,6 +567,16 @@ pub fn requires_approval_with_context(name: &str, arguments: &str, context: &Foc
     let Ok(args) = serde_json::from_str::<Value>(arguments) else {
         return true;
     };
+    // #6: `help` describes a tool's own table and performs nothing, so it arms
+    // no card. It is free only for a known core tool: an external tool keeps
+    // its always-ask row, because a server's `help` is not ours to answer.
+    if !is_external_tool(name)
+        && args.get("action").and_then(Value::as_str) == Some("help")
+        && policy_for(name).is_some()
+    {
+        return false;
+    }
+
     // An unknown tool name fails closed: a tool registered without a policy
     // entry must ask, so a new tool can never quietly skip the gate.
     match policy_for(name) {
@@ -3941,6 +3951,21 @@ mod tests {
         assert!(check(
             "process",
             r#"{"action":"launch","program":"/usr/bin/mv","args":["a","b"]}"#
+        ));
+    }
+
+    /// #6: the free `help` action reports a tool's own table and performs
+    /// nothing, so it arms no card. An external tool keeps its always-ask row:
+    /// a server's `help` is not ours to answer.
+    #[test]
+    fn the_help_action_is_free_only_for_a_core_tool() {
+        assert!(!super::requires_approval(
+            "computer",
+            r#"{"action":"help"}"#
+        ));
+        assert!(super::requires_approval(
+            "ext.fixture.tool",
+            r#"{"action":"help"}"#
         ));
     }
 }

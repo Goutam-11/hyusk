@@ -144,12 +144,23 @@ impl ToolRegistry {
         manifests
             .iter()
             .map(|manifest| {
+                let mut parameters = manifest.schema.build();
+
+                if let Some(hint) = manifest.action_hint() {
+                    if let Some(action) = parameters
+                        .get_mut("properties")
+                        .and_then(|properties| properties.get_mut("action"))
+                    {
+                        action["description"] = json!(hint);
+                    }
+                }
+
                 json!({
                     "type": "function",
                     "function": {
                         "name": manifest.name,
                         "description": manifest.description,
-                        "parameters": manifest.schema.build(),
+                        "parameters": parameters,
                     }
                 })
             })
@@ -418,6 +429,48 @@ mod tests {
         assert_eq!(specs[0]["function"]["name"], "alpha");
         // The manifest set still carries it, so conformance keeps covering it.
         assert_eq!(registry.manifests().len(), 2);
+    }
+
+    fn scroll_schema() -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "action": { "type": "string", "enum": ["scroll"], "description": "Old text." },
+                "amount": { "type": "integer" },
+                "axis": { "type": "string" }
+            },
+            "required": ["action"],
+            "additionalProperties": false
+        })
+    }
+
+    /// #6: the action hints the model reads are rendered from the table, so the
+    /// schema text cannot describe a different set of actions.
+    #[test]
+    fn the_spec_carries_the_action_hints_from_the_table() {
+        const TABLE: &[manifest::ToolAction] = &[manifest::ToolAction {
+            name: "scroll",
+            required: &["amount"],
+            optional: &["axis"],
+        }];
+
+        let mut registry = ToolRegistry::new();
+        registry.register(NamedTool(manifest::ToolManifest {
+            name: "fixture",
+            actions: Some(TABLE),
+            schema: manifest::Schema::Fn(scroll_schema),
+            ..manifest::stub("fixture")
+        }));
+
+        let description = registry.specs()[0]["function"]["parameters"]["properties"]["action"]
+            ["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+
+        assert!(description.contains("scroll"), "{description}");
+        assert!(description.contains("amount"), "{description}");
+        assert!(description.contains("help"), "{description}");
     }
 
     #[test]
