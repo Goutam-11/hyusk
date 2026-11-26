@@ -51,21 +51,6 @@ pub fn accessibility_reason(bridge_exists: bool, has_session: bool) -> Option<St
     None
 }
 
-/// Why `window` is unavailable, or `None` when a compositor backend exists.
-pub fn window_reason(desktop: &str, niri_socket: bool) -> Option<String> {
-    if niri_socket {
-        return None;
-    }
-
-    if desktop.to_ascii_lowercase().contains("gnome") {
-        return None;
-    }
-
-    Some(format!(
-        "no window backend: NIRI_SOCKET is unset and the desktop is {desktop:?}"
-    ))
-}
-
 /// The whole "why not" set, as it was probed at startup.
 fn snapshot() -> &'static Vec<(&'static str, String)> {
     static SNAPSHOT: OnceLock<Vec<(&'static str, String)>> = OnceLock::new();
@@ -87,9 +72,7 @@ fn snapshot() -> &'static Vec<(&'static str, String)> {
             reasons.push(("accessibility", reason));
         }
 
-        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-        let niri = std::env::var_os("NIRI_SOCKET").is_some();
-        if let Some(reason) = window_reason(&desktop, niri) {
+        if let Some(reason) = crate::desktop::session().window_unavailable_reason() {
             reasons.push(("window", reason));
         }
 
@@ -170,12 +153,5 @@ mod tests {
         assert!(line.contains("browser (no CDP listener)"), "{line}");
         assert!(line.contains("window (no desktop)"), "{line}");
         assert!(format_absent(&[]).is_empty());
-    }
-
-    #[test]
-    fn window_reason_accepts_each_compositor_backend() {
-        assert_eq!(window_reason("niri", true), None);
-        assert_eq!(window_reason("GNOME", false), None);
-        assert!(window_reason("sway", false).is_some());
     }
 }

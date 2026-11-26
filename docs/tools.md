@@ -410,9 +410,14 @@ falls back to the `computer` tool (screenshot + vision or OCR).
 
 ## Window control
 
-`WindowTool` lists, inspects, and switches desktop windows through the Hyusk
-GNOME Shell extension's `org.hyusk.Shell` D-Bus interface. This is the reliable
-way to switch applications on Wayland, where AT-SPI cannot raise windows.
+`WindowTool` lists, inspects, and switches desktop windows through the adapter
+for the detected session: niri's own IPC (`niri msg`) on niri, and the Hyusk
+GNOME Shell extension's `org.hyusk.Shell` D-Bus interface on GNOME. This is the
+reliable way to switch applications on Wayland, where AT-SPI cannot raise
+windows. Detection lives in `src/desktop/` and reads `NIRI_SOCKET`,
+`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`, and `WAYLAND_DISPLAY` once; the
+`window` tool, the per-turn desktop context, the approval gate's focus read, and
+`computer`'s `focus_window` fallback all consume that one answer.
 
 ```json
 { "action": "list" }
@@ -426,10 +431,14 @@ way to switch applications on Wayland, where AT-SPI cannot raise windows.
 | `list` | none | Open windows with stable ID, app name, title, bounds, and an active flag. |
 | `active` | none | The focused window. |
 | `activate` | `query` | Prefer exact `id:<number>` from `list`; app/title substring is a fallback. |
+| `close` | optional `query` | Empty closes the focused window. |
 
-Prerequisite: install the extension with `scripts/install-gnome-indicator.sh`
-and log out/in once so `org.hyusk.Shell` is on the session bus. Without it the
-tool returns a failure and the agent falls back to `accessibility`/`computer`.
+Prerequisite on GNOME: install the extension with
+`scripts/install-gnome-indicator.sh` and log out/in once so `org.hyusk.Shell` is
+on the session bus. Without it the tool returns a failure and the agent falls
+back to `accessibility`/`computer`. On niri the tool needs the compositor's
+`niri msg`; a session with neither adapter reports why `window` is unavailable
+instead of trying the wrong compositor.
 
 ## GNOME readiness
 

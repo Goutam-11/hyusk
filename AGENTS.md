@@ -20,6 +20,7 @@ Windows branch; `platform_tests` in `src/main.rs` guards both conditions.
 | --- | --- |
 | `src/main.rs` | Composition root: config, clients, tools, channels, startup. |
 | `src/agent/` | Event runtime, turn runner, prompts, sessions, approvals. |
+| `src/desktop/` | Session detection and the per-compositor window adapters behind one `WindowsBackend` trait. |
 | `src/tools/` | Tool trait/registry, all tools, and the central approval policy (`safety.rs`). |
 | `src/model/` | OpenRouter-compatible clients, Bedrock Mantle, Nova Sonic, Codex CLI. |
 | `src/speech/` | Whisper STT (`whisper-rs`) and local TTS (Piper/espeak). |
@@ -68,11 +69,11 @@ cargo check --all-targets --offline --features sonic
 cargo test --all-targets --offline --features sonic -- --test-threads=4
 ```
 
-Current baseline: **482 tests passing, 6 ignored** for the default suite.
-`--features sonic` restores the second loop (495 passing, 6 ignored), and
-`--features mobile` restores the link (495 passing, 6 ignored). The workflow
+Current baseline: **495 tests passing, 6 ignored** for the default suite.
+`--features sonic` restores the second loop (508 passing, 6 ignored), and
+`--features mobile` restores the link (508 passing, 6 ignored). The workflow
 editor adds five tests (one ignored) under `--features workflow-editor`, for
-**487 passing, 7 ignored**; all features together are **513 passing, 7
+**500 passing, 7 ignored**; all features together are **526 passing, 7
 ignored**. Default and `--features sonic` clippy are clean; the three
 pre-existing `result_large_err` warnings live behind `mobile` in
 `src/link/server.rs` and appear with that feature. CI runs fmt, clippy, the
