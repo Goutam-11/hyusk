@@ -51,7 +51,7 @@ for the microphone at the same time.
 2. Read the saved provider/model selection from `~/.config/hyusk/config.json`,
    falling back to `OPENROUTER_MODEL` and the first configured provider.
 3. Register the core tools, the `browser` tool when its CDP configuration
-   loads, and on Linux the `accessibility`, `window`, and `gnome_doctor` tools
+   loads, and on Linux the `accessibility`, `window`, and `desktop_doctor` tools
    unconditionally (they report unavailability at call time).
 4. Start the optional TLS link server and register `mobile` when
    `HYUSK_LINK_ENABLED` is set.
@@ -108,7 +108,7 @@ for the microphone at the same time.
 | `tools/browser.rs` | Controls a dedicated browser profile over CDP instead of screenshots. |
 | `tools/accessibility.rs` | Drives AT-SPI2 through the `pyatspi` bridge. |
 | `tools/window.rs` | Dispatches window actions to the detected compositor adapter in `desktop/`. |
-| `tools/gnome_doctor.rs` | Read-only checks for GNOME window, accessibility, and capture support. |
+| `tools/desktop_doctor.rs` | Read-only checks for the detected session: compositor, window backend, accessibility, portals, CDP, OCR, and capture support. |
 | `tools/memory.rs` | SQLite memory (schema v2: provenance, kind, confidence, supersession, an embeddings table, and an idempotent additive migration), FTS search, and knowledge-graph triples; the database is `0600` in an owner-only directory and stored text is redacted. |
 | `tools/safety.rs` | Holds the explicit per-tool approval table (unknown names ask), classifies risky calls, and arms one-shot confirmations that expire. |
 | `tools/scheduler.rs` | Persists one-shot reminders, workflows, and agent tasks. |

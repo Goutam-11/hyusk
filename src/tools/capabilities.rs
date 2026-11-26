@@ -5,7 +5,7 @@
 //! the operating system, so an approved call can still fail after the user has
 //! already confirmed it. This module records what each backend has told us, so
 //! the runner returns a capability error instead of publishing a card for a
-//! call that cannot run, and so the model and `gnome_doctor` see the same
+//! call that cannot run, and so the model and `desktop_doctor` see the same
 //! one-line state.
 //!
 //! Only outcomes are recorded, never credentials or screen content. The record
@@ -104,7 +104,7 @@ impl CapabilityRegistry {
         self.accessibility.record(capability, backend);
     }
 
-    /// The one line the model prompt and `gnome_doctor` both show.
+    /// The one line the model prompt and `desktop_doctor` both show.
     pub fn line(&self) -> String {
         let mut line = format!(
             "capabilities: input {}; screenshot {}; accessibility {}",
@@ -216,7 +216,7 @@ pub fn refusal(name: &str, arguments: &str) -> Option<String> {
     lock().refusal(name, arguments)
 }
 
-/// The one-line capability state for the prompt and `gnome_doctor`.
+/// The one-line capability state for the prompt and `desktop_doctor`.
 pub fn line() -> String {
     lock().line()
 }

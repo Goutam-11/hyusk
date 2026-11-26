@@ -6,9 +6,9 @@ pub mod capabilities;
 pub mod computer;
 #[cfg(test)]
 mod contract_tests;
-pub mod external;
 #[cfg(target_os = "linux")]
-pub mod gnome_doctor;
+pub mod desktop_doctor;
+pub mod external;
 pub mod manifest;
 pub mod mcp;
 pub mod media;

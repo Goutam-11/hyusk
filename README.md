@@ -88,7 +88,7 @@ export OPENROUTER_BASE_URL='https://openrouter.ai/api/v1'
 `dotenvy` loads `.env` when present. Environment variables already set in the
 shell take precedence. Keep `.env` local; it is ignored by Git. Give it mode
 `0600` so no other local account can read the key: `install-autostart.sh`
-tightens a wider mode when it runs, and `gnome_doctor` warns while the file is
+tightens a wider mode when it runs, and `desktop_doctor` warns while the file is
 readable by others.
 
 Running the binary starts these components:
@@ -96,7 +96,7 @@ Running the binary starts these components:
 1. Load configuration and create the OpenRouter client.
 2. Register the desktop, shell, media, memory, scheduling, and task tools.
    `browser` registers when its CDP configuration loads; on Linux,
-   `accessibility`, `window`, and `gnome_doctor` register unconditionally and
+   `accessibility`, `window`, and `desktop_doctor` register unconditionally and
    report unavailability at call time. `mobile` joins only in a build with the
    `mobile` feature and the Android link enabled.
 3. Check for a default microphone.
@@ -617,11 +617,14 @@ On GNOME, install/refresh the extension with
 `scripts/install-gnome-indicator.sh`, then log out and back in; on niri nothing
 beyond `niri` itself is required.
 
-**`gnome_doctor` tool.** Returns read-only, structured checks for GNOME
-window control, accessibility, screenshot prerequisites, and the portal.
-It distinguishes a responding but outdated extension from one exposing
-stable window IDs. Availability checks do not grant portal input permission
-or prove a screenshot/action will succeed. A `Desktop capabilities` check
+**`desktop_doctor` tool.** Returns read-only, structured checks for the
+detected session: compositor and display kind, the window backend and the
+actions it supports, accessibility, the RemoteDesktop portal, the automation
+browser CDP endpoint, OCR, screenshot prerequisites, and the local `.env` mode.
+GNOME-only checks such as the shell extension are reported only on GNOME.
+It distinguishes a responding but outdated extension from one exposing stable
+window IDs. Availability checks do not grant portal input permission or prove
+a screenshot/action will succeed. A `Desktop capabilities` check
 repeats the one-line state the model sees: what the OS last reported for input,
 screen capture, and accessibility, and which backend reported it. A denied or
 unsupported capability makes the matching action fail with a capability error

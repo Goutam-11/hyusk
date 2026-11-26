@@ -19,7 +19,7 @@ pub enum ToolName {
     Accessibility,
     Browser,
     Computer,
-    GnomeDoctor,
+    DesktopDoctor,
     Media,
     Memory,
     Mobile,
@@ -114,7 +114,7 @@ const BROWSER_INPUT_PATHS: &[&str] = &["fill", "press_key"];
 /// separate device whose actions have their own rows and no desktop focus.
 #[cfg(test)]
 pub const TOOLS_WITHOUT_INPUT_PATHS: &[ToolName] = &[
-    ToolName::GnomeDoctor,
+    ToolName::DesktopDoctor,
     ToolName::Media,
     ToolName::Memory,
     ToolName::Mobile,
@@ -139,7 +139,7 @@ impl ToolName {
         ToolName::Accessibility,
         ToolName::Browser,
         ToolName::Computer,
-        ToolName::GnomeDoctor,
+        ToolName::DesktopDoctor,
         ToolName::Media,
         ToolName::Memory,
         ToolName::Mobile,
@@ -158,7 +158,7 @@ impl ToolName {
             ToolName::Accessibility => "accessibility",
             ToolName::Browser => "browser",
             ToolName::Computer => "computer",
-            ToolName::GnomeDoctor => "gnome_doctor",
+            ToolName::DesktopDoctor => "desktop_doctor",
             ToolName::Media => "media",
             ToolName::Memory => "memory",
             ToolName::Mobile => "mobile",
@@ -229,7 +229,7 @@ impl ToolName {
                 preview_keys: &["action", "text", "keys", "key"],
                 input_paths: COMPUTER_INPUT_PATHS,
             },
-            ToolName::GnomeDoctor => ToolPolicy {
+            ToolName::DesktopDoctor => ToolPolicy {
                 decision: Decision::Allow,
                 guidance: "read-only diagnostics never ask",
                 preview_keys: &["action"],

@@ -4,6 +4,15 @@
 
 ### Added
 
+- The diagnostic tool is now `desktop_doctor` and reports the detected session
+  first (#23): compositor, display kind, and the window backend with the actions
+  it advertises, then the generic probes (AT-SPI, RemoteDesktop portal, CDP,
+  OCR, screenshots, capability state, and the local `.env` mode). GNOME-only
+  checks and advice (toolkit accessibility and the Hyusk shell extension) appear
+  only on GNOME; a niri report says an unavailable portal means input through it
+  is unavailable and points at `accessibility`/`window`, instead of suggesting a
+  GNOME extension. The manifest, policy row, prompt, README, and docs carry the
+  new name.
 - Window navigation on niri (#22). `window` gains `last` (focus the most
   recently used window other than the current one), `move` (send a window to a
   workspace id from `list` or an output name from `output`), and `output` (list
