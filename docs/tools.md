@@ -131,7 +131,7 @@ native backend cannot deliver synthetic input, the `computer` and
 runner turns that into a tool result rather than an approval card. An `unknown`
 state still allows the attempt, so the first try can prompt as before. The
 record is shown as one `capabilities: …` line in the per-turn desktop context
-and as the `Desktop capabilities` check in `gnome_doctor`; it is never
+and as the `Desktop capabilities` check in `desktop_doctor`; it is never
 persisted.
 
 Typing and key input are classified two ways: by the focused window, and by what
@@ -453,17 +453,26 @@ back to `accessibility`/`computer`. On niri the tool needs the compositor's
 `niri msg`; a session with neither adapter reports why `window` is unavailable
 instead of trying the wrong compositor.
 
-## GNOME readiness
+## Desktop diagnostics
 
-`gnome_doctor` takes `{}` and returns structured, read-only capability checks,
-issues, next steps, and limitations. The `Desktop capabilities` check prints the
-same one-line state the model sees, and warns once an earlier attempt recorded
-a denied or unsupported input, screenshot, or accessibility capability. It does not request portal permission or
-prove that a specific click or screenshot will succeed. Use it when GNOME
-control fails repeatedly; a missing backend only affects its own path, not
-necessarily all desktop control. It also reports the mode of the local `.env`
-file, because a mode wider than `0600` lets other local accounts read the
-provider key.
+`desktop_doctor` takes `{}` and returns structured, read-only capability checks,
+issues, next steps, and limitations for the detected session. It reports the
+session first - compositor, display kind, and the window backend with the
+actions it advertises - then Python/AT-SPI, the RemoteDesktop portal (input),
+the automation browser's CDP endpoint, optional Tesseract OCR, screenshot
+executables, the recorded capability state, and the local `.env` mode. A
+`Desktop capabilities` check prints the same one-line state the model sees, and
+warns once an earlier attempt recorded a denied or unsupported input,
+screenshot, or accessibility capability.
+
+Advice is session-relative: on niri an unavailable portal says input through it
+is unavailable and points at `accessibility`/`window`; GNOME-only checks
+(toolkit accessibility and the Hyusk shell extension) are omitted and their
+advice suppressed on every other session, so a niri user is never told to
+install a GNOME extension. It does not request portal permission or prove that
+a specific click or screenshot will succeed, and it reports the mode of the
+local `.env` file because a mode wider than `0600` lets other local accounts
+read the provider key.
 
 ## Instant commands
 
@@ -1192,7 +1201,7 @@ The tool platform has guardrails but no sandbox:
   [External providers](#external-providers).
 - A denied or unsupported OS capability (portal input, screen capture, AT-SPI)
   returns a capability error before arming a card; the state is one line in the
-  per-turn context and in `gnome_doctor`.
+  per-turn context and in `desktop_doctor`.
 - A click on a control whose label commits something (payment, deletion,
   transfer, a submission without a benign qualifier) asks; the table is in
   `docs/tools.md` under Accessibility.

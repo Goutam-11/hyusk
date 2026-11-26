@@ -842,7 +842,7 @@ mod tests {
         let spec = json!({
             "type": "function",
             "function": {
-                "name": "gnome_doctor",
+                "name": "desktop_doctor",
                 "description": "Check GNOME integration.",
                 "parameters": {
                     "type": "object",

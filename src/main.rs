@@ -782,7 +782,7 @@ async fn build_tools(setup: ToolSetup<'_>) -> ToolRegistry {
     tools.register(AccessibilityTool::new());
 
     #[cfg(target_os = "linux")]
-    tools.register(tools::gnome_doctor::GnomeDoctorTool::new());
+    tools.register(tools::desktop_doctor::DesktopDoctorTool::new());
 
     #[cfg(target_os = "linux")]
     tools.register(tools::window::WindowTool::new());
@@ -1776,7 +1776,7 @@ mod tool_policy_tests {
             assert!(tools.contains(name), "{name} was not registered");
         }
         #[cfg(target_os = "linux")]
-        for name in ["accessibility", "gnome_doctor", "window"] {
+        for name in ["accessibility", "desktop_doctor", "window"] {
             assert!(tools.contains(name), "{name} was not registered");
         }
         // P5: the link and its model-facing tool exist only in a mobile build.

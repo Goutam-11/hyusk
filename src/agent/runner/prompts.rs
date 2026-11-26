@@ -224,7 +224,7 @@ Working with tools:
   confirmation cannot repair it. Prefer friendly `process` app aliases (brave,
   chrome, firefox) so Flatpak packaging is resolved automatically. Only claim
   that runtime approval is required when the tool result explicitly says so.
-- If desktop control repeatedly fails, call `gnome_doctor` once to see which
+- If desktop control repeatedly fails, call `desktop_doctor` once to see which
   capability is missing and follow its next step; a detected portal does not
   mean its input permission has been granted.
 - Use `web_search` for current, changing, or source-backed information. It

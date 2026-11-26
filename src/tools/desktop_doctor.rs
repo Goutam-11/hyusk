@@ -1,4 +1,5 @@
-//! Read-only diagnostics for GNOME desktop and computer-use prerequisites.
+//! Read-only diagnostics for the detected desktop session and computer-use
+//! prerequisites.
 
 use std::{env, time::Duration};
 
@@ -7,6 +8,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::{Tool, ToolResult};
+use crate::desktop;
 use crate::tools::manifest::{RiskClass, Schema, Source, ToolManifest, CORE_VERSION};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,69 +39,80 @@ impl Check {
         }
     }
 
-    fn next_step(&self) -> Option<&'static str> {
+    fn next_step(&self, session: &desktop::Session) -> Option<String> {
+        let gnome = session.compositor() == desktop::Compositor::Gnome;
+
         if self.level == Level::Legacy {
+            if !gnome {
+                return None;
+            }
             return Some(
-                "reload the Hyusk GNOME Shell extension (or relog) so it returns window IDs",
+                "reload the Hyusk GNOME Shell extension (or relog) so it returns window IDs"
+                    .to_string(),
             );
         }
         if self.level != Level::Warn {
             return None;
         }
-        Some(match self.name {
-            "GNOME session" => "run Hyusk from a GNOME desktop session",
-            "display session type" => "run Hyusk in a supported GNOME Wayland or X11 session",
-            "AT-SPI Python bindings" => {
-                "install python3-pyatspi; import success does not prove an app exposes a live tree"
-            }
-            "GNOME toolkit accessibility" => {
-                "enable toolkit accessibility for apps that need AT-SPI"
-            }
-            "RemoteDesktop portal" => {
-                "check that xdg-desktop-portal and its desktop backend are running"
-            }
-            ".env permissions" => "run chmod 600 .env so only your account can read the key",
-            "Desktop capabilities" => {
-                "grant the refused permission in the system dialog or settings, then retry the action"
-            }
-            "Hyusk GNOME extension" => {
-                "install and enable the Hyusk GNOME Shell extension, then log out and back in"
-            }
-            _ => "install or enable the reported prerequisite",
-        })
-    }
-}
 
-fn display_session_check(configured: Option<&str>, has_wayland: bool, has_x11: bool) -> Check {
-    let inferred = if has_wayland {
-        Some("Wayland")
-    } else if has_x11 {
-        Some("X11")
-    } else {
-        None
-    };
-    let (level, detail) = match configured {
-        Some("wayland") => (Level::Pass, "Wayland".to_string()),
-        Some("x11") => (Level::Pass, "X11".to_string()),
-        Some(value) => (
-            Level::Warn,
-            format!("unsupported XDG_SESSION_TYPE={value}; expected wayland or x11"),
-        ),
-        None => match inferred {
-            Some(kind) => (
-                Level::Info,
-                format!("XDG_SESSION_TYPE is unset; inferred {kind} from display environment"),
+        Some(match self.name {
+            "Desktop session" => {
+                "start Hyusk from a supported desktop session (niri, GNOME, sway, \
+                 Hyprland, KDE, or X11)"
+                    .to_string()
+            }
+            "Window backend" => match session.compositor() {
+                desktop::Compositor::Niri => {
+                    "start Hyusk from the niri session so NIRI_SOCKET is set, or use \
+                     `accessibility` on this session"
+                        .to_string()
+                }
+                desktop::Compositor::Gnome => {
+                    "install and enable the Hyusk GNOME Shell extension, then log out and \
+                     back in"
+                        .to_string()
+                }
+                compositor => format!(
+                    "there is no window adapter for {} ({}); use `accessibility` and \
+                     `computer` for the actions this session supports",
+                    compositor.label(),
+                    session.kind().label()
+                ),
+            },
+            "AT-SPI Python bindings" => {
+                "install python3-pyatspi; import success does not prove an app exposes a \
+                 live tree"
+                    .to_string()
+            }
+            "GNOME toolkit accessibility" if gnome => {
+                "enable toolkit accessibility for apps that need AT-SPI".to_string()
+            }
+            "RemoteDesktop portal" if gnome => {
+                "check that xdg-desktop-portal and its desktop backend are running".to_string()
+            }
+            "RemoteDesktop portal" => format!(
+                "the RemoteDesktop portal is unavailable on {} ({}); use `accessibility` \
+                 and `window` for the actions this session supports",
+                session.compositor().label(),
+                session.kind().label()
             ),
-            None => (
-                Level::Warn,
-                "XDG_SESSION_TYPE is unset and display type is unknown".into(),
-            ),
-        },
-    };
-    Check {
-        name: "display session type",
-        level,
-        detail,
+            ".env permissions" => {
+                "run chmod 600 .env so only your account can read the key".to_string()
+            }
+            "Desktop capabilities" => {
+                "grant the refused permission in the system dialog or settings, then retry \
+                 the action"
+                    .to_string()
+            }
+            "Hyusk GNOME extension" if gnome => {
+                "install and enable the Hyusk GNOME Shell extension, then log out and back \
+                 in"
+                .to_string()
+            }
+            // A GNOME-only prerequisite must never produce advice off GNOME.
+            "GNOME toolkit accessibility" | "Hyusk GNOME extension" => return None,
+            _ => "install or enable the reported prerequisite".to_string(),
+        })
     }
 }
 
@@ -153,38 +166,55 @@ fn env_file_check(path: &std::path::Path) -> Check {
     }
 }
 
-fn gnome_session_check() -> Check {
-    let desktop = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-    if desktop.to_ascii_lowercase().contains("gnome") {
-        Check {
-            name: "GNOME session",
-            level: Level::Pass,
-            detail: format!("{desktop} ({})", session_kind()),
-        }
-    } else {
-        Check {
-            name: "GNOME session",
-            level: Level::Warn,
-            detail: format!(
-                "XDG_CURRENT_DESKTOP={}; session={}",
-                if desktop.is_empty() {
-                    "unset"
-                } else {
-                    &desktop
-                },
-                session_kind()
-            ),
-        }
+fn session_check(session: &desktop::Session) -> Check {
+    let known = session.compositor() != desktop::Compositor::Unknown;
+    Check {
+        name: "Desktop session",
+        level: if known { Level::Pass } else { Level::Warn },
+        detail: if known {
+            format!(
+                "{} ({})",
+                session.compositor().label(),
+                session.kind().label()
+            )
+        } else {
+            "no display session detected (XDG_CURRENT_DESKTOP, XDG_SESSION_TYPE, WAYLAND_DISPLAY and DISPLAY are unset)"
+                .to_string()
+        },
     }
 }
 
-fn session_kind() -> &'static str {
-    match env::var("XDG_SESSION_TYPE").as_deref() {
-        Ok("wayland") => "Wayland",
-        Ok("x11") => "X11",
-        _ if env::var_os("WAYLAND_DISPLAY").is_some() => "Wayland",
-        _ if env::var_os("DISPLAY").is_some() => "X11",
-        _ => "unknown display server",
+fn window_backend_check(session: &desktop::Session) -> Check {
+    let Some(backend) = session.windows() else {
+        return Check {
+            name: "Window backend",
+            level: Level::Warn,
+            detail: session
+                .window_unavailable_reason()
+                .unwrap_or_else(|| "no window adapter for this session".to_string()),
+        };
+    };
+
+    let capabilities = backend.capabilities();
+    let mut actions = Vec::new();
+    for (available, action) in [
+        (capabilities.list, "list"),
+        (capabilities.active, "active"),
+        (capabilities.activate, "activate"),
+        (capabilities.last, "last"),
+        (capabilities.workspace, "workspace"),
+        (capabilities.output, "output"),
+        (capabilities.close, "close"),
+    ] {
+        if available {
+            actions.push(action);
+        }
+    }
+
+    Check {
+        name: "Window backend",
+        level: Level::Pass,
+        detail: format!("{}; actions: {}", backend.source(), actions.join(", ")),
     }
 }
 
@@ -194,11 +224,11 @@ fn executable_available(name: &str) -> bool {
     })
 }
 
-fn screenshot_check() -> Check {
-    let candidates: &[&str] = match session_kind() {
-        "Wayland" => &["grim"],
-        "X11" => &["import", "scrot"],
-        _ => &[],
+fn screenshot_check(session: &desktop::Session) -> Check {
+    let candidates: &[&str] = match session.kind() {
+        desktop::SessionKind::Wayland => &["grim"],
+        desktop::SessionKind::X11 => &["import", "scrot"],
+        desktop::SessionKind::Unknown => &[],
     };
     let found: Vec<_> = candidates
         .iter()
@@ -279,28 +309,48 @@ fn capability_check() -> Check {
     }
 }
 
-async fn diagnostics() -> Vec<Check> {
-    let mut checks = vec![gnome_session_check()];
-    checks.push(display_session_check(
-        env::var("XDG_SESSION_TYPE").ok().as_deref(),
-        env::var_os("WAYLAND_DISPLAY").is_some(),
-        env::var_os("DISPLAY").is_some(),
-    ));
-    checks.push(command_check("Python 3", "python3", &["--version"], false).await);
-    checks.push(
-        command_check(
-            "AT-SPI Python bindings",
-            "python3",
-            &["-c", "import pyatspi"],
-            false,
-        )
-        .await,
-    );
-    checks.push(command_check("Tesseract OCR", "tesseract", &["--version"], true).await);
-    checks.push(screenshot_check());
-    checks.push(env_file_check(std::path::Path::new(".env")));
-    checks.push(capability_check());
+/// A read-only probe of the automation browser's CDP endpoint.
+fn browser_check() -> Check {
+    match crate::tools::availability::reason("browser") {
+        None => Check {
+            name: "Automation browser (CDP)",
+            level: Level::Pass,
+            detail: "the CDP endpoint answers; capture is not tested".into(),
+        },
+        Some(reason) => Check {
+            name: "Automation browser (CDP)",
+            level: Level::Info,
+            detail: reason.to_string(),
+        },
+    }
+}
 
+async fn remote_desktop_check() -> Check {
+    match tokio::time::timeout(
+        Duration::from_secs(3),
+        crate::tools::portal::portal_version(),
+    )
+    .await
+    {
+        Ok(Ok(version)) => Check {
+            name: "RemoteDesktop portal",
+            level: Level::Pass,
+            detail: format!("service available (version {version}; input permission is untested and may require approval)"),
+        },
+        Ok(Err(error)) => Check {
+            name: "RemoteDesktop portal",
+            level: Level::Warn,
+            detail: format!("unavailable: {error}"),
+        },
+        Err(_) => Check {
+            name: "RemoteDesktop portal",
+            level: Level::Warn,
+            detail: "did not respond within 3 seconds".into(),
+        },
+    }
+}
+
+async fn gnome_toolkit_check() -> Check {
     let toolkit_a11y = tokio::time::timeout(
         Duration::from_secs(3),
         tokio::process::Command::new("gsettings")
@@ -313,7 +363,7 @@ async fn diagnostics() -> Vec<Check> {
             .output(),
     )
     .await;
-    checks.push(match toolkit_a11y {
+    match toolkit_a11y {
         Ok(Ok(output)) if output.status.success() => {
             let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if value == "true" {
@@ -335,34 +385,35 @@ async fn diagnostics() -> Vec<Check> {
             level: Level::Info,
             detail: "gsettings key unavailable; not a GNOME session?".into(),
         },
-    });
+    }
+}
 
+async fn diagnostics_for(session: &desktop::Session) -> Vec<Check> {
+    let mut checks = vec![session_check(session), window_backend_check(session)];
+    checks.push(command_check("Python 3", "python3", &["--version"], false).await);
     checks.push(
-        match tokio::time::timeout(
-            Duration::from_secs(3),
-            crate::tools::portal::portal_version(),
+        command_check(
+            "AT-SPI Python bindings",
+            "python3",
+            &["-c", "import pyatspi"],
+            false,
         )
-        .await
-        {
-            Ok(Ok(version)) => Check {
-                name: "RemoteDesktop portal",
-                level: Level::Pass,
-                detail: format!("service available (version {version}; input permission is untested and may require approval)"),
-            },
-            Ok(Err(error)) => Check {
-                name: "RemoteDesktop portal",
-                level: Level::Warn,
-                detail: format!("unavailable: {error}"),
-            },
-            Err(_) => Check {
-                name: "RemoteDesktop portal",
-                level: Level::Warn,
-                detail: "did not respond within 3 seconds".into(),
-            },
-        },
+        .await,
     );
+    checks.push(command_check("Tesseract OCR", "tesseract", &["--version"], true).await);
+    checks.push(screenshot_check(session));
+    checks.push(env_file_check(std::path::Path::new(".env")));
+    checks.push(capability_check());
+    checks.push(browser_check());
+    checks.push(remote_desktop_check().await);
 
-    checks.push(extension_check().await);
+    // GNOME-only prerequisites are omitted on other sessions, so a niri user
+    // is never told to install or configure a GNOME component.
+    if session.compositor() == desktop::Compositor::Gnome {
+        checks.push(gnome_toolkit_check().await);
+        checks.push(extension_check().await);
+    }
+
     checks
 }
 
@@ -419,7 +470,21 @@ async fn extension_check() -> Check {
     }
 }
 
-fn report(checks: &[Check]) -> Value {
+/// GNOME-only prerequisites are irrelevant on another session and must not
+/// appear as issues, let alone advice.
+fn applies_to_session(check: &Check, session: &desktop::Session) -> bool {
+    let gnome_only = matches!(
+        check.name,
+        "Hyusk GNOME extension" | "GNOME toolkit accessibility"
+    );
+    !gnome_only || session.compositor() == desktop::Compositor::Gnome
+}
+
+fn report(checks: &[Check], session: &desktop::Session) -> Value {
+    let checks: Vec<&Check> = checks
+        .iter()
+        .filter(|check| applies_to_session(check, session))
+        .collect();
     let issues: Vec<_> = checks
         .iter()
         .filter(|check| matches!(check.level, Level::Warn | Level::Legacy))
@@ -429,7 +494,7 @@ fn report(checks: &[Check]) -> Value {
         .iter()
         .filter_map(|check| {
             check
-                .next_step()
+                .next_step(session)
                 .map(|action| json!({"capability": check.name, "action": action}))
         })
         .collect();
@@ -439,7 +504,7 @@ fn report(checks: &[Check]) -> Value {
             "capability": check.name,
             "status": check.status(),
             "detail": check.detail,
-            "next_step": check.next_step(),
+            "next_step": check.next_step(session),
         })).collect::<Vec<_>>(),
         "issues": issues,
         "next_steps": next_steps,
@@ -453,29 +518,29 @@ fn report(checks: &[Check]) -> Value {
     })
 }
 
-pub struct GnomeDoctorTool;
+pub struct DesktopDoctorTool;
 
-impl GnomeDoctorTool {
+impl DesktopDoctorTool {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for GnomeDoctorTool {
+impl Default for DesktopDoctorTool {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl Tool for GnomeDoctorTool {
+impl Tool for DesktopDoctorTool {
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
-            name: "gnome_doctor",
+            name: "desktop_doctor",
             version: CORE_VERSION,
-            description: "Run read-only checks for GNOME computer-use readiness: session type, Python/AT-SPI, toolkit accessibility, the Hyusk shell extension, RemoteDesktop portal, optional Tesseract OCR, and the local .env file mode. Does not request permissions or change settings.",
+            description: "Run read-only checks for the detected desktop session: compositor and session type, window backend and its actions, Python/AT-SPI, RemoteDesktop portal input, automation browser CDP, optional Tesseract OCR, screenshot executables, recorded desktop capability state, and the local .env file mode. On GNOME it also checks toolkit accessibility and the Hyusk shell extension; other sessions omit those checks and their advice. Does not request permissions or change settings.",
             summary: "Report which desktop capabilities are missing and what to try next.",
-            schema: Schema::Fn(gnome_doctor_schema),
+            schema: Schema::Fn(desktop_doctor_schema),
             actions: None,
             risk: &[RiskClass::Read],
             capabilities: &[],
@@ -488,19 +553,128 @@ impl Tool for GnomeDoctorTool {
         if !args.is_object() {
             return Ok(ToolResult::failure("Input must be a JSON object."));
         }
+        let session = desktop::session();
         Ok(ToolResult::success(serde_json::to_string_pretty(&report(
-            &diagnostics().await,
+            &diagnostics_for(session).await,
+            session,
         ))?))
     }
 }
 
-fn gnome_doctor_schema() -> Value {
+fn desktop_doctor_schema() -> Value {
     json!({ "type": "object", "properties": {}, "additionalProperties": false })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gnome_session() -> desktop::Session {
+        session_fixture(false, "GNOME", "wayland")
+    }
+
+    fn niri_session() -> desktop::Session {
+        session_fixture(true, "niri", "wayland")
+    }
+
+    fn session_fixture(niri: bool, desktop: &str, session_type: &str) -> desktop::Session {
+        desktop::detect_from(&desktop::Environment {
+            niri_socket: niri.then(|| "/run/user/1000/niri.wayland-1.0.sock".to_string()),
+            desktop: Some(desktop.to_string()),
+            session_type: Some(session_type.to_string()),
+            wayland_display: (session_type == "wayland").then(|| "wayland-1".to_string()),
+            ..desktop::Environment::default()
+        })
+    }
+
+    #[test]
+    fn session_check_reports_the_compositor_kind_and_window_backend() {
+        let niri = session_fixture(true, "niri", "wayland");
+        let check = session_check(&niri);
+        assert_eq!(check.name, "Desktop session");
+        assert_eq!(check.level, Level::Pass);
+        assert!(check.detail.contains("niri"), "{}", check.detail);
+        assert!(check.detail.contains("Wayland"), "{}", check.detail);
+
+        let backend = window_backend_check(&niri);
+        assert_eq!(backend.name, "Window backend");
+        assert_eq!(backend.level, Level::Pass);
+        assert!(backend.detail.contains("niri IPC"), "{}", backend.detail);
+        for action in ["last", "workspace", "output"] {
+            assert!(backend.detail.contains(action), "{}", backend.detail);
+        }
+
+        let gnome = session_fixture(false, "GNOME", "wayland");
+        assert!(session_check(&gnome).detail.contains("GNOME"));
+        let backend = window_backend_check(&gnome);
+        assert_eq!(backend.level, Level::Pass);
+        assert!(
+            backend.detail.contains("GNOME Shell window metadata"),
+            "{}",
+            backend.detail
+        );
+        assert!(
+            !backend.detail.contains("last"),
+            "GNOME must not advertise niri navigation: {}",
+            backend.detail
+        );
+
+        let sway = session_fixture(false, "sway", "wayland");
+        assert_eq!(session_check(&sway).level, Level::Pass);
+        let backend = window_backend_check(&sway);
+        assert_eq!(backend.level, Level::Warn);
+        assert!(backend.detail.contains("NIRI_SOCKET"), "{}", backend.detail);
+
+        let unknown = desktop::detect_from(&desktop::Environment::default());
+        let check = session_check(&unknown);
+        assert_eq!(check.level, Level::Warn);
+        assert!(check.detail.contains("no display"), "{}", check.detail);
+    }
+
+    #[test]
+    fn advice_is_session_relative_and_never_offers_gnome_advice_on_niri() {
+        let niri = niri_session();
+        let portal = Check {
+            name: "RemoteDesktop portal",
+            level: Level::Warn,
+            detail: "unavailable: no portal".into(),
+        };
+        let advice = portal
+            .next_step(&niri)
+            .expect("an unavailable capability needs a next step");
+        assert!(advice.contains("niri"), "{advice}");
+        assert!(!advice.contains("GNOME"), "{advice}");
+
+        // Even if a GNOME-only check leaked into the list, its advice is
+        // suppressed off GNOME.
+        let extension = Check {
+            name: "Hyusk GNOME extension",
+            level: Level::Warn,
+            detail: "unavailable".into(),
+        };
+        assert_eq!(extension.next_step(&niri), None);
+
+        let sway = session_fixture(false, "sway", "wayland");
+        let backend = window_backend_check(&sway);
+        let advice = backend
+            .next_step(&sway)
+            .expect("an unavailable backend needs a next step");
+        assert!(advice.contains("sway"), "{advice}");
+        assert!(!advice.contains("GNOME"), "{advice}");
+
+        let gnome = gnome_session();
+        let advice = extension
+            .next_step(&gnome)
+            .expect("GNOME gets the install step");
+        assert!(advice.contains("install"), "{advice}");
+
+        let report = report(&[portal, extension], &niri);
+        let encoded = report.to_string();
+        assert!(
+            !encoded.contains("GNOME extension"),
+            "a niri report must not recommend a GNOME extension: {encoded}"
+        );
+    }
 
     #[test]
     fn capability_state_uses_the_same_one_line_as_the_prompt() {
@@ -546,14 +720,14 @@ mod tests {
             assert_eq!(check.level, Level::Warn, "{}", check.detail);
             assert!(check.detail.contains("0644"), "{}", check.detail);
             assert!(check
-                .next_step()
+                .next_step(&gnome_session())
                 .is_some_and(|step| step.contains("chmod 600")));
 
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
                 .expect("set mode");
             let check = env_file_check(&path);
             assert_eq!(check.level, Level::Pass, "{}", check.detail);
-            assert!(check.next_step().is_none());
+            assert!(check.next_step(&gnome_session()).is_none());
         }
 
         // A missing file is not a problem: the keyring is the primary path.
@@ -565,23 +739,26 @@ mod tests {
 
     #[test]
     fn renders_each_status_and_check_name() {
-        let value = report(&[
-            Check {
-                name: "AT-SPI",
-                level: Level::Pass,
-                detail: "available".into(),
-            },
-            Check {
-                name: "RemoteDesktop portal",
-                level: Level::Warn,
-                detail: "unavailable".into(),
-            },
-            Check {
-                name: "OCR",
-                level: Level::Info,
-                detail: "optional".into(),
-            },
-        ]);
+        let value = report(
+            &[
+                Check {
+                    name: "AT-SPI",
+                    level: Level::Pass,
+                    detail: "available".into(),
+                },
+                Check {
+                    name: "RemoteDesktop portal",
+                    level: Level::Warn,
+                    detail: "unavailable".into(),
+                },
+                Check {
+                    name: "OCR",
+                    level: Level::Info,
+                    detail: "optional".into(),
+                },
+            ],
+            &gnome_session(),
+        );
         assert_eq!(
             value["summary"],
             "partial; probes do not guarantee end-to-end computer use"
@@ -597,23 +774,15 @@ mod tests {
     }
 
     #[test]
-    fn display_session_check_does_not_mark_unsupported_values_available() {
-        let check = display_session_check(Some("tty"), false, false);
-        assert_eq!(check.level, Level::Warn);
-        assert!(check.detail.contains("expected wayland or x11"));
-
-        let inferred = display_session_check(None, true, false);
-        assert_eq!(inferred.level, Level::Info);
-        assert!(inferred.detail.contains("inferred Wayland"));
-    }
-
-    #[test]
     fn marks_legacy_extension_payload_as_an_issue() {
-        let value = report(&[Check {
-            name: "Hyusk GNOME extension",
-            level: Level::Legacy,
-            detail: "listed windows lack stable IDs".into(),
-        }]);
+        let value = report(
+            &[Check {
+                name: "Hyusk GNOME extension",
+                level: Level::Legacy,
+                detail: "listed windows lack stable IDs".into(),
+            }],
+            &gnome_session(),
+        );
         assert_eq!(value["checks"][0]["status"], "responding_legacy");
         assert_eq!(value["issues"][0], "Hyusk GNOME extension");
         assert!(value["checks"][0]["next_step"]

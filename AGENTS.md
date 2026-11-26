@@ -69,11 +69,11 @@ cargo check --all-targets --offline --features sonic
 cargo test --all-targets --offline --features sonic -- --test-threads=4
 ```
 
-Current baseline: **509 tests passing, 6 ignored** for the default suite.
-`--features sonic` restores the second loop (522 passing, 6 ignored), and
-`--features mobile` restores the link (522 passing, 6 ignored). The workflow
+Current baseline: **510 tests passing, 6 ignored** for the default suite.
+`--features sonic` restores the second loop (523 passing, 6 ignored), and
+`--features mobile` restores the link (523 passing, 6 ignored). The workflow
 editor adds five tests (one ignored) under `--features workflow-editor`, for
-**514 passing, 7 ignored**; all features together are **540 passing, 7
+**515 passing, 7 ignored**; all features together are **541 passing, 7
 ignored**. Default and `--features sonic` clippy are clean; the three
 pre-existing `result_large_err` warnings live behind `mobile` in
 `src/link/server.rs` and appear with that feature. CI runs fmt, clippy, the
@@ -231,7 +231,7 @@ tests live in `#[cfg(test)]` modules beside the code.
   `capabilities::refusal` before arming a card, so a denied or unsupported
   capability fails with a capability error; `unknown` allows the attempt. The
   state appears as one line in the per-turn desktop context and in
-  `gnome_doctor`. The record is process-local and never persisted.
+  `desktop_doctor`. The record is process-local and never persisted.
 - Tool output (X2): `tools::redact::redact` runs once in `execute_tool`, the
   choke point for the text runner, Nova Sonic, and the instant lane, before the
   result reaches the session, the provider request, or status text. It replaces
