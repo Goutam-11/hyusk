@@ -169,6 +169,18 @@ pub struct WindowCapabilities {
     pub active: bool,
     pub activate: bool,
     pub close: bool,
+    pub last: bool,
+    pub workspace: bool,
+    pub output: bool,
+}
+
+/// Where a `move` sends a window.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MoveDestination {
+    /// A workspace id as `list` reports it.
+    Workspace(u64),
+    /// An output name as `output` reports it.
+    Output(String),
 }
 
 /// One compositor's window protocol.
@@ -182,8 +194,8 @@ pub trait WindowsBackend: Send + Sync {
 
     fn capabilities(&self) -> WindowCapabilities;
 
-    /// The open windows, plus the list text the tool returns.
-    async fn list(&self) -> anyhow::Result<WindowList>;
+    /// The open windows, optionally only one workspace, plus the list text.
+    async fn list(&self, workspace: Option<u64>) -> anyhow::Result<WindowList>;
 
     /// The focused window, in this compositor's reply shape.
     async fn active(&self) -> anyhow::Result<String>;
@@ -193,6 +205,17 @@ pub trait WindowsBackend: Send + Sync {
 
     /// Close the window a query matches; returns its title.
     async fn close(&self, query: &str) -> anyhow::Result<String>;
+
+    /// Focus the most recently used window other than the focused one;
+    /// returns its title.
+    async fn last(&self) -> anyhow::Result<String>;
+
+    /// Send the window a query matches to a workspace or output; returns its
+    /// title.
+    async fn move_to(&self, query: &str, destination: &MoveDestination) -> anyhow::Result<String>;
+
+    /// The outputs the compositor can move a window to, rendered for the tool.
+    async fn outputs(&self) -> anyhow::Result<String>;
 }
 
 /// The detected session.

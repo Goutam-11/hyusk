@@ -4,6 +4,18 @@
 
 ### Added
 
+- Window navigation on niri (#22). `window` gains `last` (focus the most
+  recently used window other than the current one), `move` (send a window to a
+  workspace id from `list` or an output name from `output`), and `output` (list
+  monitors with their logical size); `list` accepts an optional `workspace`
+  filter and names an empty result. The niri adapter resolves a workspace id to
+  that workspace's index and validates an output name before calling the
+  compositor; the GNOME adapter advertises the three navigation capabilities as
+  unavailable, so the tool refuses those actions with a message naming GNOME
+  (Wayland) instead of a generic error. The manifest, the approval guidance,
+  and the prompt's navigation advice are generated from those capabilities.
+  `move` asks for approval (the maintainer-approved `close|move` classifier
+  edit); `last`, a filtered `list`, and `output` stay free.
 - Compositor knowledge now lives in one place (#21). `src/desktop/` detects the
   session once from `NIRI_SOCKET`, `XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`,
   and `WAYLAND_DISPLAY`, and exposes a `WindowsBackend` that the `window` tool

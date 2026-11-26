@@ -78,6 +78,78 @@ fn approval_guidance_block() -> String {
     block
 }
 
+/// The window-navigation part of the prompt, generated from the adapter's
+/// advertised actions so a capability gap is stated instead of guessed.
+fn window_navigation_advice() -> String {
+    let session = crate::desktop::session();
+    window_navigation_advice_with(session, session.capabilities().windows)
+}
+
+fn window_navigation_advice_with(
+    session: &crate::desktop::Session,
+    capabilities: Option<crate::desktop::WindowCapabilities>,
+) -> String {
+    let Some(capabilities) = capabilities else {
+        return "No compositor window adapter is available on this session; use `accessibility` to inspect windows and `computer` to act, and do not claim to switch windows."
+            .to_string();
+    };
+
+    let mut actions = vec![
+        "`list`".to_string(),
+        "`active`".to_string(),
+        "`activate` with a `query` (prefer exact `id:<number>`)".to_string(),
+    ];
+    if capabilities.last {
+        actions.push("`last` to return to the window you used before the current one".to_string());
+    }
+    if capabilities.workspace {
+        actions.push(
+            "`list` with `workspace` to filter, and `move` with `workspace` to send a window to one"
+                .to_string(),
+        );
+    }
+    if capabilities.output {
+        actions.push(
+            "`output` to list monitors, and `move` with `output` to send a window to one"
+                .to_string(),
+        );
+    }
+
+    let mut advice = format!(
+        "To manage windows on {} ({}), use the `window` tool: {}. It is the reliable way on Wayland; prefer it over blind alt+tab.",
+        session.compositor().label(),
+        session.kind().label(),
+        join_with_and(&actions),
+    );
+
+    let mut unavailable = Vec::new();
+    if !capabilities.last {
+        unavailable.push("`last`".to_string());
+    }
+    if !capabilities.workspace {
+        unavailable.push("`workspace` navigation".to_string());
+    }
+    if !capabilities.output {
+        unavailable.push("`output`".to_string());
+    }
+    if !unavailable.is_empty() {
+        advice.push_str(&format!(
+            " Not available on this session: {}.",
+            join_with_and(&unavailable)
+        ));
+    }
+
+    advice
+}
+
+fn join_with_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [head @ .., last] => format!("{} and {last}", head.join(", ")),
+    }
+}
+
 pub(super) fn build_system_prompt(tool_guide: &str, query: &str, sonic_voice: bool) -> String {
     let mut prompt = r#"
 You are Hyusk, a warm, quick-witted local AI assistant that lives on the
@@ -193,11 +265,14 @@ On Linux, drive the desktop natively with `accessibility` first:
    scoped with `app`) to locate a control, then act on the returned path:
    `click` (optionally with `action_name`), `focus`, or `set_text` /
    `get_text`.
-To switch applications or bring a window to the front on GNOME, use the
-`window` tool (`list`, `active`, or `activate` with a query). It is the
-reliable way on Wayland; prefer exact `id:<number>` from `window list` when
-several windows share a title, and prefer it over blind alt+tab.
+"#,
+    );
 
+    prompt.push_str(&window_navigation_advice());
+    prompt.push('\n');
+
+    prompt.push_str(
+        r#"
 Blind spots: apps that do not publish an accessibility tree (Chromium and
 Electron apps unless `ACCESSIBILITY_ENABLED=1`, or any app while
 toolkit-accessibility is off) return no nodes and a `warnings` field. When that
@@ -318,7 +393,8 @@ fn user_profile_context() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_desktop_context_with, approval_guidance_block, build_system_prompt, build_tool_guide,
+        append_desktop_context_with, approval_guidance_block, build_system_prompt,
+        build_tool_guide, window_navigation_advice_with,
     };
     use crate::tools::safety::{approval_guidance, Decision, ToolName};
     use crate::tools::ToolRegistry;
@@ -367,6 +443,61 @@ mod tests {
     /// breaks, which carry no meaning here.
     fn flattened(text: &str) -> String {
         text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn navigation_advice_is_generated_from_session_capabilities() {
+        use crate::desktop::{Environment, WindowCapabilities};
+
+        let niri = crate::desktop::detect_from(&Environment {
+            niri_socket: Some("/run/user/1000/niri.wayland-1.0.sock".to_string()),
+            desktop: Some("niri".to_string()),
+            session_type: Some("wayland".to_string()),
+            wayland_display: Some("wayland-1".to_string()),
+            ..Environment::default()
+        });
+        let full = WindowCapabilities {
+            list: true,
+            active: true,
+            activate: true,
+            close: true,
+            last: true,
+            workspace: true,
+            output: true,
+        };
+        let advice = flattened(&window_navigation_advice_with(&niri, Some(full)));
+        assert!(advice.contains("niri (Wayland)"), "{advice}");
+        for action in ["`last`", "`move`", "`output`", "`workspace`"] {
+            assert!(advice.contains(action), "{advice}");
+        }
+        assert!(!advice.contains("not available"), "{advice}");
+
+        let gnome = crate::desktop::detect_from(&Environment {
+            desktop: Some("GNOME".to_string()),
+            session_type: Some("wayland".to_string()),
+            wayland_display: Some("wayland-0".to_string()),
+            ..Environment::default()
+        });
+        let limited = WindowCapabilities {
+            list: true,
+            active: true,
+            activate: true,
+            close: true,
+            ..WindowCapabilities::default()
+        };
+        let advice = flattened(&window_navigation_advice_with(&gnome, Some(limited)));
+        assert!(advice.contains("GNOME (Wayland)"), "{advice}");
+        for action in ["`last`", "`workspace`", "`output`"] {
+            assert!(advice.contains(action), "{advice}");
+        }
+        assert!(advice.contains("Not available"), "{advice}");
+
+        let advice = window_navigation_advice_with(&gnome, None);
+        assert!(advice.contains("No compositor window adapter"), "{advice}");
+        assert!(
+            !advice.contains("  "),
+            "the prompt must not gain stray spaces: {advice}"
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! [`NiriRunner`], which lets a recorded `niri msg --json windows` payload and
 //! a recorded action reply exercise the adapter without a compositor.
 
+use std::collections::BTreeMap;
 use std::process::Output;
 
 use anyhow::{Context, Result};
@@ -11,7 +12,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Window, WindowCapabilities, WindowList, WindowsBackend};
+use super::{MoveDestination, Window, WindowCapabilities, WindowList, WindowsBackend};
 
 /// The one process call the adapter makes.
 #[async_trait]
@@ -59,8 +60,31 @@ struct NiriWindow {
 }
 
 #[derive(Debug, Deserialize)]
+struct NiriWorkspace {
+    id: u64,
+    idx: u64,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NiriOutput {
+    name: String,
+    #[serde(default)]
+    logical: Option<NiriLogical>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NiriLogical {
+    width: u64,
+    height: u64,
+}
+
+#[derive(Debug, Deserialize)]
 struct NiriTimestamp {
     secs: u64,
+    #[serde(default)]
+    nanos: u64,
 }
 
 impl From<&NiriWindow> for Window {
@@ -95,6 +119,46 @@ impl<R: NiriRunner + Send + Sync> NiriBackend<R> {
             );
         }
         serde_json::from_slice(&output.stdout).context("invalid window list from niri")
+    }
+
+    async fn workspaces(&self) -> Result<Vec<NiriWorkspace>> {
+        let arguments = vec![
+            "msg".to_string(),
+            "--json".to_string(),
+            "workspaces".to_string(),
+        ];
+        let output = self
+            .runner
+            .run(&arguments)
+            .await
+            .context("could not run `niri msg`")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "`niri msg --json workspaces` failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        serde_json::from_slice(&output.stdout).context("invalid workspace list from niri")
+    }
+
+    async fn output_map(&self) -> Result<BTreeMap<String, NiriOutput>> {
+        let arguments = vec![
+            "msg".to_string(),
+            "--json".to_string(),
+            "outputs".to_string(),
+        ];
+        let output = self
+            .runner
+            .run(&arguments)
+            .await
+            .context("could not run `niri msg`")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "`niri msg --json outputs` failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        serde_json::from_slice(&output.stdout).context("invalid output list from niri")
     }
 
     async fn action(&self, arguments: &[&str]) -> Result<()> {
@@ -185,13 +249,31 @@ impl<R: NiriRunner + Send + Sync> WindowsBackend for NiriBackend<R> {
             active: true,
             activate: true,
             close: true,
+            last: true,
+            workspace: true,
+            output: true,
         }
     }
 
-    async fn list(&self) -> Result<WindowList> {
+    async fn list(&self, workspace: Option<u64>) -> Result<WindowList> {
         let windows = self.windows().await?;
+        let windows: Vec<NiriWindow> = match workspace {
+            Some(id) => windows
+                .into_iter()
+                .filter(|window| window.workspace_id == Some(id))
+                .collect(),
+            None => windows,
+        };
+        let rendered = if windows.is_empty() {
+            match workspace {
+                Some(id) => format!("No windows on workspace {id}."),
+                None => "No windows reported.".to_string(),
+            }
+        } else {
+            render_list(&windows)
+        };
         Ok(WindowList {
-            rendered: render_list(&windows),
+            rendered,
             windows: windows.iter().map(Window::from).collect(),
         })
     }
@@ -227,6 +309,75 @@ impl<R: NiriRunner + Send + Sync> WindowsBackend for NiriBackend<R> {
         let id = window.id.to_string();
         self.action(&["close-window", "--id", &id]).await?;
         Ok(window.title.clone())
+    }
+
+    async fn last(&self) -> Result<String> {
+        let windows = self.windows().await?;
+        let previous = windows
+            .iter()
+            .filter(|window| !window.is_focused)
+            .max_by_key(|window| {
+                window
+                    .focus_timestamp
+                    .as_ref()
+                    .map_or((0, 0), |timestamp| (timestamp.secs, timestamp.nanos))
+            });
+        let window = previous.ok_or_else(|| anyhow::anyhow!("No previous window."))?;
+        let id = window.id.to_string();
+        self.action(&["focus-window", "--id", &id]).await?;
+        Ok(window.title.clone())
+    }
+
+    async fn move_to(&self, query: &str, destination: &MoveDestination) -> Result<String> {
+        let windows = self.windows().await?;
+        let window = select_window(&windows, query)
+            .ok_or_else(|| anyhow::anyhow!("No window matched '{query}'."))?;
+        let id = window.id.to_string();
+
+        match destination {
+            MoveDestination::Workspace(workspace_id) => {
+                let workspaces = self.workspaces().await?;
+                let workspace = workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == *workspace_id)
+                    .ok_or_else(|| anyhow::anyhow!("No workspace with id {workspace_id}."))?;
+                let reference = workspace
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| workspace.idx.to_string());
+                self.action(&["move-window-to-workspace", "--window-id", &id, &reference])
+                    .await?;
+            }
+            MoveDestination::Output(name) => {
+                let outputs = self.output_map().await?;
+                if !outputs.contains_key(name) {
+                    anyhow::bail!("No output named '{name}'.");
+                }
+                self.action(&["move-window-to-monitor", "--id", &id, name])
+                    .await?;
+            }
+        }
+
+        Ok(window.title.clone())
+    }
+
+    async fn outputs(&self) -> Result<String> {
+        let outputs = self.output_map().await?;
+        if outputs.is_empty() {
+            return Ok("No outputs reported.".to_string());
+        }
+        let mut entries: Vec<(&String, &NiriOutput)> = outputs.iter().collect();
+        entries.sort_by_key(|(name, _)| name.to_ascii_lowercase());
+        let mut lines = vec![format!("Outputs ({}):", entries.len())];
+        for (_, output) in entries {
+            let size = output
+                .logical
+                .as_ref()
+                .map(|logical| format!(" — {}x{}", logical.width, logical.height))
+                .unwrap_or_default();
+            lines.push(format!("  {}{size}", output.name));
+        }
+        Ok(lines.join("\n"))
     }
 }
 
@@ -300,7 +451,7 @@ mod tests {
         let (runner, recorded) = Recorded::with(vec![Ok(output(RECORDED_WINDOWS))]);
         let backend = NiriBackend::new(runner);
 
-        let list = backend.list().await;
+        let list = backend.list(None).await;
         assert!(
             list.is_ok(),
             "the recorded window list must parse: {:?}",
@@ -321,6 +472,43 @@ mod tests {
         assert_eq!(list.windows[0].workspace, Some(1));
         assert!(list.windows[0].active);
         assert_eq!(recorded.calls(), vec![vec!["msg", "--json", "windows"]]);
+    }
+
+    #[tokio::test]
+    async fn list_filters_to_one_workspace_and_names_an_empty_result() {
+        let (runner, recorded) = Recorded::with(vec![
+            Ok(output(RECORDED_WINDOWS)),
+            Ok(output(RECORDED_WINDOWS)),
+        ]);
+        let backend = NiriBackend::new(runner);
+
+        let list = backend.list(Some(2)).await;
+        assert!(
+            list.is_ok(),
+            "the recorded list must parse: {:?}",
+            list.err()
+        );
+        let list = list.unwrap();
+        assert_eq!(list.windows.len(), 1);
+        assert_eq!(list.windows[0].id, Some(5));
+        assert_eq!(
+            list.rendered,
+            "Windows (1):\n  [id:5] brave-browser — Docs - Brave (workspace 2)"
+        );
+
+        let empty = backend.list(Some(99)).await;
+        assert!(empty.is_ok());
+        let empty = empty.unwrap();
+        assert!(empty.windows.is_empty());
+        assert_eq!(empty.rendered, "No windows on workspace 99.");
+
+        assert_eq!(
+            recorded.calls(),
+            vec![
+                vec!["msg", "--json", "windows"],
+                vec!["msg", "--json", "windows"],
+            ]
+        );
     }
 
     #[tokio::test]
@@ -380,7 +568,10 @@ mod tests {
             app_id: app.to_string(),
             workspace_id: Some(1),
             is_focused: focused,
-            focus_timestamp: Some(NiriTimestamp { secs: focused_at }),
+            focus_timestamp: Some(NiriTimestamp {
+                secs: focused_at,
+                nanos: 0,
+            }),
         }
     }
 
@@ -401,6 +592,180 @@ mod tests {
         assert_eq!(select_window(&windows, "FREEBUFF").unwrap().id, 3);
         assert_eq!(select_window(&windows, "").unwrap().id, 9);
         assert!(select_window(&windows, "nothing-here").is_none());
+    }
+
+    #[tokio::test]
+    async fn last_focuses_the_most_recent_window_other_than_the_focused_one() {
+        let payload = r#"[
+            {"id":9,"title":"~","app_id":"Alacritty","workspace_id":1,"is_focused":true,"focus_timestamp":{"secs":300,"nanos":0}},
+            {"id":5,"title":"Docs","app_id":"brave-browser","workspace_id":2,"is_focused":false,"focus_timestamp":{"secs":400,"nanos":100}},
+            {"id":7,"title":"Notes","app_id":"gedit","workspace_id":1,"is_focused":false,"focus_timestamp":{"secs":400,"nanos":200}}
+        ]"#;
+        let (runner, recorded) = Recorded::with(vec![Ok(output(payload)), Ok(output(""))]);
+
+        let title = NiriBackend::new(runner).last().await;
+
+        assert!(
+            title.is_ok(),
+            "a recorded focus history must read: {:?}",
+            title.err()
+        );
+        assert_eq!(title.unwrap(), "Notes");
+        assert_eq!(
+            recorded.calls(),
+            vec![
+                vec!["msg", "--json", "windows"],
+                vec!["msg", "action", "focus-window", "--id", "7"],
+            ]
+        );
+
+        // No window other than the focused one: report that, and do not
+        // touch the compositor.
+        let one = r#"[{"id":1,"title":"only","app_id":"app","is_focused":true,"focus_timestamp":{"secs":9}}]"#;
+        let (runner, recorded) = Recorded::with(vec![Ok(output(one))]);
+        let result = NiriBackend::new(runner).last().await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "No previous window.");
+        assert_eq!(recorded.calls().len(), 1);
+    }
+
+    const RECORDED_OUTPUTS: &str = r#"{
+        "eDP-1":{"name":"eDP-1","make":"Chimei Innolux Corporation","model":"0x1521","logical":{"x":0,"y":0,"width":1920,"height":1080,"scale":1.0}},
+        "HDMI-A-1":{"name":"HDMI-A-1","make":"Dell","model":"U2720Q","logical":{"x":1920,"y":0,"width":2560,"height":1440,"scale":1.0}}
+    }"#;
+
+    #[tokio::test]
+    async fn output_lists_the_recorded_outputs_with_their_logical_size() {
+        let (runner, recorded) = Recorded::with(vec![Ok(output(RECORDED_OUTPUTS))]);
+
+        let outputs = NiriBackend::new(runner).outputs().await;
+
+        assert!(
+            outputs.is_ok(),
+            "the recorded outputs must parse: {:?}",
+            outputs.err()
+        );
+        assert_eq!(
+            outputs.unwrap(),
+            "Outputs (2):\n  eDP-1 — 1920x1080\n  HDMI-A-1 — 2560x1440"
+        );
+        assert_eq!(recorded.calls(), vec![vec!["msg", "--json", "outputs"]]);
+    }
+
+    const RECORDED_WORKSPACES: &str = r#"[
+        {"id":1,"idx":1,"name":null,"output":"eDP-1","is_active":true,"is_focused":true},
+        {"id":2,"idx":2,"name":null,"output":"eDP-1","is_active":false,"is_focused":false}
+    ]"#;
+
+    #[tokio::test]
+    async fn move_sends_the_matched_window_to_the_workspace_id() {
+        let (runner, recorded) = Recorded::with(vec![
+            Ok(output(RECORDED_WINDOWS)),
+            Ok(output(RECORDED_WORKSPACES)),
+            Ok(output("")),
+        ]);
+        let backend = NiriBackend::new(runner);
+
+        let title = backend
+            .move_to("brave", &MoveDestination::Workspace(2))
+            .await;
+
+        assert!(
+            title.is_ok(),
+            "a recorded workspace must move: {:?}",
+            title.err()
+        );
+        assert_eq!(title.unwrap(), "Docs - Brave");
+        assert_eq!(
+            recorded.calls(),
+            vec![
+                vec!["msg", "--json", "windows"],
+                vec!["msg", "--json", "workspaces"],
+                vec![
+                    "msg",
+                    "action",
+                    "move-window-to-workspace",
+                    "--window-id",
+                    "5",
+                    "2"
+                ],
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn move_to_an_unknown_workspace_reports_it_without_acting() {
+        let (runner, recorded) = Recorded::with(vec![
+            Ok(output(RECORDED_WINDOWS)),
+            Ok(output(RECORDED_WORKSPACES)),
+        ]);
+
+        let result = NiriBackend::new(runner)
+            .move_to("brave", &MoveDestination::Workspace(99))
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "No workspace with id 99.");
+        assert_eq!(
+            recorded.calls().len(),
+            2,
+            "an unknown workspace must not reach the compositor action"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_sends_the_matched_window_to_a_named_output() {
+        let (runner, recorded) = Recorded::with(vec![
+            Ok(output(RECORDED_WINDOWS)),
+            Ok(output(RECORDED_OUTPUTS)),
+            Ok(output("")),
+        ]);
+
+        let title = NiriBackend::new(runner)
+            .move_to("brave", &MoveDestination::Output("HDMI-A-1".to_string()))
+            .await;
+
+        assert!(
+            title.is_ok(),
+            "a recorded output must move: {:?}",
+            title.err()
+        );
+        assert_eq!(title.unwrap(), "Docs - Brave");
+        assert_eq!(
+            recorded.calls(),
+            vec![
+                vec!["msg", "--json", "windows"],
+                vec!["msg", "--json", "outputs"],
+                vec![
+                    "msg",
+                    "action",
+                    "move-window-to-monitor",
+                    "--id",
+                    "5",
+                    "HDMI-A-1"
+                ],
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn move_to_an_unknown_output_reports_it_without_acting() {
+        let (runner, recorded) = Recorded::with(vec![
+            Ok(output(RECORDED_WINDOWS)),
+            Ok(output(RECORDED_OUTPUTS)),
+        ]);
+
+        let result = NiriBackend::new(runner)
+            .move_to("brave", &MoveDestination::Output("DP-9".to_string()))
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "No output named 'DP-9'.");
+        assert_eq!(
+            recorded.calls().len(),
+            2,
+            "an unknown output must not reach the compositor action"
+        );
     }
 
     #[tokio::test]

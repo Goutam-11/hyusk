@@ -410,8 +410,9 @@ falls back to the `computer` tool (screenshot + vision or OCR).
 
 ## Window control
 
-`WindowTool` lists, inspects, and switches desktop windows through the adapter
-for the detected session: niri's own IPC (`niri msg`) on niri, and the Hyusk
+`WindowTool` lists, inspects, switches, and navigates desktop windows through
+the adapter for the detected session: niri's own IPC (`niri msg`) on niri, and
+the Hyusk
 GNOME Shell extension's `org.hyusk.Shell` D-Bus interface on GNOME. This is the
 reliable way to switch applications on Wayland, where AT-SPI cannot raise
 windows. Detection lives in `src/desktop/` and reads `NIRI_SOCKET`,
@@ -431,7 +432,19 @@ windows. Detection lives in `src/desktop/` and reads `NIRI_SOCKET`,
 | `list` | none | Open windows with stable ID, app name, title, bounds, and an active flag. |
 | `active` | none | The focused window. |
 | `activate` | `query` | Prefer exact `id:<number>` from `list`; app/title substring is a fallback. |
+| `last` | none | Focus the most recently used window other than the focused one. |
+| `move` | `query` plus exactly one of `workspace`/`output` | Asks for approval; sends the window to a workspace id or output name. |
+| `output` | none | List monitors with their logical size. |
 | `close` | optional `query` | Empty closes the focused window. |
+
+`list` accepts an optional `workspace` id to filter, and reports
+`No windows on workspace <id>.` when the filter is empty. `move` resolves a
+workspace id through niri's workspace list (the action itself takes an index or
+name) and validates an output name before calling the compositor, so an unknown
+destination fails without moving anything. The GNOME adapter does not advertise
+`last`, `workspace`, or `output` yet; those actions fail with a capability
+message naming the session, and the prompt's navigation advice is generated from
+the same capabilities.
 
 Prerequisite on GNOME: install the extension with
 `scripts/install-gnome-indicator.sh` and log out/in once so `org.hyusk.Shell` is
