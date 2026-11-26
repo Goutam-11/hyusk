@@ -61,6 +61,14 @@ A tool that dispatches on `action` declares a `ToolAction` row per action:
 when present. The table is one declaration the model-facing text, the gate, and
 the docs agree on.
 
+The model sees each action with the arguments it requires, rendered from the
+table into the schema's `action` description, and may send `action: "help"` to
+get the same table as text for every action. `help` performs nothing: the gate
+answers it before the tool is entered, and it is free for a core tool (an
+external tool keeps its always-ask row). `ToolManifest::action_hint` and
+`help_text` both read the table, so neither can describe a different set of
+actions from the one that runs.
+
 `ToolManifest::argument_error` is the gate: it runs once in `execute_tool`
 before the call is dispatched, so a call missing a required argument, naming an
 action outside the table, or carrying a key the action does not accept fails

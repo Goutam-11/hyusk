@@ -452,6 +452,58 @@ impl ToolManifest {
         ))
     }
 
+    /// The action list the model reads in the schema, with required arguments.
+    ///
+    /// Generated from the same table the gate decides with (#6), so the text
+    /// cannot describe a different set of actions from the one that runs.
+    pub fn action_hint(&self) -> Option<String> {
+        let actions = self.actions?;
+
+        let listed: Vec<String> = actions
+            .iter()
+            .map(|row| {
+                if row.required.is_empty() {
+                    row.name.to_string()
+                } else {
+                    format!("{}({})", row.name, row.required.join(", "))
+                }
+            })
+            .collect();
+
+        Some(format!(
+            "One of: {}. Send action 'help' for every action's arguments.",
+            listed.join(", ")
+        ))
+    }
+
+    /// The tool's actions as text, for the free `help` action (#6).
+    ///
+    /// Generated from the same table the gate decides with, so the answer
+    /// cannot drift from the validation.
+    pub fn help_text(&self) -> Option<String> {
+        let actions = self.actions?;
+        let listed = |names: &'static [&'static str]| {
+            if names.is_empty() {
+                "none".to_string()
+            } else {
+                names.join(", ")
+            }
+        };
+
+        let mut text = format!("{} actions:\n", self.name);
+
+        for row in actions {
+            text.push_str(&format!(
+                "- {}: required {}; optional {}\n",
+                row.name,
+                listed(row.required),
+                listed(row.optional)
+            ));
+        }
+
+        Some(text)
+    }
+
     /// A single-shape tool has no action row, so its closure is checked against
     /// the schema's own properties.
     fn undeclared_key_error(&self, arguments: &Value) -> Option<String> {
@@ -793,6 +845,18 @@ mod tests {
             manifest.conformance(),
             Err(ManifestError::OrphanProperty("unused".to_string()))
         );
+    }
+
+    /// #6: the help answer is generated from the table the gate uses.
+    #[test]
+    fn the_help_text_lists_each_action_with_its_arguments() {
+        let help = dispatching_manifest()
+            .help_text()
+            .expect("a table-bearing tool has help");
+
+        assert!(help.contains("scroll"), "{help}");
+        assert!(help.contains("amount"), "{help}");
+        assert!(help.contains("axis"), "{help}");
     }
 
     #[test]

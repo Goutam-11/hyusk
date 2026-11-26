@@ -1472,6 +1472,15 @@ fn tool_call_signature(name: &str, args: &Value, raw_args: &str) -> String {
     format!("{name}:{normalized}")
 }
 
+/// The `action` a call names, when it names one.
+fn requested_action(arguments: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()?
+        .get("action")?
+        .as_str()
+        .map(str::to_string)
+}
+
 async fn execute_tool(
     tools: &ToolRegistry,
     name: &str,
@@ -1489,6 +1498,14 @@ async fn execute_tool(
             "Tool '{name}' does not exist."
         )));
     };
+
+    // #6: `help` asks the tool to describe its own table and performs nothing,
+    // so the gate answers it here and no confirmation card is armed for it.
+    if requested_action(arguments).as_deref() == Some("help") {
+        if let Some(help) = tool.manifest().help_text() {
+            return Ok(ToolResult::success(help));
+        }
+    }
 
     // W2: one gate before dispatch, so a malformed call has no side effect and
     // comes back with the action's accepted arguments rather than the tool's
@@ -1652,6 +1669,27 @@ mod tests {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(ToolResult::success("ran"))
         }
+    }
+
+    /// #6: `help` is answered from the table, before the tool is entered.
+    #[tokio::test]
+    async fn a_help_call_returns_the_table_without_running_the_tool() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(RecordingTool(Arc::clone(&calls)));
+        let cancel = CancellationToken::new();
+
+        let result = super::execute_tool(&tools, "recording", r#"{"action":"help"}"#, &cancel)
+            .await
+            .expect("executing a known tool returns a result");
+
+        assert!(result.success, "{result:?}");
+        assert!(result.output.contains("scroll"), "{}", result.output);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "help must not run the tool"
+        );
     }
 
     /// W2: the gate runs before the tool, so a call missing an argument has no

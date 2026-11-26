@@ -4,6 +4,16 @@
 
 ### Added
 
+- A dispatching tool now tells the model what each action needs, and answers a
+  free `help` call with the whole table (W3/#6). The schema's `action`
+  description is rendered from the manifest's action table as `action(args)`
+  plus a pointer to `help`, and `help` returns every action with its required
+  and optional arguments. The gate answers `help` before the tool is entered,
+  so nothing runs and no confirmation card is armed; the approval table allows
+  it for a known core tool only, so an external tool keeps its always-ask row
+  and a server's `help` is never answered locally. This is the one edit to
+  `src/tools/safety.rs` in this batch, made with the maintainer's explicit
+  permission.
 - Core tool schemas now close their objects (`additionalProperties: false`),
   and the gate refuses a key no action of that tool accepts (W2/#7). A
   single-shape tool is checked against its schema's properties and a
