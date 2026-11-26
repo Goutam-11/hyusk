@@ -168,13 +168,13 @@ cargo check --all-targets --features workflow-editor
 cargo test --all-targets --features workflow-editor
 ```
 
-`cargo test --all-targets` runs the default suite: 476 passing tests and 6
+`cargo test --all-targets` runs the default suite: 480 passing tests and 6
 ignored. The GTK workflow editor (P3), the mobile link (P5), and Nova Sonic (P6)
-are skipped by default; `--features sonic` is 489 passing and 6 ignored,
-`--features mobile` is 489 passing and 6 ignored, and `--features
-workflow-editor` is 481 passing and 7 ignored (the main binary alone: 476
+are skipped by default; `--features sonic` is 493 passing and 6 ignored,
+`--features mobile` is 493 passing and 6 ignored, and `--features
+workflow-editor` is 485 passing and 7 ignored (the main binary alone: 480
 passing, 6 ignored; the editor contributes five, one of them ignored). All
-features together are 507 passing and 7 ignored. The
+features together are 511 passing and 7 ignored. The
 ignored ones need a real session or network: the four portal smoke tests below,
 a live CDP browser test, a Whisper cancel/cache test, and the GTK workflow
 editor draft test. Coverage includes the computer tool and portal mapping, the

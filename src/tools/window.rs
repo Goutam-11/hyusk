@@ -389,6 +389,11 @@ impl Default for WindowTool {
 
 #[async_trait]
 impl Tool for WindowTool {
+    /// W5: offered only when the probe found a backend for it.
+    fn is_available(&self) -> bool {
+        crate::tools::availability::reason("window").is_none()
+    }
+
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "window",

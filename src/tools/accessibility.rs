@@ -223,6 +223,11 @@ fn pretty(response: &Value) -> String {
 
 #[async_trait]
 impl Tool for AccessibilityTool {
+    /// W5: offered only when the probe found a backend for it.
+    fn is_available(&self) -> bool {
+        crate::tools::availability::reason("accessibility").is_none()
+    }
+
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "accessibility",

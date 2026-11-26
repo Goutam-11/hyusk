@@ -4,6 +4,16 @@
 
 ### Added
 
+- The desktop tools are now offered only when they can work (W5/#8).
+  `browser`, `accessibility` and `window` are probed once at startup - a
+  loopback connection for the CDP endpoint, the AT-SPI bridge script plus a
+  display session, and `NIRI_SOCKET` or a GNOME session - and an unavailable
+  tool is registered but not offered: it is absent from the model specs, a call
+  to it fails closed, and the per-turn capability line names it with the reason
+  so the model plans around the gap instead of discovering it after a round
+  trip. Its manifest and policy row stay in place, so conformance still covers
+  it. The probe is process-cached, so a browser started after Hyusk needs a
+  restart.
 - A dispatching tool now tells the model what each action needs, and answers a
   free `help` call with the whole table (W3/#6). The schema's `action`
   description is rendered from the manifest's action table as `action(args)`

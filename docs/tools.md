@@ -54,6 +54,17 @@ not closed, or no risk class. `register` also refuses a manifest whose name disa
 the tool, a duplicate name, an external tool outside the `ext.` namespace, and a
 core tool that squats it.
 
+## Availability
+
+A desktop tool that cannot work is registered but not offered: `Tool::is_available`
+is probed once (a loopback connect for `browser`, the bridge script and display
+session for `accessibility`, `NIRI_SOCKET` or a GNOME session for `window`), the
+registry drops it from `specs()` and from `get()`, so a stale call fails closed,
+and the per-turn capability line names it with its reason. Its manifest, policy
+row and conformance checks stay in place, so a gated tool is never invisible to
+the checks. The probe is cached for the process; starting the automation browser
+after Hyusk needs a restart, which the prompt's capability line states.
+
 ## Action arguments
 
 A tool that dispatches on `action` declares a `ToolAction` row per action:
