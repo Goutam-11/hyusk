@@ -90,7 +90,9 @@ for the microphone at the same time.
 | `agent/commands.rs` | Deterministic app/site/workflow command router and workflow validation. |
 | `agent/control.rs` | Approval, model-selection, and paused-task state shared with the event loop so control events never wait for a turn (lock order: agent then control). |
 | `apps.rs` | Installed-application discovery for the workflow editor and aliases. |
+| `control_file.rs` | The versioned `hyusk-control.json` parser/writer, its revision rule, and the atomic owner-only write. |
 | `credentials.rs` | Login-keyring lookup and storage for provider keys. |
+| `ctl.rs` | The `hyusk_agent ctl` subcommand that writes one control command for a keybind or script. |
 | `desktop/` | Detects the session and compositor once, and owns the window adapters: niri IPC and the GNOME extension behind one `WindowsBackend` trait. |
 | `link/` | Opt-in TLS WebSocket server, pairing auth, and phone command channel; behind the `mobile` feature (P5). |
 | `paths.rs` | Private per-user runtime directory: owner-only directories and files for generated audio, screenshots, and model output. |

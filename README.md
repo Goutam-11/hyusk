@@ -467,7 +467,8 @@ is restored after restart. To add or replace an API key, use that provider's
 key entry in the indicator (GNOME menu **Settings → API keys**, or the Noctalia
 gear panel). In the GNOME menu the key is written to the login keyring and the
 user service is restarted, so the provider is registered on the next start. In
-the Noctalia panel the key is queued in `hyusk-control.json`; the agent stores
+the Noctalia panel the key is queued in `hyusk-control.json` (the file contract
+is in [docs/integration.md](docs/integration.md)); the agent stores
 it in the login keyring, registers the provider, and reloads its catalog without
 restarting the service, overwriting the control file as soon as it has read the
 key. In both cases the key is not persisted in `commands.json` or the session

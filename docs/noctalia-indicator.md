@@ -96,28 +96,17 @@ because they authenticate outside the keyring.
 ## How it works
 
 The widget reads the same runtime files the GNOME indicator uses, so nothing in
-the agent is Noctalia-specific:
+the agent is Noctalia-specific. Their shapes, versioning, revision rule, and
+command list are the [integration API](integration.md); this page covers the
+widget itself.
 
-```text
-$XDG_RUNTIME_DIR/hyusk-status.json   state, model, catalogs, latest card, timer
-        |                            polled every 1000 ms by the widget, and once
-        v                            a second by the open panel
-barWidget.render / setTooltip  ·  panel.render
+The widget polls `$XDG_RUNTIME_DIR/hyusk-status.json` every 1000 ms (and once a
+second from the open panel), renders from `barWidget.render`/`setTooltip`, and
+writes `$XDG_RUNTIME_DIR/hyusk-control.json` for a click. The agent consumes the
+control file every 250 ms.
 
-$XDG_RUNTIME_DIR/hyusk-control.json  {revision, action, provider, model, key}
-        ^                            written by a click, polled by the agent
-        |                            every 250 ms
-hyusk-control.json consumer in src/main.rs
-```
-
-Actions the widget and panel send: `start_listening`, `stop_task`,
-`stop_listening`, `approve`, `deny`, `dismiss_card`, `set_model`,
-`set_api_key`, `refresh_models`, `run_workflow`, `pair_phone`. `set_api_key` is
-the only one that carries a secret, and the agent rewrites that file to drop it
-within one poll interval.
-
-Each action advances `revision` past whatever is on disk, because the agent
-ignores any control whose revision is not newer than the last one it processed.
+`set_api_key` is the only command that carries a secret; the agent moves it into
+the login keyring and rewrites the control file without it within one poll.
 
 Second boundaries (not every frame) drive the panel: a once-a-second status poll
 and the countdown repaint, and only the Agent tab's digits trigger one.

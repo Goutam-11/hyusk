@@ -8,7 +8,9 @@ compile_error!(
 
 mod agent;
 mod apps;
+mod control_file;
 mod credentials;
+mod ctl;
 mod desktop;
 #[cfg(feature = "mobile")]
 mod link;
@@ -35,10 +37,10 @@ use std::{
 
 use anyhow::{Context, Result};
 use dotenvy::dotenv;
-use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use agent::Agent;
+use control_file::Action;
 #[cfg(any(test, feature = "sonic"))]
 use model::openrouter::OpenRouterClient;
 use model::SharedActiveModel;
@@ -160,11 +162,6 @@ fn gnome_indicator_enabled() -> bool {
 fn emergency_stop_path() -> std::path::PathBuf {
     let directory = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
     std::path::Path::new(&directory).join("hyusk-stop")
-}
-
-fn control_path() -> std::path::PathBuf {
-    let directory = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    std::path::Path::new(&directory).join("hyusk-control.json")
 }
 
 #[cfg(feature = "mobile")]
@@ -322,65 +319,6 @@ fn load_cached_catalogs() -> Option<Vec<status::Catalog>> {
         catalog.fresh = false;
     }
     Some(catalogs)
-}
-
-#[derive(Deserialize)]
-struct ExtensionControl {
-    revision: u64,
-    action: String,
-    provider: Option<String>,
-    model: Option<String>,
-    /// API key written by the indicator for a `set_api_key` action. The agent
-    /// stores it in the keyring and scrubs it from the control file.
-    key: Option<String>,
-    /// Preferred workflow name field for standalone clients. `text` remains
-    /// supported for the GNOME extension and older control writers.
-    workflow: Option<String>,
-    text: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ScheduleControl {
-    #[serde(default)]
-    workflow: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
-    delay_seconds: u64,
-}
-
-fn control_schedule(control: &ExtensionControl) -> Option<ScheduleControl> {
-    let payload = control.text.as_deref()?;
-    let parsed: ScheduleControl = serde_json::from_str(payload).ok()?;
-    (parsed.delay_seconds > 0).then_some(parsed)
-}
-
-/// The runtime event a panel decision produces. `approve` and `deny` are the
-/// only actions that name a confirmation; everything else is not a decision.
-fn approval_decision(action: &str) -> Option<HyuskEvent> {
-    match action {
-        "approve" => Some(HyuskEvent::ApprovalDecision {
-            approved: true,
-            scope: ApprovalScope::Once,
-        }),
-        "approve_turn" => Some(HyuskEvent::ApprovalDecision {
-            approved: true,
-            scope: ApprovalScope::Turn,
-        }),
-        "deny" => Some(HyuskEvent::ApprovalDecision {
-            approved: false,
-            scope: ApprovalScope::Once,
-        }),
-        _ => None,
-    }
-}
-
-fn control_workflow_name(control: &ExtensionControl) -> Option<&str> {
-    control
-        .workflow
-        .as_deref()
-        .or(control.text.as_deref())
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
 }
 
 /// Publish the model catalog for every API provider.
@@ -845,6 +783,22 @@ async fn build_tools(setup: ToolSetup<'_>) -> ToolRegistry {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // A keybind or script writes one control command and exits; it must not
+    // initialise the agent, the audio stack, or the UI.
+    if std::env::args().nth(1).as_deref() == Some("ctl") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        return match ctl::run(&args) {
+            Ok(message) => {
+                println!("{message}");
+                Ok(())
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        };
+    }
+
     // One writer task owns the session snapshot and the status file from here
     // on, so neither is written on the async worker that runs a turn (L2).
     persist::start();
@@ -1153,57 +1107,61 @@ async fn main() -> Result<()> {
     #[cfg(feature = "mobile")]
     let control_link = link_server.clone();
     tokio::spawn(async move {
-        let path = control_path();
+        let path = control_file::path();
         // Do not replay the last menu action after a service restart. The
-        // extension uses wall-clock revisions so actions remain monotonic
-        // across extension reloads as well.
-        let mut seen = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|contents| serde_json::from_str::<ExtensionControl>(&contents).ok())
-            .map(|control| control.revision)
-            .unwrap_or(0);
+        // revision is a wall-clock value, so it stays monotonic across
+        // extension reloads; the parser and writer live in `control_file`
+        // because `hyusk_agent ctl` writes the same file.
+        let mut seen = control_file::read_revision(&path).unwrap_or(0);
         loop {
             tokio::time::sleep(Duration::from_millis(250)).await;
             let Ok(contents) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let Ok(control) = serde_json::from_str::<ExtensionControl>(&contents) else {
+            let Ok(control) = control_file::parse(&contents) else {
                 continue;
             };
             if control.revision <= seen {
                 continue;
             }
             seen = control.revision;
-            let action = control.action.as_str();
-            match action {
-                "start_listening" => {
+
+            match &control.action {
+                Action::StartListening => {
                     let _ = control_tx.send(HyuskEvent::WakeWordDetected).await;
                 }
-                "stop_task" => {
+                Action::StopTask => {
                     let _ = control_tx.send(HyuskEvent::StopRequested).await;
                 }
-                "set_model" => {
-                    if let (Some(provider), Some(model)) = (control.provider, control.model) {
+                Action::SetModel { provider, model } => {
+                    if let (Some(provider), Some(model)) = (provider, model) {
                         let _ = control_tx
-                            .send(HyuskEvent::ModelSelected { provider, model })
+                            .send(HyuskEvent::ModelSelected {
+                                provider: provider.clone(),
+                                model: model.clone(),
+                            })
                             .await;
                     }
                 }
-                "set_api_key" => {
-                    let provider = control.provider.unwrap_or_default().trim().to_string();
-                    let key = control
-                        .key
-                        .or(control.text)
+                Action::SetApiKey {
+                    provider,
+                    key,
+                    text,
+                } => {
+                    let provider = provider.clone().unwrap_or_default().trim().to_string();
+                    let key = key
+                        .clone()
+                        .or_else(|| text.clone())
                         .unwrap_or_default()
                         .trim()
                         .to_string();
-                    // The key was written by the indicator. Overwrite the file
-                    // right away so the secret does not linger in the runtime
+                    // The key was written by a client. Overwrite the file right
+                    // away so the secret does not linger in the runtime
                     // directory; this revision is already consumed, so the
                     // write cannot replay an action.
-                    let _ = std::fs::write(
+                    let _ = control_file::write_atomic(
                         &path,
-                        format!("{{\"revision\":{seen},\"action\":\"key_received\"}}"),
+                        &control_file::encode(&Action::KeyReceived, seen),
                     );
                     if provider.is_empty() || key.is_empty() {
                         status::card(
@@ -1229,11 +1187,11 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-                "refresh_models" => {
+                Action::RefreshModels => {
                     tokio::spawn(refresh_catalogs());
                 }
                 #[cfg(feature = "mobile")]
-                "pair_phone" => {
+                Action::PairPhone => {
                     if let Some(server) = control_link.as_ref() {
                         if let Err(error) = publish_pairing(&server.refresh_pairing()) {
                             eprintln!("[Link] Could not refresh pairing code: {error:#}");
@@ -1247,26 +1205,26 @@ async fn main() -> Result<()> {
                     }
                 }
                 #[cfg(not(feature = "mobile"))]
-                "pair_phone" => {
+                Action::PairPhone => {
                     status::card(
                         "device",
                         "This build has no mobile link. Rebuild with --features mobile.",
                         false,
                     );
                 }
-                "dismiss_card" => status::dismiss(),
-                "approve" | "approve_turn" | "deny" => {
+                Action::DismissCard => status::dismiss(),
+                Action::Approve | Action::ApproveTurn | Action::Deny => {
                     // A click is an approval decision, not a user message: a
                     // stale one must not start a turn or answer as the user.
-                    if let Some(event) = approval_decision(action) {
+                    if let Some(event) = approval_decision(&control.action) {
                         let _ = control_tx.send(event).await;
                     }
                 }
-                "stop_listening" => {
+                Action::StopListening => {
                     let _ = control_tx.send(HyuskEvent::StopListening).await;
                 }
-                "run_workflow" => {
-                    if let Some(name) = control_workflow_name(&control) {
+                Action::RunWorkflow { .. } => {
+                    if let Some(name) = control.action.workflow_name() {
                         // `commands::parse` reads commands.json for each
                         // request, so a standalone editor can save the file
                         // and run the workflow without a service restart.
@@ -1279,15 +1237,15 @@ async fn main() -> Result<()> {
                         status::card("workflow", "A workflow name is required.", false);
                     }
                 }
-                "reload_workflows" => {
+                Action::ReloadWorkflows => {
                     // Workflow configuration is intentionally not cached;
                     // the next run observes the latest commands.json. This
                     // action exists so editors can explicitly acknowledge a
                     // save through the same control channel.
                     status::card("workflow", "Workflow configuration reloaded.", false);
                 }
-                "schedule_workflow" => {
-                    match control_schedule(&control).and_then(|schedule| {
+                Action::ScheduleWorkflow { text } => {
+                    match control_file::control_schedule(text.as_deref()).and_then(|schedule| {
                         schedule
                             .workflow
                             .filter(|name| !name.trim().is_empty())
@@ -1308,8 +1266,8 @@ async fn main() -> Result<()> {
                         ),
                     }
                 }
-                "schedule_reminder" => {
-                    match control_schedule(&control).and_then(|schedule| {
+                Action::ScheduleReminder { text } => {
+                    match control_file::control_schedule(text.as_deref()).and_then(|schedule| {
                         schedule
                             .text
                             .filter(|text| !text.trim().is_empty())
@@ -1330,7 +1288,7 @@ async fn main() -> Result<()> {
                         ),
                     }
                 }
-                _ => {}
+                Action::KeyReceived => {}
             }
         }
     });
@@ -1635,49 +1593,46 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod control_tests {
-    use super::{approval_decision, control_schedule, control_workflow_name, ExtensionControl};
+    use super::approval_decision;
+    use crate::control_file::{control_schedule, parse, Action};
     use crate::types::{event::ApprovalScope, HyuskEvent};
 
     #[test]
     fn standalone_workflow_field_is_preferred() {
-        let control: ExtensionControl = serde_json::from_str(
-            r#"{"revision":7,"action":"run_workflow","workflow":" Focus ","text":"legacy"}"#,
-        )
-        .expect("valid workflow control payload");
+        let control =
+            parse(r#"{"revision":7,"action":"run_workflow","workflow":" Focus ","text":"legacy"}"#)
+                .expect("valid workflow control payload");
 
-        assert_eq!(control_workflow_name(&control), Some("Focus"));
+        assert_eq!(control.action.workflow_name(), Some("Focus"));
     }
 
     #[test]
     fn legacy_text_field_remains_supported() {
-        let control: ExtensionControl =
-            serde_json::from_str(r#"{"revision":8,"action":"run_workflow","text":"  Focus  "}"#)
-                .expect("valid legacy workflow control payload");
+        let control = parse(r#"{"revision":8,"action":"run_workflow","text":"  Focus  "}"#)
+            .expect("valid legacy workflow control payload");
 
-        assert_eq!(control_workflow_name(&control), Some("Focus"));
+        assert_eq!(control.action.workflow_name(), Some("Focus"));
     }
 
     #[test]
     fn blank_workflow_payload_is_rejected() {
-        let control: ExtensionControl = serde_json::from_str(
-            r#"{"revision":9,"action":"run_workflow","workflow":"  ","text":""}"#,
-        )
-        .expect("valid empty workflow control payload");
+        let control = parse(r#"{"revision":9,"action":"run_workflow","workflow":"  ","text":""}"#)
+            .expect("valid empty workflow control payload");
 
-        assert_eq!(control_workflow_name(&control), None);
+        assert_eq!(control.action.workflow_name(), None);
     }
 
     #[test]
     fn approve_and_deny_map_to_an_approval_decision_not_a_user_message() {
         assert!(matches!(
-            approval_decision("approve"),
+            approval_decision(&Action::Approve),
             Some(HyuskEvent::ApprovalDecision {
                 approved: true,
                 scope: ApprovalScope::Once
             })
         ));
         assert!(matches!(
-            approval_decision("deny"),
+            approval_decision(&Action::Deny),
             Some(HyuskEvent::ApprovalDecision {
                 approved: false,
                 scope: ApprovalScope::Once
@@ -1685,40 +1640,56 @@ mod control_tests {
         ));
         // A click is never a user message: that is what made a stale card
         // answer as if the user had spoken.
-        for action in ["approve", "deny"] {
+        for action in [Action::Approve, Action::Deny] {
             assert!(!matches!(
-                approval_decision(action),
+                approval_decision(&action),
                 Some(HyuskEvent::UserInput(_))
             ));
         }
         assert!(matches!(
-            approval_decision("approve_turn"),
+            approval_decision(&Action::ApproveTurn),
             Some(HyuskEvent::ApprovalDecision {
                 approved: true,
                 scope: ApprovalScope::Turn
             })
         ));
-        assert!(matches!(
-            approval_decision("approve"),
-            Some(HyuskEvent::ApprovalDecision {
-                scope: ApprovalScope::Once,
-                ..
-            })
-        ));
-        assert!(approval_decision("dismiss_card").is_none());
-        assert!(approval_decision("start_listening").is_none());
-        assert!(approval_decision("").is_none());
+        assert!(approval_decision(&Action::DismissCard).is_none());
+        assert!(approval_decision(&Action::StartListening).is_none());
+        assert!(approval_decision(&Action::KeyReceived).is_none());
     }
 
     #[test]
     fn schedule_payload_is_decoded_from_control_text() {
-        let control: ExtensionControl = serde_json::from_str(
+        let control = parse(
             r#"{"revision":10,"action":"schedule_workflow","text":"{\"workflow\":\"Focus\",\"delay_seconds\":900}"}"#,
         )
         .expect("valid schedule control payload");
-        let schedule = control_schedule(&control).expect("decoded schedule");
+        let Action::ScheduleWorkflow { text } = control.action else {
+            panic!("expected a schedule action");
+        };
+        let schedule = control_schedule(text.as_deref()).expect("decoded schedule");
         assert_eq!(schedule.workflow.as_deref(), Some("Focus"));
         assert_eq!(schedule.delay_seconds, 900);
+    }
+}
+
+/// The runtime event a panel decision produces. `approve` and `deny` are the
+/// only actions that name a confirmation; everything else is not a decision.
+fn approval_decision(action: &Action) -> Option<HyuskEvent> {
+    match action {
+        Action::Approve => Some(HyuskEvent::ApprovalDecision {
+            approved: true,
+            scope: ApprovalScope::Once,
+        }),
+        Action::ApproveTurn => Some(HyuskEvent::ApprovalDecision {
+            approved: true,
+            scope: ApprovalScope::Turn,
+        }),
+        Action::Deny => Some(HyuskEvent::ApprovalDecision {
+            approved: false,
+            scope: ApprovalScope::Once,
+        }),
+        _ => None,
     }
 }
 

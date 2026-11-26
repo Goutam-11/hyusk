@@ -26,7 +26,9 @@ top-bar butterfly color/label
 The Rust side writes the current state name (`Hidden`, `Waking`, `Listening`,
 `Thinking`, `Working`, `Speaking`) to `$XDG_RUNTIME_DIR/hyusk-state` and richer
 card/model state to `$XDG_RUNTIME_DIR/hyusk-status.json`. The extension reads
-those files, smoothly interpolates the color, and animates the wings. Animation
+those files, smoothly interpolates the color, and animates the wings. The
+status/control file shapes and the full command list are the
+[integration API](integration.md); this page covers the extension itself. Animation
 speed changes by state: working flaps fastest, speaking bounces, thinking tilts,
 idle stays calm.
 
