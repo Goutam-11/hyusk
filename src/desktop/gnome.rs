@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::{Bounds, Window, WindowCapabilities, WindowList, WindowsBackend};
+use super::{Bounds, MoveDestination, Window, WindowCapabilities, WindowList, WindowsBackend};
 
 const SERVICE: &str = "org.hyusk.Shell";
 const PATH: &str = "/org/hyusk/Shell";
@@ -198,10 +198,13 @@ impl<S: ShellApi + Send + Sync> WindowsBackend for GnomeBackend<S> {
             active: true,
             activate: true,
             close: true,
+            last: false,
+            workspace: false,
+            output: false,
         }
     }
 
-    async fn list(&self) -> Result<WindowList> {
+    async fn list(&self, _workspace: Option<u64>) -> Result<WindowList> {
         let raw = self.shell.call("ListWindows", None).await?;
         let windows: Vec<Window> = parse_windows(&raw)?.iter().map(Window::from).collect();
         Ok(WindowList {
@@ -251,6 +254,18 @@ impl<S: ShellApi + Send + Sync> WindowsBackend for GnomeBackend<S> {
                     .unwrap_or("no window matched the query")
             )
         }
+    }
+
+    async fn last(&self) -> Result<String> {
+        anyhow::bail!("the GNOME adapter does not implement `last`")
+    }
+
+    async fn move_to(&self, _query: &str, _destination: &MoveDestination) -> Result<String> {
+        anyhow::bail!("the GNOME adapter does not implement `move`")
+    }
+
+    async fn outputs(&self) -> Result<String> {
+        anyhow::bail!("the GNOME adapter does not implement `output`")
     }
 }
 
@@ -305,12 +320,27 @@ mod tests {
         }
     }
 
+    /// Guard (written after the capability declaration): GNOME does not have
+    /// workspace/output navigation, so the tool refuses those actions instead
+    /// of the adapter guessing.
+    #[test]
+    fn navigation_capabilities_are_reported_unavailable() {
+        let capabilities = GnomeBackend::new(Recorded::default()).capabilities();
+        assert!(capabilities.list);
+        assert!(capabilities.active);
+        assert!(capabilities.activate);
+        assert!(capabilities.close);
+        assert!(!capabilities.last);
+        assert!(!capabilities.workspace);
+        assert!(!capabilities.output);
+    }
+
     #[tokio::test]
     async fn list_renders_the_recorded_extension_payload_exactly_as_before() {
         let (shell, recorded) = Recorded::with(vec![Ok(RECORDED_WINDOWS.to_string())]);
         let backend = GnomeBackend::new(shell);
 
-        let list = backend.list().await;
+        let list = backend.list(None).await;
         assert!(
             list.is_ok(),
             "the recorded window list must parse: {:?}",

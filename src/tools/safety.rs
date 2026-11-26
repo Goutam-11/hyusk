@@ -317,8 +317,9 @@ impl ToolName {
             },
             ToolName::Window => ToolPolicy {
                 decision: Decision::Classified(window_requires_approval),
-                guidance: "listing, reading the active window, and activating a window \
-                           run freely; closing a window asks",
+                guidance: "listing, reading the active window, listing outputs, and \
+                           activating or returning to a window run freely; closing or \
+                           moving a window asks",
                 preview_keys: &["action", "query", "id"],
                 input_paths: &[],
             },
@@ -745,7 +746,7 @@ fn preference_needs_consent(args: &Value) -> bool {
 }
 
 fn window_requires_approval(args: &Value) -> bool {
-    action(args) == "close"
+    matches!(action(args), "close" | "move")
 }
 
 /// Read-only and navigation actions stay free; every action that mutates the
@@ -2279,6 +2280,29 @@ mod tests {
         Decision, FocusContext, ToolName, PREVIEW_LIMIT, TOOLS_WITHOUT_INPUT_PATHS,
     };
     use serde_json::Value;
+
+    /// #22: moving a window changes its placement, so it asks; reading and
+    /// focusing, including the new navigation reads, stay free.
+    #[test]
+    fn window_move_asks_while_navigation_stays_free() {
+        assert!(check(
+            "window",
+            r#"{"action":"move","query":"kitty","workspace":2}"#
+        ));
+        assert!(check(
+            "window",
+            r#"{"action":"move","query":"kitty","output":"eDP-1"}"#
+        ));
+        for free in [
+            r#"{"action":"last"}"#,
+            r#"{"action":"output"}"#,
+            r#"{"action":"list","workspace":1}"#,
+            r#"{"action":"activate","query":"kitty"}"#,
+            r#"{"action":"active"}"#,
+        ] {
+            assert!(!check("window", free), "{free}");
+        }
+    }
 
     /// G1: an ordinary preference is saved without a card, but one that could
     /// expose private data, spend money, or change other applications asks.
