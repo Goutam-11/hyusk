@@ -34,9 +34,5 @@ separate `hyusk` workspace CLI.
 - [Bedrock Nova Sonic](bedrock-nova-sonic.md) covers the speech-to-speech
   provider, AWS credentials, and live testing.
 
-Research and audit notes are kept for context and may describe work that has
-since shipped: [agent-loop research](agent-loop-research.md) and the
-[laptop agent audit](laptop-agent-audit.md).
-
 The top-level [`README.md`](../README.md) is the starting point for running the
 binary and understanding its current status.

@@ -72,12 +72,6 @@ Wayland, logging out and back in is the reliable Shell reload; the `Alt`+`F2`,
 `r` shortcut applies to Xorg sessions. A new panel menu item may therefore not
 appear until the next Shell reload or login.
 
-The checked-in control-deck review image
-([`workflows-desktop.png`](../.impeccable/review/workflows-desktop.png)) is an
-actual GTK render populated with illustrative sample workflows from a temporary
-config. It does not show the user's configured routines and is not a live GNOME
-Shell render.
-
 For phone pairing, open **Connect phone → Enable laptop link** once. This
 creates a local TLS identity, configures the Hyusk user service, and restarts it.
 Then choose **Generate fresh code** and **Copy pairing code**. Transfer the code
