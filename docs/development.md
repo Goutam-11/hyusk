@@ -231,8 +231,8 @@ only an animated status visual.
 
 Run `scripts/install-autostart.sh` from this crate to build and install the
 `hyusk.service` user unit. It is bound to `graphical-session.target`, so it
-starts after GNOME login and stops when the graphical session ends or the
-laptop powers down. The unit captures stdout/stderr in journald with the
+starts after graphical login (GNOME or niri) and stops when the graphical
+session ends or the laptop powers down. The unit captures stdout/stderr in journald with the
 identifier `hyusk` and enables Rust backtraces for crash diagnosis.
 
 ```bash
@@ -253,8 +253,10 @@ Use `scripts/uninstall-autostart.sh` to disable and remove the unit.
   silence, gives up after `STT_NO_SPEECH_MS` without speech, and needs a
   compatible Whisper model at `STT_MODEL`. First-time model loading cannot be
   interrupted.
-- GNOME Wayland uses the RemoteDesktop and Screenshot portals. The first input
-  or screenshot action requires the user to approve a portal dialog.
+- GNOME Wayland uses the RemoteDesktop and Screenshot portals; the first input
+  or screenshot action requires the user to approve a portal dialog. A niri
+  session usually has no RemoteDesktop backend, so `desktop_doctor` reports
+  input through the portal as unavailable there.
 - Absolute pointer moves on the portal path are translated to relative motion
   because a RemoteDesktop-only session has no PipeWire stream; the tool tracks
   the pointer position from an XWayland hint when available.

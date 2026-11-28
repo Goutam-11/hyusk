@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 authors = ["Hyusk Contributors"]
-repository = "https://github.com/hyusk/hyusk"
+repository = "https://github.com/Goutam-11/hyusk"
 autobins = false
 
 [[bin]]

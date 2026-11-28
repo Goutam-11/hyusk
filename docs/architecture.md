@@ -51,8 +51,10 @@ for the microphone at the same time.
 2. Read the saved provider/model selection from `~/.config/hyusk/config.json`,
    falling back to `OPENROUTER_MODEL` and the first configured provider.
 3. Register the core tools, the `browser` tool when its CDP configuration
-   loads, and on Linux the `accessibility`, `window`, and `desktop_doctor` tools
-   unconditionally (they report unavailability at call time).
+   loads, and on Linux `accessibility`, `window`, and `desktop_doctor`. The
+   desktop tools are probed once: an unavailable tool stays registered but is
+   not offered, a call to it fails closed, and the per-turn capability line
+   names it with the reason (W5).
 4. Start the optional TLS link server and register `mobile` when
    `HYUSK_LINK_ENABLED` is set.
 5. Construct `Agent` and `SharedActiveModel` with a per-turn system prompt and
