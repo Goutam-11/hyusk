@@ -98,7 +98,11 @@ outside the keyring.
 The widget reads the same runtime files the GNOME indicator uses, so nothing in
 the agent is Noctalia-specific. Their shapes, versioning, revision rule, and
 command list are the [integration API](integration.md); this page covers the
-widget itself.
+widget itself. Every command it writes carries `schema: 1`.
+
+It hosts no window service: on niri the agent uses the compositor's own IPC
+(`src/desktop/niri.rs`), and the GNOME-only `org.hyusk.Shell` service is never
+involved.
 
 The widget polls `$XDG_RUNTIME_DIR/hyusk-status.json` every 1000 ms (and once a
 second from the open panel), renders from `barWidget.render`/`setTooltip`, and

@@ -2,7 +2,25 @@
 
 `gnome-extension/hyusk@hyusk.local` is a small GNOME Shell extension that shows
 the Hyusk agent state in the top bar as an animated pearl-white butterfly with a
-state-colored aura.
+state-colored aura, and hosts the shell-side window service the agent uses on
+GNOME.
+
+## Two jobs
+
+The extension has two independent parts, composed only by `extension.js`:
+
+- **Indicator** (`lib/indicator.js`) - the top-bar butterfly, menu, and response
+  card. It is a client of the [integration API](integration.md): it polls
+  `hyusk-status.json` and writes `hyusk-control.json`. The agent does not know
+  it exists.
+- **Window service** (`lib/window-service.js`) - `org.hyusk.Shell` on the
+  session bus, the only way the agent can list, focus, and close windows on
+  GNOME. `lib/windows.js` holds the Meta calls; the service module owns the
+  D-Bus name and object lifecycle. `src/desktop/gnome.rs` is the agent's side.
+
+Neither part imports the other. Disabling the extension removes both; the agent
+still starts, publishes the runtime files, and answers, and only the `window`
+tool reports that its GNOME backend is unavailable.
 
 ## How it works
 
@@ -87,7 +105,7 @@ address and port 4488; a firewall may need a trusted-network rule.
 
 | Path | Purpose |
 | --- | --- |
-| `extension.js` | Enables the indicator and exports the D-Bus window service |
+| `extension.js` | Composes the two independent parts: indicator and window service |
 | `lib/indicator.js` | Panel button, status polling, state fan-out |
 | `lib/drawing.js` | Animated butterfly and state aura |
 | `lib/responseCard.js` | Floating reply / approval card |
@@ -96,7 +114,8 @@ address and port 4488; a firewall may need a trusted-network rule.
 | `lib/menu/models.js` | Model picker with provider groups |
 | `lib/menu/phone.js` | Phone pairing submenu |
 | `lib/menu/credentials.js` | API key submenu |
-| `lib/windows.js` | Window list/activate/close over D-Bus |
+| `lib/window-service.js` | Owns the `org.hyusk.Shell` D-Bus name and object |
+| `lib/windows.js` | Window list/activate/close over Meta and D-Bus |
 | `lib/runtime.js` | Runtime and `commands.json` file access |
 | `lib/state.js` | State names, labels, and the palette |
 | `lib/motion.js` | Reduced-motion policy |

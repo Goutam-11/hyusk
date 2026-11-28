@@ -28,7 +28,7 @@ Windows branch; `platform_tests` in `src/main.rs` guards both conditions.
 | `src/ui/` | Transparent `eframe` orb overlay. |
 | `src/link/` | Opt-in TLS WebSocket mobile-link server. |
 | `src/types/` | Messages and internal events. |
-| `gnome-extension/hyusk@hyusk.local/` | GNOME Shell top-bar indicator. |
+| `gnome-extension/hyusk@hyusk.local/` | GNOME Shell top-bar indicator and the shell-side `org.hyusk.Shell` window service. |
 | `noctalia-plugin/` | Noctalia v5 bar widget and settings panel. |
 | `android/` | Kotlin companion app (Material 3). |
 | `scripts/` | Installers, wake training, mobile link, browser control, AT-SPI bridge. |
@@ -63,11 +63,11 @@ cargo check --all-targets --offline --features mobile
 cargo test --all-targets --offline --features mobile -- --test-threads=4
 ```
 
-Current baseline: **524 tests passing, 6 ignored** for the default suite.
-`--features mobile` restores the link (537 passing, 6 ignored). The workflow
+Current baseline: **527 tests passing, 6 ignored** for the default suite.
+`--features mobile` restores the link (540 passing, 6 ignored). The workflow
 editor adds five tests (one ignored) under `--features workflow-editor`, for
-**529 passing, 7 ignored**; all features together (mobile and the editor) are
-**542 passing, 7 ignored**. Default clippy is clean; the three pre-existing
+**532 passing, 7 ignored**; all features together (mobile and the editor) are
+**545 passing, 7 ignored**. Default clippy is clean; the three pre-existing
 `result_large_err` warnings live behind `mobile` in `src/link/server.rs` and
 appear with that feature. CI runs fmt, clippy, the
 default tests, and the feature builds on Ubuntu.

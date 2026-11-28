@@ -264,6 +264,7 @@ local function next_revision()
 end
 
 local function send(payload)
+  payload.schema = 1
   payload.revision = next_revision()
   local encoded = noctalia.json.encode(payload)
   if not encoded then

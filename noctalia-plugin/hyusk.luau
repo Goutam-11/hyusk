@@ -257,7 +257,7 @@ local function next_revision()
 end
 
 local function send(action)
-  local payload = string.format('{"revision":%d,"action":"%s"}', next_revision(), action)
+  local payload = string.format('{"schema":1,"revision":%d,"action":"%s"}', next_revision(), action)
   local ok, err = noctalia.writeFile(CONTROL, payload)
   if not ok then
     noctalia.notifyError("Hyusk", err or "could not write " .. CONTROL)
