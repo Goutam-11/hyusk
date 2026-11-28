@@ -25,7 +25,8 @@ Both files carry `"schema": 1`.
   you write.
 - The GNOME extension and the Noctalia widget are clients of this contract, not
   part of it. Their panel layout and menus can change without changing either
-  file.
+  file. Both bundled clients write `schema: 1`; a reader still accepts an older
+  command without it.
 
 ## `hyusk-status.json` (read-only)
 
@@ -131,7 +132,13 @@ Example commands:
 { "schema": 1, "revision": 1764266400125, "action": "set_model", "provider": "openrouter", "model": "openai/gpt-4o-mini" }
 ```
 
-### Writing from a keybind or script
+## Worked examples
+
+Every surface below polls `hyusk-status.json` and writes one command to
+`hyusk-control.json` with a revision newer than the file on disk. Nothing else
+is shared, and the agent never learns which surface is running.
+
+### Keybind
 
 `hyusk_agent ctl` writes one valid command with the next revision, atomically
 and with mode `0600`. It needs nothing but the installed agent binary:
@@ -161,57 +168,59 @@ binds {
 }
 ```
 
-### Writing from a bar widget
+### GNOME indicator
 
-A widget reads the status file and writes a control file. The write is a
-temporary file in the same directory followed by a rename, so the agent never
-sees a partial command:
-
-```js
-const fs = require("node:fs");
-const path = require("node:path");
-
-const runtime = process.env.XDG_RUNTIME_DIR || "/tmp";
-const statusPath = path.join(runtime, "hyusk-status.json");
-const controlPath = path.join(runtime, "hyusk-control.json");
-
-function readStatus() {
-  try {
-    return JSON.parse(fs.readFileSync(statusPath, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-function send(action) {
-  let previous = {};
-  try {
-    previous = JSON.parse(fs.readFileSync(controlPath, "utf8"));
-  } catch {
-    // No command yet, or a foreign file: start from the clock.
-  }
-  const revision = Math.max(Date.now(), Number(previous.revision || 0) + 1);
-  const temporary = `${controlPath}.${process.pid}.tmp`;
-  fs.writeFileSync(
-    temporary,
-    JSON.stringify({ schema: 1, revision, action }),
-    { mode: 0o600 }
-  );
-  fs.renameSync(temporary, controlPath);
-}
-
-// A click on the card:
-send("approve");
-```
-
-Reading is equally small:
+`gnome-extension/hyusk@hyusk.local/lib/indicator.js` polls the status file every
+500 ms and fans the result out to the butterfly, the menu, and the response
+card; `lib/runtime.js` writes a control command for a menu action. The runtime
+directory is the whole interface, so the indicator needs no agent-side hook:
 
 ```js
-const status = readStatus();
-const label = status?.latest?.kind === "approval" ? "Approve" : status?.state;
+// gnome-extension/hyusk@hyusk.local/lib/runtime.js (excerpt)
+export function writeControl(action) {
+    controlRevision = Math.max(Date.now(), controlRevision + 1);
+    const payload = { schema: 1, revision: controlRevision, action };
+    // provider, model, and text are appended when the action carries them.
+
+    const file = Gio.File.new_for_path(controlPath());
+    const bytes = new TextEncoder().encode(JSON.stringify(payload));
+    file.replace_contents(bytes, null, false,
+        Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+}
 ```
 
-### Writing from a shell script
+The window service in the same extension (`lib/window-service.js`) is not part
+of this contract: it is the GNOME backend for the `window` tool, called only by
+the agent. An indicator that is not installed changes neither file.
+
+### Noctalia widget
+
+`noctalia-plugin/hyusk.luau` renders from the same status file and advances the
+revision past whatever is on disk, so a click still wins after an agent or shell
+restart:
+
+```luau
+local function next_revision()
+  local revision = 0
+  local existing = decode((noctalia.readFile(CONTROL)))
+  if existing and type(existing.revision) == "number" then
+    revision = existing.revision
+  end
+  return math.max(now_ms(), revision + 1)
+end
+
+local function send(action)
+  local payload = string.format(
+    '{"schema":1,"revision":%d,"action":"%s"}', next_revision(), action)
+  noctalia.writeFile(CONTROL, payload)
+end
+```
+
+Its keybind surface is Noctalia's own IPC, `noctalia msg plugin
+hyusk/indicator:hyusk all start_listening`; the panel behind the gear writes the
+same command for model selection, an API key, and the response card.
+
+### Shell script
 
 Prefer `hyusk_agent ctl`; it handles the revision. If JSON must be written by
 hand, advance the revision and replace the file atomically:
@@ -228,9 +237,10 @@ mv "$tmp" "$runtime/hyusk-control.json"
 ## What this API is not
 
 - It is not the compositor window service. `org.hyusk.Shell` is the GNOME
-  window backend used by the `window` tool inside `src/desktop/`; a third-party
-  bar should not implement or depend on it. Window control is a desktop-adapter
-  concern, not an indicator feature.
+  window service in the extension's `lib/window-service.js`, called by the
+  `window` tool through `src/desktop/gnome.rs`. It is a desktop adapter, not an
+  indicator feature: a third-party bar should not implement or depend on it,
+  and neither bundled indicator hosts it.
 - It is not a remote control channel. Both files live in the per-session runtime
   directory and are owner-only; there is no network listener, and the control
   file is validated by the same parser for a plugin, `hyusk_agent ctl`, and a

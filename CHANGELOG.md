@@ -348,6 +348,18 @@
 
 ### Changed
 
+- The GNOME extension composes two independent parts (#29): the top-bar
+  indicator, which is only a client of the runtime files, and a shell-side
+  `org.hyusk.Shell` window service in `lib/window-service.js` that the agent
+  reaches through `src/desktop/gnome.rs`. Neither imports the other, so the bar
+  and the desktop backend can be reasoned about (and disabled) separately; with
+  no bar installed the agent still starts, publishes both runtime files, and
+  answers. The agent also stops polling the legacy `hyusk-stop` marker file:
+  clients drive it only through `hyusk-control.json`. `docs/integration.md` gains
+  a worked example for the GNOME indicator, the Noctalia widget, and a keybind.
+- The bundled GNOME and Noctalia clients write `schema: 1` with every control
+  command, matching `hyusk_agent ctl` and the documented contract (#29). Readers
+  still accept an older command without the field.
 - The README is a user-facing page again: CI, version, and licence badges; a
   current pearl-white hero, a runtime diagram, and a surfaces diagram; an honest
   pre-release status; a one-block install; a short configuration table; and

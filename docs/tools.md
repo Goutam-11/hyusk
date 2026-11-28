@@ -412,9 +412,8 @@ falls back to the `computer` tool (screenshot + vision or OCR).
 
 `WindowTool` lists, inspects, switches, and navigates desktop windows through
 the adapter for the detected session: niri's own IPC (`niri msg`) on niri, and
-the Hyusk
-GNOME Shell extension's `org.hyusk.Shell` D-Bus interface on GNOME. This is the
-reliable way to switch applications on Wayland, where AT-SPI cannot raise
+the Hyusk GNOME extension's `org.hyusk.Shell` window service on GNOME. This is
+the reliable way to switch applications on Wayland, where AT-SPI cannot raise
 windows. Detection lives in `src/desktop/` and reads `NIRI_SOCKET`,
 `XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`, and `WAYLAND_DISPLAY` once; the
 `window` tool, the per-turn desktop context, the approval gate's focus read, and

@@ -159,11 +159,6 @@ fn gnome_indicator_enabled() -> bool {
     }
 }
 
-fn emergency_stop_path() -> std::path::PathBuf {
-    let directory = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    std::path::Path::new(&directory).join("hyusk-stop")
-}
-
 #[cfg(feature = "mobile")]
 fn pairing_path() -> Option<std::path::PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR")
@@ -665,7 +660,6 @@ async fn main() -> Result<()> {
     println!();
 
     tools::computer::cleanup_screenshots();
-    let _ = std::fs::remove_file(emergency_stop_path());
 
     // Credentials are resolved keyring-first, then the environment, so a key
     // saved from an indicator applies without a restart.
@@ -890,23 +884,6 @@ async fn main() -> Result<()> {
         .await
         {
             eprintln!("❌ Agent task stopped: {}", error);
-        }
-    });
-
-    // The GNOME indicator writes this small runtime marker from its Stop
-    // action. Polling avoids giving a Shell extension broad control over the
-    // process while still working reliably on a locked-down Wayland session.
-    let stop_tx = agent_tx.clone();
-    tokio::spawn(async move {
-        let path = emergency_stop_path();
-        loop {
-            tokio::time::sleep(Duration::from_millis(150)).await;
-            if path.exists() {
-                let _ = std::fs::remove_file(&path);
-                if stop_tx.send(HyuskEvent::StopRequested).await.is_err() {
-                    break;
-                }
-            }
         }
     });
 
@@ -2019,6 +1996,117 @@ mod platform_tests {
         assert!(
             tools.contains("#[cfg(feature = \"mobile\")]\npub mod mobile;"),
             "the mobile tool must be feature-gated"
+        );
+    }
+
+    /// #29: the GNOME extension does two jobs and must keep them apart. The
+    /// panel indicator is one client of the runtime files; the
+    /// `org.hyusk.Shell` export is a shell-side window service for the GNOME
+    /// desktop adapter. Probe: written before the split, so `extension.js` owned
+    /// both and failed.
+    #[test]
+    fn the_gnome_extension_splits_indicator_from_window_service() {
+        let extension = manifest_dir().join("gnome-extension/hyusk@hyusk.local");
+        let entry = std::fs::read_to_string(extension.join("extension.js"))
+            .expect("read the extension entry point");
+        let service_path = extension.join("lib/window-service.js");
+        assert!(
+            service_path.exists(),
+            "{} must hold the shell-side window service",
+            service_path.display()
+        );
+        let service = std::fs::read_to_string(&service_path).expect("read the window service");
+
+        for needle in ["DBusExportedObject", "bus_own_name"] {
+            assert!(
+                !entry.contains(needle),
+                "extension.js still owns {needle}; the D-Bus export belongs to lib/window-service.js"
+            );
+            assert!(
+                service.contains(needle),
+                "lib/window-service.js must own {needle}"
+            );
+        }
+
+        assert!(
+            entry.contains("from './lib/window-service.js'"),
+            "extension.js must compose the window service"
+        );
+        assert!(
+            entry.contains("HyuskWindowService"),
+            "extension.js must enable and disable the window service by name"
+        );
+
+        for ui in ["indicator.js", "drawing.js", "responseCard.js", "menu/"] {
+            let import = format!("from './{ui}");
+            assert!(
+                !service.contains(&import),
+                "the window service must not import the indicator UI ({ui})"
+            );
+        }
+
+        let indicator = std::fs::read_to_string(extension.join("lib/indicator.js"))
+            .expect("read the panel indicator");
+        for needle in ["WindowControl", "org.hyusk.Shell"] {
+            assert!(
+                !indicator.contains(needle),
+                "the panel indicator must not carry the window backend ({needle})"
+            );
+        }
+    }
+
+    /// #29: bars drive the agent through `hyusk-status.json` and
+    /// `hyusk-control.json` only. The retired stop-marker file was a second
+    /// channel that no shipped client wrote; its name is assembled below so the
+    /// guard does not match itself.
+    #[test]
+    fn the_agent_has_one_plugin_contract() {
+        let marker = ["hyusk", "stop"].join("-");
+        let mut sources = Vec::new();
+        rust_sources(&manifest_dir().join("src"), &mut sources);
+
+        let offenders: Vec<String> = sources
+            .iter()
+            .filter(|path| {
+                std::fs::read_to_string(path)
+                    .map(|text| text.contains(&marker))
+                    .unwrap_or(false)
+            })
+            .map(|path| path.display().to_string())
+            .collect();
+
+        assert!(
+            offenders.is_empty(),
+            "a second plugin channel remains ({marker}): {offenders:#?}"
+        );
+    }
+
+    /// #29: the bundled surfaces are clients of the documented contract, so
+    /// they write `schema: 1` like `hyusk_agent ctl` does. Probe: written
+    /// before the three writers were updated, and failed.
+    #[test]
+    fn the_bundled_surfaces_write_the_documented_schema() {
+        let extension = std::fs::read_to_string(
+            manifest_dir().join("gnome-extension/hyusk@hyusk.local/lib/runtime.js"),
+        )
+        .expect("read the GNOME runtime helper");
+        assert!(
+            extension.contains("{ schema: 1, revision: controlRevision, action }"),
+            "the GNOME indicator must write schema 1 with every command"
+        );
+
+        let widget = std::fs::read_to_string(manifest_dir().join("noctalia-plugin/hyusk.luau"))
+            .expect("read the Noctalia widget");
+        assert!(
+            widget.contains(r#"{"schema":1,"revision":%d,"action":"%s"}"#),
+            "the Noctalia widget must write schema 1 with every command"
+        );
+
+        let panel = std::fs::read_to_string(manifest_dir().join("noctalia-plugin/settings.luau"))
+            .expect("read the Noctalia panel");
+        assert!(
+            panel.contains("payload.schema = 1"),
+            "the Noctalia panel must write schema 1 with every command"
         );
     }
 }

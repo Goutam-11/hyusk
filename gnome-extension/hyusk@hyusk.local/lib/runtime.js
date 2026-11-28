@@ -73,7 +73,7 @@ let controlRevision = Date.now();
 export function writeControl(action, provider = null, model = null, text = null) {
     controlRevision = Math.max(Date.now(), controlRevision + 1);
     /** @type {Record<string, unknown>} */
-    const payload = { revision: controlRevision, action };
+    const payload = { schema: 1, revision: controlRevision, action };
     if (provider)
         payload.provider = provider;
     if (model)
