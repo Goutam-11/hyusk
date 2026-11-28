@@ -690,6 +690,12 @@
 
 ### Removed
 
+- Removed the design-exploration artefacts, the mobile design-system mockup
+  set, and the two superseded research and audit documents that nothing in the
+  build reads (#25). Their conclusions live in `docs/architecture.md`,
+  `issues/README.md`, and Git history; the docs index and the GNOME indicator
+  page no longer link to them.
+
 - The six per-area work trackers under `issues/` (permission, shell, desktop,
   secrets, the agent loop, and architecture). Every item is closed or deferred,
   and the folder is now the one-page record in `issues/README.md`: what shipped,
