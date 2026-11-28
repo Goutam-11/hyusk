@@ -1,911 +1,193 @@
 <p align="center">
-  <img src="assets/readme/banner_hyusk_readme-hero_20260916_dark.svg" width="100%" alt="Hyusk — your voice-first desktop agent for Linux">
+  <img src="assets/readme/hero_hyusk_20261128.svg" width="100%" alt="Hyusk — a local-first voice agent for your Linux desktop">
+</p>
+
+<h1 align="center">Hyusk</h1>
+
+<p align="center">
+  <strong>A local-first voice agent for your Linux desktop.</strong><br>
+  Talk or type. Hyusk controls your desktop, runs your routines, and remembers what matters —
+  without sending your screen or files to a provider unless it has to.
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#tools">Tools</a> ·
-  <a href="#native-voice-workflows-no-llm">Workflows</a> ·
-  <a href="#memory">Memory</a> ·
+  <a href="https://github.com/Goutam-11/hyusk/actions/workflows/ci.yml"><img src="https://github.com/Goutam-11/hyusk/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <img src="https://img.shields.io/badge/version-0.1.0-blue" alt="Version 0.1.0">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/platform-Linux-lightgrey" alt="Linux">
+  <img src="https://img.shields.io/badge/rust-stable-orange" alt="Rust stable">
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#first-run">First run</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="docs/tools.md">Tools</a> ·
+  <a href="docs/integration.md">Integration API</a> ·
   <a href="docs/development.md">Development</a>
 </p>
 
-# Hyusk Agent
+> **Status: pre-release (0.1.0), not yet a daily driver.** The core agent,
+> tools, memory, and the niri/GNOME window adapters are implemented and tested.
+> Live provider calls, a live Android reconnect, Nova Sonic, the indicator
+> panels, the portals, and the installer have not all been verified end to end,
+> and reliability is still being hardened. Use it with that in mind.
 
-`hyusk_agent` is an experimental Linux agent runtime for the Hyusk project. It combines an OpenRouter-compatible chat model, structured function
-calling, local process tools, an event-driven agent task, a small `eframe`
-status overlay, and optional voice components.
+## Why Hyusk
 
-This directory is its own Cargo workspace. It is separate from the main
-`hyusk` CLI in the parent project, and its manifest declares the package
-metadata, dependency versions, build profiles, and `Cargo.lock` itself, so a
-fresh clone of this repository builds, tests, and installs on its own with
-`target/` here.
+- **Voice first, typing always available.** Say "switch to the browser" or type
+  the same request into the terminal; both reach the same agent.
+- **Local-first where it counts.** Wake word, speech-to-text, text-to-speech,
+  memory, and workflows run on your machine. A model is called only for
+  open-ended work.
+- **Native Linux control.** niri IPC and the Hyusk GNOME extension manage
+  windows; accessibility and the desktop portal handle the rest.
+- **Consequential actions ask first.** The approval gate is explicit, audited,
+  and cannot be talked around by the model.
+- **Yours to extend.** Tools, workflows, MCP servers, external tool processes,
+  and every UI surface read the same documented runtime files.
+
+## How it works
 
 <p align="center">
-  <img src="assets/readme/infographic_hyusk_runtime-architecture_20260916_dark.svg" width="100%" alt="Hyusk request routing architecture">
+  <img src="assets/readme/architecture_hyusk_20261128.svg" width="100%" alt="Voice or typed input reaches the Hyusk runtime, then local actions and agent tools, and produces an answer, a card, and a memory update">
 </p>
 
-## Current status
+Deterministic requests — apps, sites, windows, timers, workflows — are routed
+locally. Open-ended requests go to an OpenAI-compatible provider, with tools,
+memory, and approvals flowing through one turn loop. See
+[`ARCHITECTURE.md`](ARCHITECTURE.md) for the short version and
+[`docs/architecture.md`](docs/architecture.md) for the module walkthrough.
 
-| Area | State |
-| --- | --- |
-| OpenRouter chat and structured tool calling | Implemented |
-| Shell, process, media, and computer tools | Implemented |
-| Event-driven agent runtime and restart-safe recent history | Implemented; bounded compaction plus private `session.json` persistence |
-| Animated desktop status overlay | Implemented, visual only |
-| Desktop/GUI control | Implemented; GNOME/Wayland uses the desktop portal with a one-time approval |
-| Accessibility control | Implemented; AT-SPI2 via a `pyatspi` bridge for fast app control |
-| Interruptible async turns | Implemented; a new typed message cancels immediately, and a wake-word probe replaces the turn when non-empty speech is transcribed |
-| Circular desktop orb | Implemented; optional when the GNOME top-bar indicator is installed |
-| GNOME top-bar indicator | Implemented as a Shell extension in `gnome-extension/` |
-| Noctalia bar widget (niri, Hyprland, Sway) | Implemented as a Noctalia v5 plugin in `noctalia-plugin/` |
-| Persistent memory | Implemented; SQLite + FTS5 hybrid retrieval, knowledge-graph triples, readable Markdown export |
-| System context in prompt | Implemented; OS, distro, session type, host, date/time |
-| Wake-word detection | Optional; auto-selects the first available of `hey_hyusk`, `hey_livekit`, `alexa`, `nihao_livekit`, `hey_jarvis`, `hey_mycroft`, `hey_rhasspy` |
-| Speech-to-text | Connected to the wake flow when a Whisper model loads |
-| Text-to-speech | Invoked and awaited after responses; depends on local tools |
-| Amazon Nova Sonic live voice | Implemented behind the `sonic` build feature; a default build has no AWS SDK, second agent loop, or `bedrock-sonic` provider |
-| Guarded long-running model/tool loops | Implemented; configurable round/time limits, cancellation, and no-progress detection |
-| Background model/Codex tasks | Implemented; bounded concurrency with list, cancel, completion cards, and announcements |
-| Persistent reminders and workflow schedules | Implemented; one-shot jobs survive service restarts |
-| Android companion link | Implemented behind the `mobile` build feature; opt-in TLS WebSocket pairing over LAN/Tailscale with typed remote phone actions |
-| Android companion app | Implemented under `android/`; Material 3 command deck, Accessibility control, voice session, notification replies, encrypted local settings/cache |
+## Requirements
 
-The `models/` directory currently contains Whisper and Piper assets plus the
-downloaded temporary `hey_livekit.onnx` classifier. The detector is optional:
-startup logs a warning and continues in text/GUI mode when no classifier is
-available. Downloads are handled by `scripts/download-wake-word.sh`.
+- **Linux**, Wayland or X11. niri and GNOME are first-class; Sway, Hyprland,
+  and KDE sessions are detected, while window adapters currently exist for niri
+  and GNOME.
+- **Rust stable** and a C compiler. Native package lists for Fedora, Debian,
+  and Ubuntu are in [`docs/development.md`](docs/development.md).
+- **A display session** and at least one provider key (OpenRouter, OpenAI API,
+  or Amazon Bedrock Mantle).
+- **Optional:** a microphone for voice, a wake-word model, a Whisper model, and
+  a Piper voice. Hyusk starts in text mode when they are absent.
 
-`WAKE_WORD_MODEL` selects the classifier. When it is unset, the first available
-candidate is used automatically in the order `hey_hyusk`, `hey_livekit`, `alexa`,
-`nihao_livekit`, `hey_jarvis`, `hey_mycroft`, `hey_rhasspy`.
-Set `WAKE_DEBUG=1` to print live audio level, gate, and per-classifier
-confidence scores while tuning the detector. STT is initialized from `STT_MODEL` and falls back to text-only
-mode when it cannot load.
-
-## Quick start
-
-From this directory:
+## Install
 
 ```bash
-cd hyusk_agent
+git clone https://github.com/Goutam-11/hyusk.git
+cd hyusk
 cp .env.example .env
-chmod 600 .env   # the file holds a live provider key
-# Edit .env, or export the variables in your shell.
-cargo check
-cargo run
+chmod 600 .env            # the file holds a live provider key
+# edit .env and add one provider key, then:
+cargo run --release
 ```
 
-The required chat configuration is:
-
-```bash
-export OPENROUTER_API_KEY='your-api-key'
-export OPENROUTER_MODEL='openai/gpt-4o-mini'
-export OPENROUTER_BASE_URL='https://openrouter.ai/api/v1'
-```
-
-`dotenvy` loads `.env` when present. Environment variables already set in the
-shell take precedence. Keep `.env` local; it is ignored by Git. Give it mode
-`0600` so no other local account can read the key: `install-autostart.sh`
-tightens a wider mode when it runs, and `desktop_doctor` warns while the file is
-readable by others.
-
-Running the binary starts these components:
-
-1. Load configuration and create the OpenRouter client.
-2. Register the desktop, shell, media, memory, scheduling, and task tools.
-   `browser` registers when its CDP configuration loads; on Linux,
-   `accessibility`, `window`, and `desktop_doctor` register unconditionally and
-   report unavailability at call time. `mobile` joins only in a build with the
-   `mobile` feature and the Android link enabled.
-3. Check for a default microphone.
-4. Initialize speech-to-text from `STT_MODEL` when available.
-5. Start the agent event task, catalog refresh, and control-file poller.
-6. Start the wake-word task when enabled and the model is present.
-7. Start a terminal stdin reader for typed messages.
-8. Open the 160 x 160 transparent, always-on-top `eframe` window (skipped when
-   the GNOME indicator is enabled).
-
-The agent receives `HyuskEvent::UserInput` events through an MPSC channel. Typed
-terminal lines are the always-available text path. When wake detection fires,
-the runtime pauses the detector, records and transcribes a short command with
-`SpeechToText`, resumes the detector, and sends `UserInput`. If STT cannot load
-or times out, the wake event is ignored and the terminal input path still works.
-
-## Configuration
-
-| Variable | Required | Default | Purpose |
-| --- | --- | --- | --- |
-| `OPENROUTER_API_KEY` | No* | - | OpenRouter bearer token. |
-| `OPENROUTER_MODEL` | No | `openai/gpt-4o-mini` | Model identifier sent to the provider. |
-| `HYUSK_STREAM_IDLE_TIMEOUT_SECS` | No | `45` | Fail a streamed reply when no data arrives for this long. A reply that keeps producing tokens is never cut for length. |
-| `HYUSK_STREAM_TOTAL_TIMEOUT_SECS` | No | `600` | Ceiling on one streamed reply; `0` disables it and leaves the idle window as the only bound. |
-| `OPENROUTER_BASE_URL` | No | `https://openrouter.ai/api/v1` | Base URL; `/chat/completions` is appended. |
-| `OPENAI_API_KEY` | No | - | Separate OpenAI API credential; API usage is billed separately from a ChatGPT subscription. |
-| `BEDROCK_API_KEY` | No | - | Amazon Bedrock API key for the OpenAI-compatible Mantle endpoint. `AWS_BEARER_TOKEN_BEDROCK` and `AWS_API_KEY` are also accepted. |
-| `BEDROCK_REGION` | No | `us-east-1` | AWS Region used for the Bedrock Mantle endpoint and model list. |
-| `BEDROCK_MODEL` | No | `openai.gpt-oss-20b` | Initial model for the Bedrock Mantle endpoint; choose an available model in the menu. |
-| `AWS_PROFILE` | No* | AWS default profile | AWS CLI profile used by the Nova Sonic speech-to-speech provider (only in a `sonic` build; see below). |
-| `AWS_REGION` / `AWS_DEFAULT_REGION` | No* | Profile region | Region for Nova Sonic's signed Bedrock Runtime stream (only in a `sonic` build). |
-| `BEDROCK_SONIC_MODEL` | No | `amazon.nova-2-sonic-v1:0` | Bedrock Nova Sonic model ID. Uses AWS SDK credentials, not a Bedrock API key. Only in a `sonic` build. |
-| `BRAVE_SEARCH_API_KEY` | No | DuckDuckGo fallback | Optional token for Brave's structured Search API. |
-| `HYUSK_WORKSPACE` | No | Current directory | Workspace root for Codex CLI coding mode and for a workspace `task` delegation that names no root. |
-| `MODEL_VISION` | No | `1` | Attach screenshots as image content for vision-capable models. Set `0` for text-only models, then use `ocr` instead. |
-| `ORB_STEAL_FOCUS` | No | `0` | Let the orb take keyboard focus while active. Default is off so portal keyboard input goes to the controlled app. |
-| `HYUSK_TERMINAL_APPS` | No | built-in list | Extra terminal application names, comma-separated, whose focused window makes `computer` typing and key input ask. |
-| `HYUSK_ORB` | No | auto | Set `0` to disable the orb, `1` to force it. By default the orb is skipped when the GNOME indicator extension is enabled. |
-| `HYUSK_SCREENSHOT_RETENTION_SECS` | No | `900` | Delete temporary screenshots older than this. |
-| `HYUSK_SCREENSHOT_MAX_FILES` | No | `30` | Maximum temporary screenshots retained. |
-| `HYUSK_AGENT_MAX_TOOL_ROUNDS` | No | `128` | Safety ceiling for model/tool rounds; progressing work retains its checkpoint. |
-| `HYUSK_AGENT_MAX_TURN_SECS` | No | `1800` | Wall-clock safety ceiling for one progressing turn, including tools. |
-| `HYUSK_AGENT_MAX_REPEATED_TOOL_ROUNDS` | No | `3` | Stop after this many identical tool-call/result rounds. |
-| `HYUSK_AGENT_MAX_HISTORY_BYTES` | No | model-derived | Override the serialized history budget. By default it follows the selected model's context window, between 16000 and 120000 bytes. |
-| `HYUSK_MEMORY_PROMPT_TOKENS` | No | `600` | Budget for the per-turn memory block, in estimated tokens (four characters per token; highest 4000; `0` disables the block). Notes are included whole or dropped, never truncated. |
-| `HYUSK_MEMORY_EMBEDDINGS` | No | `1` | Set `0` to rank memory with FTS only. The built-in embedder runs locally and needs no model file or network call. |
-| `HYUSK_MEMORY_CONSOLIDATE` | No | `1` | The bounded background pass that merges near-duplicate memories and decays entries idle for the stale window; `0` disables it. |
-| `HYUSK_MEMORY_CONSOLIDATE_STALE_DAYS` | No | `180` | How long an unused memory may sit before it starts losing confidence. |
-| `HYUSK_MEMORY_VAULT` | No | unset | An Obsidian vault path; `memory` action `export` then writes one note per active memory into `<vault>/hyusk-notes`. Unset disables the export. |
-| `HYUSK_EXTERNAL_SERVERS` | No | unset | A JSON array, or a path to a file holding one, of external tool servers (`{"name","command","args","timeout_ms","startup_timeout_ms"}`). Each server is spawned once, handshakes its tools, and registers them as `ext.<server>.<tool>`; every external call asks for approval. Unset disables the host. |
-| `HYUSK_MCP` | No | `1` | The MCP provider (T3). `0` disables it; the provider needs `$XDG_CONFIG_HOME/hyusk/mcp.json`. |
-| `HYUSK_MCP_CONFIG` | No | `$XDG_CONFIG_HOME/hyusk/mcp.json` | Override the MCP server configuration path. |
-| `HYUSK_MCP_REFRESH_SECS` | No | `30` | How often the MCP configuration is checked so a removed server stops being offered without a restart; clamped 5-3600. |
-| `HYUSK_SESSION_PATH` | No | `$XDG_DATA_HOME/hyusk/session.json` | Override the private recent-conversation snapshot path. |
-| Background subagents | No configuration | At most two workers. Research is read-only; workspace tasks use local Codex CLI with a 15-minute limit. |
-| `WAKE_CLAP_ENABLED` | No | `0` | Enable hand-clap wake (off by default; noise triggers it). |
-| `WAKE_CLAP_SENSITIVITY` | No | `6.0` | How many times louder than background a clap must be. |
-| `WAKE_CLAP_MIN_PEAK` | No | `0.03` | Absolute peak floor for a clap. |
-| `WAKE_WORD_ENABLED` | No | `1` | Set to `0`, `false`, `off`, or `no` to skip wake detection. |
-| `WAKE_WORD_MODEL` | No | `models/hey_hyusk.onnx`, then fallbacks | LiveKit-compatible classifier. |
-| `WAKE_WORD_MODELS` | No | - | Comma-separated classifiers; highest score wins. Overrides `WAKE_WORD_MODEL`. |
-| `WAKE_WORD_THRESHOLD` | No | `0.93` | Detection confidence threshold. Lower is more sensitive. |
-| `WAKE_WORD_STRONG_THRESHOLD` | No | `0.94` | A single score at or above this level wakes immediately. |
-| `WAKE_WORD_MIN_HITS` | No | `1` | Matching scores required before waking. One minimizes latency and avoids cutting off speech. |
-| `WAKE_WORD_HIT_WINDOW_MS` | No | `1000` | Time window in which confirmation hits must arrive. |
-| `WAKE_WORD_MIN_RMS` | No | `0.003` | Adaptive noise-gate floor. Lower accepts quieter speech. |
-| `WAKE_WORD_COOLDOWN_MS` | No | `1500` | Minimum milliseconds between detections. |
-| `WAKE_WORD_STEP_MS` | No | `200` | Interval between wake-word inference passes. |
-| `WAKE_WORD_DENOISE` | No | `0` | Optional RNNoise preprocessing. Leave off for models made by the bundled raw-audio trainer. |
-| `STT_MODEL` | No | `models/ggml-base.en.bin` | Whisper GGML model for post-wake transcription. |
-| `STT_LANGUAGE` | No | `en` | Whisper language code, or `auto` with a multilingual model. |
-| `STT_DENOISE` | No | `1` | Apply RNNoise to command audio before Whisper transcription. |
-| `STT_SILENCE_MS` | No | `900` | Silence after speech before recording stops. |
-| `STT_NO_SPEECH_MS` | No | `4000` | Give up and stop early if no speech starts. |
-| `PIPER_MODEL` | No | `models/en_US-lessac-medium.onnx` | Piper voice model used by Linux TTS. |
-| `PIPER_SPEAKER` | No | - | Speaker name or numeric ID for a multi-speaker Piper model. |
-
-*Configure at least one of OpenRouter, OpenAI API, Bedrock Mantle, or (in a `sonic` build) an AWS CLI profile with Nova Sonic access before starting Hyusk. API provider keys can also be saved from the GNOME **Settings → API keys** menu or the Noctalia gear panel. The GNOME menu stores the key in the login keyring with `secret-tool` and restarts `hyusk.service` so the new key is picked up. The Noctalia panel queues the key in the control file; the agent moves it to the keyring and reloads its catalog without a restart.
-
-The base URL must not include the trailing `/chat/completions` path.
-
-## Start automatically and view logs
-
-On Fedora GNOME, install Hyusk as a per-user graphical-session service:
+To start Hyusk at login as a user service:
 
 ```bash
 ./scripts/install-autostart.sh
-```
-
-It builds the release binary, starts Hyusk after graphical login, restarts it
-after crashes, and sends SIGINT during logout or shutdown so it can stop cleanly.
-The service preserves the existing component-tagged logs in journald:
-
-```bash
 systemctl --user status hyusk.service
-journalctl --user -u hyusk.service -f       # live logs
-journalctl --user -u hyusk.service -b       # this boot
+journalctl --user -u hyusk.service -f
 ```
 
-Disable it with `./scripts/uninstall-autostart.sh`.
+The GNOME indicator, Noctalia widget, and workflow editor have their own
+installers in `scripts/`; the Android app is built from `android/`.
 
-## Android companion
+## First run
 
-The personal Android controller lives in [`android/`](android/README.md). It
-uses native intents and Accessibility actions for deterministic phone control,
-with optional Shizuku templates and on-phone confirmation for consequential
-operations. The app can submit turns to this laptop, execute safe structured
-actions requested by Hyusk, and reconnect over a trusted LAN or Tailscale
-address.
+- Type a request in the terminal and press Enter. This works without a
+  microphone or any models.
+- For voice, download a wake-word model with `./scripts/download-wake-word.sh`,
+  set `STT_MODEL` to a Whisper GGML file, and optionally `PIPER_MODEL` to a
+  Piper voice.
+- To control Hyusk from a keybind, use `hyusk_agent ctl pause` (also `resume`,
+  `stop`, `approve`, `approve-turn`, `deny`, `dismiss`). Details:
+  [`docs/integration.md`](docs/integration.md).
 
-Install the Android prerequisites and check the environment:
+<p align="center">
+  <img src="assets/readme/surfaces_hyusk_20261128.svg" width="100%" alt="The GNOME top-bar indicator, the Noctalia bar widget, and a terminal or keybind are three ways to use Hyusk">
+</p>
+
+## Configuration
+
+Hyusk reads `.env` when present; shell exports take precedence. The most useful
+variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OPENROUTER_API_KEY` | — | OpenRouter bearer token (or use `OPENAI_API_KEY` / Bedrock). |
+| `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Model identifier. |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible base URL. |
+| `MODEL_VISION` | `1` | Attach screenshots; set `0` for text-only models. |
+| `WAKE_WORD_ENABLED` | `1` | Set `0` to skip wake detection. |
+| `WAKE_WORD_MODEL` | first available | Wake classifier, e.g. `models/hey_hyusk.onnx`. |
+| `STT_MODEL` | `models/ggml-base.en.bin` | Whisper model for post-wake transcription. |
+| `PIPER_MODEL` | `models/en_US-lessac-medium.onnx` | Local Piper voice. |
+| `HYUSK_WORKSPACE` | current directory | Root for coding tasks and workspace delegation. |
+| `HYUSK_ORB` | auto | `0` hides the orb; it is also skipped when the GNOME indicator is installed. |
+
+The full list, defaults, and tuning notes are in
+[`.env.example`](.env.example); safety and timeout variables are documented in
+[`docs/development.md`](docs/development.md).
+
+## What Hyusk can do
+
+- **Windows and workspaces** on niri: list, focus, move, close, return to the
+  previous window, filter by workspace, and send to another output. On GNOME,
+  the same tool uses the shell extension.
+- **Desktop control** through accessibility first, then the portal or native
+  input, with screenshots and OCR as fallbacks.
+- **Apps, shell, files, media, browser** through dedicated tools; a dedicated
+  CDP browser profile keeps automation away from your normal sign-ins.
+- **Memory and preferences** stored locally in SQLite, with a readable export.
+- **Timers, reminders, schedules, and workflows** that survive restarts.
+- **Background research and coding tasks**, plus external MCP tools, each
+  behind its own approval rule.
+
+The complete tool list, schemas, and safety decisions are in
+[`docs/tools.md`](docs/tools.md).
+
+## Integrations
+
+| Surface | What it gives you | Docs |
+| --- | --- | --- |
+| GNOME top bar | State, response cards, approvals, model menu | [gnome-indicator.md](docs/gnome-indicator.md) |
+| Noctalia bar | The same on niri, Hyprland, and Sway | [noctalia-indicator.md](docs/noctalia-indicator.md) |
+| Terminal / keybind | Text turns and `hyusk_agent ctl` | [integration.md](docs/integration.md) |
+| Android app | Typed remote actions over an opt-in TLS link | [android-agent.md](docs/android-agent.md) |
+| Workflow editor | Edit and run local workflows | [development.md](docs/development.md) |
+
+The runtime files are a versioned contract: `hyusk-status.json` (read-only) and
+`hyusk-control.json` (single-use commands). Any bar, script, or keybind can be a
+first-class client via [`docs/integration.md`](docs/integration.md).
+
+## Troubleshooting
+
+- **Wake word does not fire.** Run `./scripts/download-wake-word.sh`, or set
+  `WAKE_WORD_ENABLED=0` to use text only.
+- **No microphone.** Check the system input device; startup continues in text
+  mode when no default device exists.
+- **Desktop actions fail.** Ask the assistant to run `desktop_doctor`; it
+  reports the session, window backend, portal, AT-SPI, CDP, OCR, and `.env`
+  state, with advice for the current compositor.
+- **No speech output.** Install `piper` and a player (`paplay` or `aplay`), or
+  let it fall back to `espeak-ng`.
+- **Service logs.** `journalctl --user -u hyusk.service -f`.
+
+## Development
 
 ```bash
-./scripts/check-android-env.sh
+cargo fmt --all -- --check
+cargo clippy --all-targets --offline
+cargo test --all-targets --offline -- --test-threads=4
 ```
 
-Open the GNOME butterfly menu → **Connect phone → Enable laptop link**. Or run
-the equivalent one-time command:
-
-```bash
-./scripts/setup-mobile-link.sh --enable
-```
-
-The link is compiled only into a build with the `mobile` feature; the default
-`scripts/install-autostart.sh` build leaves it out. Install the agent with the
-feature when you use the phone:
-
-```bash
-./scripts/install-autostart.sh --features mobile
-```
-
-Then choose **Generate fresh code** and **Copy pairing code** in the extension.
-Transfer the code privately to the Android app's Devices page and tap
-**Pair and connect**. The code expires after five minutes and works once; it is
-not printed in the service journal.
-
-The link is disabled by default. Restrict TCP port 4488 to a trusted Fedora
-firewall zone, never commit the TLS key, pairing payload, API keys, or ignored
-personal wake models. See [`docs/android-agent.md`](docs/android-agent.md) and
-the [versioned protocol](docs/mobile-link-protocol.md) for permissions,
-security boundaries, reconnect behavior, and troubleshooting.
-
-## Tools
-
-The agent exposes its tools through OpenAI-compatible function specs. In
-addition to desktop, process, media, memory, and timer actions, it includes
-managed background tasks and persistent scheduling.
-
-### `scheduler`
-
-Creates one-time reminders or runs named deterministic workflows later. Jobs
-are stored atomically in `$XDG_DATA_HOME/hyusk/schedules.json`, reloaded after a
-restart, and can be listed or cancelled by ID:
-
-```json
-{ "action": "schedule", "type": "reminder", "text": "stretch", "after_seconds": 600 }
-{ "action": "schedule", "type": "workflow", "workflow": "focus mode", "at_unix": 1900000000 }
-{ "action": "schedule", "type": "agent_task", "prompt": "summarize today's notes", "after_seconds": 3600 }
-{ "action": "list" }
-{ "action": "cancel", "id": 2 }
-```
-
-Common relative phrases are handled without an LLM, including `remind me in
-ten minutes to stretch`, `remind me to drink water in thirty minutes`, and
-`schedule workflow focus mode in one hour`. A scheduled workflow that becomes
-due during another foreground request is queued instead of interrupting it.
-
-### `task`
-
-Delegates longer model or coding work while the main assistant stays
-responsive. The default `research` profile is read-only: no local tools, memory,
-desktop access, or credentials. The `workspace` profile gives an
-already-installed, signed-in Codex CLI one explicitly approved project root in
-`workspace-write` sandbox mode. A research delegation runs immediately; a
-workspace delegation asks once, with its project root pinned to the approved
-directory. The root is the call's `workspace` or, when it names none,
-`HYUSK_WORKSPACE`. When Codex or the root is unavailable the delegation fails
-with a clear message and no confirmation is shown. Use `list` and `cancel` to
-manage running jobs, and optionally set `timeout_seconds` between thirty seconds
-and one hour. Hyusk posts the report and announces completion when a worker
-finishes.
-
-### `web_search`
-
-Searches the live web directly without opening a browser or using screenshots.
-It returns titles, source URLs, and snippets for the model to summarize. The
-keyless fallback uses DuckDuckGo's non-JavaScript HTML search. For more stable
-API results, set `BRAVE_SEARCH_API_KEY` or store it in GNOME Keyring:
-
-```bash
-secret-tool store --label="Hyusk Brave Search" hyusk provider brave_search
-```
-
-### `shell`
-
-Runs a command through `sh -c`.
-
-```json
-{ "command": "pwd", "mode": "foreground" }
-```
-
-`foreground` is the default and waits for completion. `detached` starts the
-command and returns its PID without waiting.
-
-### `process`
-
-Spawns a program directly, without a shell.
-
-```json
-{ "action": "launch", "program": "firefox", "args": [] }
-```
-
-The tool waits 300 ms to report an immediate launch failure, then returns the
-PID if the process is still running.
-
-### `media`
-
-Controls an MPRIS media player through the external `playerctl` executable.
-
-```json
-{ "action": "status" }
-```
-
-Supported actions are `play`, `pause`, `play_pause`, `next`, `previous`,
-`stop`, `status`, `volume`, `volume_up`, and `volume_down`. The `volume`
-action accepts an integer `level` from 0 through 100.
-
-### `browser`
-
-Fast DOM-based control through CDP in a separate Brave, Chromium, or Chrome
-profile. Start `./scripts/start-browser-control.sh`, or choose **Open automation
-browser** in the updated GNOME indicator. Your everyday browser profile is not
-attached; sign in separately in the automation profile if needed.
-
-The tool lists tabs, reads page text and control selectors, navigates, clicks,
-fills fields, and presses supported keys without desktop screenshots or focus
-switching. Reading and navigating are free; clicking, filling, and pressing a
-key ask first, and "Allow for this turn" covers the rest of the flow's clicks.
-See [Browser control](docs/browser-control.md) for configuration and limits,
-including iframe/canvas fallback.
-
-### `computer`
-
-Controls the local GUI without going through the shell. It supports status and
-screenshot/OCR inspection, mouse movement/click/drag, scrolling, typing, key
-presses, key combos, and short waits. Coordinates are global pixels with the
-origin at the top-left.
-
-Typing and key presses ask for confirmation while a terminal is focused, because
-the keystrokes could run a shell command; the card names the terminal. An
-unreadable focus asks too. Add a terminal that is not recognised with
-`HYUSK_TERMINAL_APPS` (comma-separated application names).
-
-Elsewhere each key is classed by what it does. Navigation keys (arrows, Home,
-End, Page Up/Down, Tab, Escape, Space, and the function keys except F4) run
-freely. Delete, Backspace, and Insert run freely in an editor or a browser field
-and ask in a file manager, where they delete a file; the card names the
-application. Enter/Return, F4, and any shortcut containing one such as
-ctrl+enter or alt+F4 ask everywhere, because the agent cannot undo a commit.
-The full table is in [Tools](docs/tools.md#computer).
-
-Clicking OCR text whose label commits something asks: a payment, deletion,
-transfer, reset, or uninstall word always asks, and a submit/send/post/share/
-install word asks unless the label also says search, filter, query, calculator,
-feedback, or link. "Submit search" is free; "Send message" asks.
-
-```json
-{ "action": "screenshot" }
-{ "action": "app_state", "max_nodes": 300 }
-{ "action": "screens" }
-{ "action": "find_text", "text": "Search" }
-{ "action": "click_text", "text": "Search" }
-{ "action": "cursor" }
-{ "action": "mouse_move", "x": 640, "y": 360 }
-{ "action": "mouse_click", "button": "left" }
-{ "action": "type_text", "text": "hello" }
-{ "action": "key_combo", "keys": ["ctrl", "l"] }
-{ "action": "clipboard_set", "text": "message to paste" }
-{ "action": "open_url", "url": "https://web.whatsapp.com" }
-{ "action": "focus_window", "title": "Visual Studio Code" }
-```
-
-Use `batch` to run several actions in one model round-trip, which makes
-multi-step GUI workflows much faster:
-
-```json
-{
-  "action": "batch",
-  "steps": [
-    { "action": "open_url", "url": "https://web.whatsapp.com" },
-    { "action": "wait", "milliseconds": 4000 },
-    { "action": "screenshot" }
-  ]
-}
-```
-
-For VS Code, the `process` tool can open a folder directly:
-
-```json
-{ "action": "launch", "program": "code", "args": ["/path/to/folder"] }
-```
-
-On Linux Wayland the tool uses the XDG RemoteDesktop portal. The first input
-action opens a permission dialog; approve it once and the session is reused for
-the rest of the process. X11 and Wayland compositors with virtual input
-protocols use the native `enigo` backend. Screenshot capture tries `grim`,
-GNOME Shell D-Bus, and the Screenshot portal for Wayland, then ImageMagick
-`import`/`scrot` for X11. Temporary screenshots are cleaned up automatically
-(`HYUSK_SCREENSHOT_RETENTION_SECS`, `HYUSK_SCREENSHOT_MAX_FILES`). When
-`MODEL_VISION=1` (default), screenshots are attached to the next model turn as
-real image content, so a vision model can inspect them directly; `ocr` remains
-available as a fallback. Set `MODEL_VISION=0` for text-only models. See
-[docs/tools.md](docs/tools.md) for the full action list.
-`app_state` pairs a bounded accessibility tree for the active window with a
-desktop screenshot. These are sequential observations, not an atomic or
-window-cropped capture; its output reports partial failures and truncation.
-
-### `accessibility`
-
-Controls GUI applications through Linux **AT-SPI2** using a Python `pyatspi`
-bridge spawned by Rust. For supported apps this is much faster and more precise
-than screenshots.
-
-```json
-{ "action": "active", "read": true }
-{ "action": "apps" }
-{ "action": "windows" }
-{ "action": "find", "app": 3, "name": "Search", "role": "push button" }
-{ "action": "find", "text": "Sign in" }
-{ "action": "click", "path": [3, 0, 1, 2] }
-{ "action": "set_text", "path": [3, 0, 1, 4], "text": "hello" }
-{ "action": "tree", "app": 3, "max_depth": 4 }
-```
-
-Actions: `active`, `apps`, `windows`, `tree`, `find`, `click`, `focus`,
-`set_text`, `get_text`, `read`. `active` reports the focused app, window, and
-element (and with `read`, the visible text) — the fastest way to orient. `find`
-can match by `name`, `role`, and/or visible `text`. `set_text` writes into the
-focused window, so it asks when the focused application is a terminal (or the
-focus cannot be read), the same rule as `computer` typing; reading, finding, and
-focusing stay free.
-
-Requires `python3` with `pyatspi` and a running AT-SPI bus. Apps only appear if
-they publish an accessibility tree, so run the setup once:
-
-```bash
-./scripts/setup-accessibility.sh          # toolkit-accessibility + Chromium/Electron env
-./scripts/setup-accessibility.sh --check  # show what AT-SPI currently sees
-```
-
-Then restart the apps (and re-login once). Responses include a `warnings` field
-when the environment limits visibility; the agent falls back to the `computer`
-tool for apps that publish no tree (e.g. Chromium/Electron without
-`ACCESSIBILITY_ENABLED=1`).
-
-The GNOME indicator displays the latest response, completion, or error in a
-small card even when audio is muted. On niri, Hyprland, or Sway, where GNOME
-Shell extensions cannot load, [`noctalia-plugin/`](docs/noctalia-indicator.md)
-puts the agent's state, model, and latest card on a Noctalia bar instead.
-
-The indicator's Model menu lists OpenRouter, OpenAI
-API, Amazon Bedrock Mantle, Amazon Nova Sonic speech-to-speech (in a `sonic`
-build), and Codex CLI workspace mode. Catalogs refresh at startup
-and on **Refresh models**; a failed refresh retains the cached list. Choose a
-provider's model to switch immediately and start a fresh conversation. The
-selection is stored in `$XDG_CONFIG_HOME/hyusk/config.json`; matching history
-is restored after restart. To add or replace an API key, use that provider's
-key entry in the indicator (GNOME menu **Settings → API keys**, or the Noctalia
-gear panel). In the GNOME menu the key is written to the login keyring and the
-user service is restarted, so the provider is registered on the next start. In
-the Noctalia panel the key is queued in `hyusk-control.json` (the file contract
-is in [docs/integration.md](docs/integration.md)); the agent stores
-it in the login keyring, registers the provider, and reloads its catalog without
-restarting the service, overwriting the control file as soon as it has read the
-key. In both cases the key is not persisted in `commands.json` or the session
-snapshot, and the control-file handoff exists only until the agent scrubs it.
-New background research tasks use the selected API provider and model; an
-already-running task keeps the model it started with. Codex workspace tasks
-remain on the local Codex CLI.
-Bedrock Mantle uses `https://bedrock-mantle.<region>.api.aws/v1` because this endpoint
-exposes `/models`; set `BEDROCK_REGION` before starting the service to change
-regions. Use Mantle model IDs such as `openai.gpt-oss-20b`, not the
-`-1:0` Bedrock Runtime foundation-model ID. A separate Bedrock API key is
-required; a ChatGPT subscription is not an AWS credential.
-
-Nova Sonic is selected separately as **Bedrock Sonic**, and it exists only in a
-build with the `sonic` feature (`./scripts/install-autostart.sh --features
-sonic`); a default build recompiles without the AWS SDK, the second agent loop,
-and the provider entry. It uses the AWS SDK's credential chain (including
-`AWS_PROFILE`, shared AWS CLI credentials, and SSO), needs a configured AWS
-region and Bedrock model access, and uses a bidirectional speech stream rather
-than the Mantle chat endpoint. See
-[`docs/bedrock-nova-sonic.md`](docs/bedrock-nova-sonic.md) for setup and testing.
-
-The GNOME top-bar indicator includes **Stop Hyusk**, which cancels the active
-foreground turn and listening session.
-
-### Instant voice commands
-
-Common commands are handled locally, with no model round trip, so they run in
-well under a second:
-
-- `open Firefox`, `open Brave`, `open Calculator`, ...
-- `open YouTube`, `go to github.com`, `search lofi beats on youtube`
-- `switch to Code`, `show Firefox`
-- `next song`, `pause`, `volume up`, `set volume to 30`
-- `play something`, `play lofi beats` (plays via `mpv` + `yt-dlp` when
-  installed, otherwise opens a YouTube Music search)
-- `screenshot`, `take a note buy milk`
-- chains: `open Brave and go to YouTube`
-
-A command whose steps need confirmation is not run locally: `mute`,
-`brightness up`/`down`, and `lock the screen` run through the `shell` tool, so
-the request goes to the model path and the usual approval card appears. A chain
-that mixes a free step with a guarded one takes the same path as a whole, and
-nothing runs before you answer.
-
-Built-in aliases live in `src/agent/commands.rs`; add your own in
-`~/.config/hyusk/commands.json`:
-
-```json
-{
-  "apps":  { "notes": ["flatpak", "run", "com.example.Notes"] },
-  "sites": { "hn": "https://news.ycombinator.com" }
-}
-```
-
-#### Native voice workflows (no LLM)
-
-The same file can define Shortcuts-style workflows. A workflow matches its
-name, any phrase in `phrases`, or `run <name>` / `start <name>`, then executes
-each `steps` entry locally in order:
-
-```json
-{
-  "workflows": [
-    {
-      "name": "start my workday",
-      "phrases": ["begin work", "open my work setup"],
-      "steps": [
-        "open code",
-        "open slack",
-        "set timer for 25 minutes"
-      ]
-    }
-  ]
-}
-```
-
-Workflow steps use the built-in deterministic command vocabulary, so they do
-not require an API key, model call, or screenshots. They can launch configured
-apps, open sites, switch windows, control media, set timers, take screenshots,
-and save notes. Arbitrary shell text is not accepted as a workflow step, and a
-step that needs confirmation - changing the brightness or locking the session
-both go through `shell` - stops the workflow before it runs and points you at
-the assistant. Background
-`task` delegation is not a workflow step either: it starts a second model or
-Codex worker, and a workspace delegation needs the assistant's one-shot
-confirmation, so ask the assistant directly instead of adding it to a workflow.
-
-Each `steps` item is one command; a semicolon can also separate commands in a
-single item. The supported forms include `open <app-or-site>`, `launch
-<app>`, `go to <site>`, `switch to <window>`, `play`/`pause`/`next song`,
-`volume up`/`volume down`/`set volume to <0-100>`, `set timer for <number>
-<seconds|minutes|hours>`, `brightness up`/`brightness down`, `lock the screen`,
-`screenshot`, and `remember that <text>`. The brightness and lock forms ask for
-confirmation, so a workflow containing them stops at that step. App and site aliases from the same
-file are available inside workflows, so add an alias before using a custom
-application or site.
-
-Hyusk validates a workflow before executing it and never runs only part of a
-broken workflow. Entries without a usable name are ignored when the
-configuration is loaded; a named empty or malformed workflow stays addressable
-so Hyusk can say what needs fixing. Exact duplicate entries are ignored, while
-duplicate triggers use the first complete workflow.
-
-#### Hyusk Workflows desktop app
-
-Install the native GTK4/libadwaita editor for the current user:
-
-```bash
-./scripts/install-workflow-app.sh
-```
-
-The editor is behind the `workflow-editor` cargo feature, because it is the only
-part of this repository that needs GTK4 and libadwaita. A plain `cargo build`
-and `cargo test --all-targets` build the agent without the toolkit; the
-installer passes the feature for you, and a manual build is
-`cargo build --features workflow-editor --bin hyusk-workflows`.
-
-Open **Hyusk Workflows** from the GNOME app grid, run
-`hyusk-workflows`, or choose **Workflows** from the Hyusk top-bar menu.
-The app provides a searchable workflow library, voice-trigger editing,
-installed-app discovery and search, custom application commands, a website
-builder with browser choice, ordered steps with move/remove controls,
-validation, atomic saves, delete confirmation, one-time workflow/reminder
-scheduling, and direct execution through the running Hyusk service. It
-preserves the existing `apps`, `sites`, and other keys in
-`~/.config/hyusk/commands.json`.
-
-The app and voice path use the same version-one workflow format. Editing and
-running workflows does not require an LLM or API key.
-
-The control-deck editor preserves unsaved drafts while searching or switching
-workflows; save changes before running. The indicator also has a searchable
-quick-run menu. Background-only workflows can run alongside the agent, while
-desktop-controlling workflows wait until the current interaction ends. Their
-queue, completion, and failure feedback stays visible without replacing the
-agent's conversation.
-
-Anything the router does not recognize goes to the model as before.
-
-**`window` tool.** Native window control through the running compositor:
-niri's own IPC (`niri msg`) when `NIRI_SOCKET` is set, and the
-`org.hyusk.Shell` D-Bus interface of the extension on GNOME: `list`, `active`,
-`activate`, and `close` (prefer an exact `id:<number>` from `list`; app or title
-substring also works). This is the reliable way to switch apps on Wayland.
-On GNOME, install/refresh the extension with
-`scripts/install-gnome-indicator.sh`, then log out and back in; on niri nothing
-beyond `niri` itself is required.
-
-**`desktop_doctor` tool.** Returns read-only, structured checks for the
-detected session: compositor and display kind, the window backend and the
-actions it supports, accessibility, the RemoteDesktop portal, the automation
-browser CDP endpoint, OCR, screenshot prerequisites, and the local `.env` mode.
-GNOME-only checks such as the shell extension are reported only on GNOME.
-It distinguishes a responding but outdated extension from one exposing stable
-window IDs. Availability checks do not grant portal input permission or prove
-a screenshot/action will succeed. A `Desktop capabilities` check
-repeats the one-line state the model sees: what the OS last reported for input,
-screen capture, and accessibility, and which backend reported it. A denied or
-unsupported capability makes the matching action fail with a capability error
-rather than asking for approval it cannot satisfy.
-
-### `memory`
-
-Persistent local memory that survives restarts. SQLite `memory.db` is the
-source of truth under `$XDG_DATA_HOME/hyusk/` (or `~/.local/share/hyusk/`), and
-`memory.md` is a generated human-readable view. Existing `memory.json` data is
-imported transactionally on first use and kept unchanged as a backup.
-
-```json
-{ "action": "remember", "text": "User prefers dark mode", "tags": ["preference"] }
-{ "action": "search", "query": "dark mode" }
-{ "action": "graph_add", "subject": "user", "relation": "uses", "object": "GNOME Wayland" }
-{ "action": "graph_query", "subject": "user" }
-{ "action": "list" }
-{ "action": "forget", "id": 3 }
-```
-
-`search` ranks notes with a small tf-idf score (tag matches weigh more). Each
-turn retrieves the notes that best match the user's message and injects them
-into the system prompt, so the agent sees what is relevant to the current
-request. Duplicate notes and graph triples are rejected, and the prompt asks the
-agent to save durable facts about the user proactively.
-
-See [docs/tools.md](docs/tools.md) for schemas, examples, and tool-extension
-instructions.
-
-## Temporary wake word
-
-`scripts/download-wake-word.sh` downloads the LiveKit `hey_livekit.onnx`
-classifier and the OpenWakeWord `alexa.onnx` classifier (converted to the
-LiveKit tensor names). Both are auto-discovered from `models/`, so you can say
-**"Hey LiveKit"** or **"Alexa"**. This is a temporary stand-in until a custom
-"Hey Hyusk" classifier is trained; the models are not part of the repository
-and are downloaded on demand.
-
-Multiple classifiers can be loaded with `WAKE_WORD_MODELS`; the highest score
-wins. The detector also tracks an adaptive noise floor and peak-normalizes each
-window. Runtime preprocessing should match training: personal models made by
-the bundled trainer should normally use `WAKE_WORD_DENOISE=0`.
-
-For a personal model, record plenty of *hard negatives*: phrases that resemble
-the target (`hey Siri`, `hey Google`, `Alexa`, `hey you`, `hi Hyusk`, `hey
-Musk`) plus the television, music, keyboard, and room noise that causes real
-false wakes. Recordings are checkpointed, so increasing `--negatives` resumes
-the existing set instead of asking for the positive clips again:
-
-```bash
-python3 scripts/train-wake-word.py --word "hey hyusk" \
-  --output models/hey_hyusk.onnx --positives 60 --negatives 180
-```
-
-You can also add a bounded public speech set instead of manually recording all
-general negatives. This downloads TensorFlow Mini Speech Commands (about 182
-MB compressed, 8,000 short clips from many speakers), while the trainer samples
-only 2,000 clips by default:
-
-```bash
-./scripts/download-wake-negatives.sh
-
-.venv-wake/bin/python scripts/train-wake-word.py \
-  --word "hey hyusk" \
-  --output models/hey_hyusk.onnx \
-  --positives-dir models/wake_recordings/hey_hyusk/positives \
-  --negatives-dir models/wake_recordings/hey_hyusk/negatives \
-  --extra-negatives-dir models/public_negatives/mini_speech_commands \
-  --extra-negative-limit 2000 \
-  --skip-install
-```
-
-Keep the personal negatives in the mix: public files provide broad voices and
-words, while your own false activations represent the laptop microphone, room,
-speakers, and confusing phrases the deployed detector actually hears.
-
-One qualifying score is required by default, so command recording starts as
-soon as the detector crosses the threshold. Increase `WAKE_WORD_MIN_HITS` only
-if your microphone produces too many isolated false positives.
-
-## Interruptions and UI
-
-`run_agent_task` keeps receiving events while a turn is running. A new typed
-message cancels the in-flight model request, tool call, and Linux TTS playback,
-then starts the replacement turn. A wake word during a running turn records a
-speech probe while the turn continues; only a non-empty transcription replaces
-the turn and stops playback. The conversation rolls back to the state before
-the cancelled turn, so partial tool-call messages are not replayed.
-
-There are two optional status UIs:
-
-- a 160 x 160 transparent orb window with a black circle; and
-- a GNOME Shell top-bar indicator with a color-coded butterfly.
-
-Install the GNOME indicator with:
-
-```bash
-./scripts/install-gnome-indicator.sh
-```
-
-Then log out and back in, and enable **Hyusk Agent Indicator** in the
-Extensions app. The agent writes its state to `$XDG_RUNTIME_DIR/hyusk-state`;
-the extension polls that file and colors the butterfly per state. Once the
-extension is enabled, the orb is skipped automatically. Use `HYUSK_ORB=1` to
-force the orb, or `HYUSK_ORB=0` to force indicator-only mode.
-
-The orb requests the top-center position and always-on-top while active, but it
-does not take keyboard focus by default (`ORB_STEAL_FOCUS=0`). That matters
-because keyboard events follow the focused window; if the orb stole focus,
-portal `type_text`/`key_press` would go to the orb instead of the browser or
-editor. GNOME Wayland does not let ordinary clients choose absolute window
-positions, so the compositor may place the orb elsewhere.
-
-## Agent and model flow
-
-```text
-UserInput event
-      |
-      v
-Agent::handle
-      |
-      v
-OpenRouter /chat/completions
-      |
-      +-- final text ----------------> Response event -> TTS
-      |
-      +-- tool_calls -> ToolRegistry -> tool result
-                                  |
-                                  +-> append role: tool message
-                                  +-> request another model turn
-```
-
-`OpenRouterClient` sends the bounded active message history and the tool specs
-on every turn. Complete old turns and verbose tool output are compacted before
-the request, while recent plain user/assistant messages are saved with mode
-`0600` in `$XDG_DATA_HOME/hyusk/session.json` and restored after a service
-restart. It retries network failures, HTTP 408, HTTP 429, and 5xx
-responses up to three retries with exponential backoff. It honors a numeric
-`Retry-After` header and fails fast for ordinary 4xx responses.
-
-Persistent memory and conversation history have different jobs: durable facts
-belong in SQLite memory and are retrieved by relevance; the session snapshot
-preserves recent conversational continuity. The current user message remains
-authoritative over both.
-
-## Project layout
-
-```text
-hyusk_agent/
-├── .env.example
-├── Cargo.toml
-├── Cargo.lock                # committed dependency lockfile for this workspace
-├── README.md
-├── ARCHITECTURE.md
-├── CHANGELOG.md
-├── DESIGN.md                 # control-deck design tokens and rules
-├── docs/                     # index in docs/README.md
-│   ├── README.md
-│   ├── architecture.md
-│   ├── development.md
-│   ├── self-upgrade.md
-│   ├── tools.md
-│   ├── voice-and-ui.md
-│   ├── gnome-indicator.md
-│   ├── noctalia-indicator.md
-│   ├── browser-control.md
-│   ├── android-agent.md
-│   ├── mobile-link-protocol.md
-│   └── bedrock-nova-sonic.md
-├── android/                  # Kotlin companion app
-├── assets/                   # brand art and workflow-console CSS
-├── gnome-extension/
-│   └── hyusk@hyusk.local/
-│       ├── metadata.json
-│       ├── extension.js          # Entry point; UI lives in lib/
-│       ├── stylesheet.css
-│       └── lib/                  # Panel indicator, card, menus, D-Bus
-├── noctalia-plugin/          # Noctalia v5 bar widget and settings panel
-├── scripts/                  # install, setup, training, and bridge helpers
-├── systemd/                  # user unit and PipeWire audio templates
-├── models/                   # ignored runtime assets (Whisper, Piper, wake)
-└── src/
-    ├── agent/       # Agent loop, runner modules, and MPSC runtime task
-    ├── bin/         # hyusk-workflows entry point (the GTK workflow editor)
-    ├── link/        # Opt-in TLS mobile link server (mobile feature)
-    ├── model/       # OpenRouter-compatible clients, Nova Sonic, Codex
-    ├── speech/      # Whisper STT and local TTS adapters
-    ├── tools/       # Tool trait, registry, and all local tools
-    ├── types/       # Chat messages and Hyusk events/state
-    ├── ui/          # Transparent animated eframe overlay
-    ├── wake/        # LiveKit wake-word and clap detection
-    └── main.rs      # Composition root and startup sequence
-```
-
-## Development commands
-
-From this directory:
-
-```bash
-cargo check --all-targets
-cargo test --all-targets
-cargo run
-```
-
-`cargo check --all-targets` and `cargo fmt --all -- --check` currently pass.
-`cargo test --all-targets` runs the unit suite; it skips the GTK workflow
-editor, which needs `--features workflow-editor`. A few portal and audio checks
-stay `#[ignore]`d because they need a real session (see
-[development](docs/development.md)).
-
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs
-`cargo fmt --all -- --check`, `cargo clippy --all-targets`, and
-`cargo test --all-targets` on pushes to `main` and on pull requests.
-
-Changes ship through the propose-diff loop: the agent works on a branch and
-presents a verified diff, a human reviews and merges, and a supervisor restarts
-the service. The agent never merges, installs, or restarts itself, and the
-safety and update files are human-only - see
-[docs/self-upgrade.md](docs/self-upgrade.md).
-
-Dependencies are compiled with optimizations even in debug builds (this
-manifest's `[profile.dev.package."*"]`), so `cargo run` is fast enough for
-realtime wake-word inference. Building the dependencies the first time takes a
-few minutes.
-
-Wake-word diagnostics:
-
-```bash
-HYUSK_WAKE_TEST=30 cargo run          # live level/gate/score output
-HYUSK_WAKE_TEST=30 HYUSK_WAKE_CAPTURE=/tmp/wake.raw cargo run
-HYUSK_STT_TEST=1 cargo run            # record + transcribe without a wake word
-HYUSK_TIMING=1 cargo run              # per-stage latency (record, model, TTS)
-```
-
-If wake detection misses, clips, or falsely fires, calibrate the microphone
-gain first:
-
-```bash
-./scripts/set-mic-gain.sh             # 48% capture, 0% mic boost
-```
-
-## Safety and troubleshooting
-
-The `shell` tool executes arbitrary commands as the current user, and the
-`computer` tool can move the real cursor, click, and type. Risky actions are
-armed for one-shot confirmation through the card (or the phone link) and expire
-unanswered, foreground shell commands are bounded at 120 s, and a turn is
-cancellable. That is a guardrail, not a sandbox: use a trusted model/provider
-and run Hyusk in an account with only the permissions it should have.
-
-Common failures:
-
-- `OPENROUTER_API_KEY is missing`: set the variable or create `.env` from
-  `.env.example`.
-- `Wake-word detector disabled`: add a compatible LiveKit classifier at
-  `WAKE_WORD_MODEL`, or set `WAKE_WORD_ENABLED=0` to skip it intentionally.
-- Wake word not detected, or the log warns `Microphone is clipping`:
-  the capture path is too hot or too quiet. Run `./scripts/set-mic-gain.sh`
-  and, if needed, adjust the threshold with `WAKE_WORD_THRESHOLD`. Use
-  `HYUSK_WAKE_TEST=30 cargo run` to see live levels and scores.
-- Clap wake does nothing: hand-clap wake is off by default. Set
-  `WAKE_CLAP_ENABLED=1` if you want it.
-- `Speech-to-text disabled`: set `STT_MODEL` to a compatible Whisper GGML file or
-  install the model at the default path.
-- `Screenshot capture failed`: no backend succeeded. On GNOME Wayland approve
-  the Screenshot portal dialog or install a compatible helper. The tool reports
-  every backend error it saw.
-- `RemoteDesktop portal` input failures: approve the portal dialog. If it was
-  denied, restart the binary to clear the cached denial. X11 and Wayland
-  compositors with virtual input protocols use `enigo` instead.
-- `No default microphone found`: connect and select an input device supported
-  by CPAL.
-- `Failed to invoke playerctl`: install `playerctl` or remove `MediaTool` from
-  the registration in `main.rs`.
-- `Piper model not found`: install Piper and set `PIPER_MODEL`, or provide the
-  bundled model at the default path.
-- HTTP 429 or 5xx: the client retries automatically; sustained rate limits
-  require waiting or changing models.
+The default suite is 523 passing and 6 ignored; feature builds and the isolated
+test environment are documented in [`docs/development.md`](docs/development.md),
+along with prerequisites, the installer, and known gaps. The propose-diff and
+review loop is [`docs/self-upgrade.md`](docs/self-upgrade.md); the work record
+is [`issues/README.md`](issues/README.md).
 
 ## License
 
-MIT
+Hyusk is released under the [MIT License](LICENSE).

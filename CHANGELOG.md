@@ -348,6 +348,12 @@
 
 ### Changed
 
+- The README is a user-facing page again: CI, version, and licence badges; a
+  current pearl-white hero, a runtime diagram, and a surfaces diagram; an honest
+  pre-release status; a one-block install; a short configuration table; and
+  links to the detailed docs instead of an inline tool manual. Added the missing
+  MIT `LICENSE` file and corrected the package repository URL to
+  `Goutam-11/hyusk`.
 - The orb overlay is deferred. This installation is driven from the GNOME
   top-bar extension and the Noctalia bar widget, so the `orb` feature work (P4)
   is out of the queue and `eframe`/`egui` stay unconditional; the recorded
