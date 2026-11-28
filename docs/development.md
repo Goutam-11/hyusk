@@ -49,8 +49,8 @@ for that feature build, and takes far longer than a cached run.
   explicit `compile_error!` in `src/main.rs`. macOS and Windows are not built,
   tested, or shipped.
 - A current stable Rust toolchain with Cargo.
-- A display server and the native libraries required by `eframe`/`winit` on
-  Linux.
+- A display server for the desktop tools; the GTK4 development libraries are
+  needed only when building the `workflow-editor` feature.
 - A microphone for audio startup checks and wake detection.
 - A wake-word classifier. Run `scripts/download-wake-word.sh` to download the
   temporary LiveKit `hey_livekit.onnx` model, or supply a custom model with
@@ -166,12 +166,12 @@ cargo check --all-targets --features workflow-editor
 cargo test --all-targets --features workflow-editor
 ```
 
-`cargo test --all-targets` runs the default suite: 527 passing tests and 6
+`cargo test --all-targets` runs the default suite: 528 passing tests and 6
 ignored. The GTK workflow editor (P3) and the mobile link (P5) are skipped by
-default; `--features mobile` is 540 passing and 6 ignored, and `--features
-workflow-editor` is 532 passing and 7 ignored (the main binary alone: 527
+default; `--features mobile` is 541 passing and 6 ignored, and `--features
+workflow-editor` is 533 passing and 7 ignored (the main binary alone: 528
 passing, 6 ignored; the editor contributes five, one of them ignored). All
-features together (mobile and the editor) are 545 passing and 7 ignored. The
+features together (mobile and the editor) are 546 passing and 7 ignored. The
 ignored ones need a real session or network: the four portal smoke tests below,
 a live CDP browser test, a Whisper cancel/cache test, and the GTK workflow
 editor draft test. Coverage includes the computer tool and portal mapping, the
@@ -256,8 +256,6 @@ Use `scripts/uninstall-autostart.sh` to disable and remove the unit.
 - Absolute pointer moves on the portal path are translated to relative motion
   because a RemoteDesktop-only session has no PipeWire stream; the tool tracks
   the pointer position from an XWayland hint when available.
-- `OrbApp` (eframe) is still a status visual: the GNOME indicator card and the
-  Noctalia tooltip render reply text and approvals, the orb does not.
 - Echo cancellation depends on the PipeWire/PulseAudio module installed by
   `scripts/install-autostart.sh --voice-audio`; without it the agent can hear
   its own playback.

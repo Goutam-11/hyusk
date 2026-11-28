@@ -708,6 +708,15 @@
 
 ### Removed
 
+- The orb overlay and the UI event channel it consumed are gone (#19).
+  `src/ui/` (the `eframe` orb and butterfly), the `eframe`/`egui` dependencies
+  and their lock entries, the `ui_tx`/`ui_rx` plumbing, the `HYUSK_ORB` and
+  `ORB_STEAL_FOCUS` switches, and the five UI-only events (`StateChanged`,
+  `ToolStarted`, `ToolFinished`, `Response`, `ResponseDelta`) were removed.
+  State still reaches the GNOME indicator, the Noctalia widget, and scripts
+  through `hyusk-state` and `hyusk-status.json`, and Stop and approvals keep
+  working through `hyusk-control.json`. A platform test keeps the orb and its
+  channel from returning.
 - Retired Nova Sonic and its second voice loop (#26). The `sonic` feature, the
   AWS SDK dependencies, the Bedrock Sonic client, the Sonic runner, the
   `SonicListenCompleted` event, the `bedrock-sonic` provider and catalog entry,

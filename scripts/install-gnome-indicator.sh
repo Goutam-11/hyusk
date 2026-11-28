@@ -2,9 +2,8 @@
 #
 # Install and enable the Hyusk GNOME top-bar indicator.
 #
-# The extension reads $XDG_RUNTIME_DIR/hyusk-state, which the agent writes on
-# every state change. Once installed, the agent skips its separate orb window
-# by default; use HYUSK_ORB=1 to force the orb.
+# The extension reads $XDG_RUNTIME_DIR/hyusk-state and hyusk-status.json, which
+# the agent writes on every state change.
 #
 set -euo pipefail
 
@@ -60,6 +59,4 @@ echo "GNOME Shell only scans extensions when the session starts."
 echo "Log out and back in, then enable 'Hyusk Agent Indicator' in the"
 echo "Extensions app if it is not already enabled."
 echo
-echo "After that the agent uses the top-bar indicator instead of its own orb."
-echo "Use HYUSK_ORB=1 to show the orb anyway, or HYUSK_ORB=0 to force"
-echo "indicator-only mode."
+echo "After that the top-bar indicator reads the agent's runtime files."

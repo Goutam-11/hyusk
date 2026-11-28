@@ -20,8 +20,8 @@ memory and preferences behave.
 ## Where the repository is today
 
 About 32.4k lines of Rust in one package, two binaries (`hyusk_agent` and the
-feature-gated `hyusk-workflows` editor), and five surfaces
-(GNOME extension, Noctalia widget, orb, Android app plus link, CLI). The
+feature-gated `hyusk-workflows` editor), and four surfaces
+(GNOME extension, Noctalia widget, Android app plus link, CLI). The
 load-bearing path is: wake word, Whisper STT, runtime events, one agent turn,
 the model, the tool registry, the approval gate, session and status files, and
 the panels.
@@ -36,22 +36,22 @@ same three concerns:
 - two speech stacks (local Whisper/Piper and the retired Nova Sonic live
   audio);
 - several UI contracts (`hyusk-status.json`, `hyusk-control.json`,
-  `hyusk-pairing.json`, orb events);
+  `hyusk-pairing.json`);
 - overlapping model clients (OpenRouter, OpenAI, Bedrock Mantle, Codex).
 
-Surfaces this installation does not use: the Android app and mobile link, the
-GTK workflow editor, and the orb overlay. Roughly 5.8k of the 32.4k
-Rust lines and 8.8k Kotlin lines support paths that are not exercised here. Wave
-1 has started the pruning: the experimental shell-only agent was deleted and the
-macOS branches removed (P1, P2), Linux is the only declared target, and the
-editor now sits behind the `workflow-editor` feature so an agent build no longer
-compiles GTK4 or libadwaita (P3).
+Surfaces this installation does not use: the Android app and mobile link and
+the GTK workflow editor. Roughly 5.1k of the 32.4k Rust lines and 8.8k Kotlin
+lines support paths that are not exercised here. Wave 1 has started the
+pruning: the experimental shell-only agent was deleted and the macOS branches
+removed (P1, P2), Linux is the only declared target, the editor now sits behind
+the `workflow-editor` feature so an agent build no longer compiles GTK4 or
+libadwaita (P3), and the orb overlay and its UI channel were removed (#19).
 
 ## Decisions
 
 | Area | Decision |
 | --- | --- |
-| Pruning | Park Android plus link behind a feature; retire Nova Sonic; delete the experimental shell-only agent; remove macOS branches; make the orb optional; feature-gate the GTK editor with `required-features`. |
+| Pruning | Park Android plus link behind a feature; retire Nova Sonic; delete the experimental shell-only agent; remove macOS branches; remove the orb and its UI channel (#19); feature-gate the GTK editor with `required-features`. |
 | Tool architecture | Hybrid: OS control and approval stay in-process; external tools arrive through one MCP-compatible boundary. |
 | First boundary work | MCP client with an explicit allowlist. |
 | Memory | Hybrid retrieval with provenance and consolidation. |
@@ -109,7 +109,7 @@ permission track.
 | P1 | Delete the experimental shell-only agent and the duplicated type module. |
 | P2 | Remove macOS branches; declare Linux as the supported target. |
 | P3 | `workflow-editor` feature; gtk4 and libadwaita optional; `required-features` on the bin. |
-| P4 | `orb` feature; eframe and egui optional. Deferred on 2026-10-31: the installation uses the GNOME extension and the Noctalia widget, not the orb. |
+| P4 | The orb overlay and the UI event channel it consumed. Retired in #19: `src/ui/`, `eframe`/`egui`, the channel, and the `HYUSK_ORB` switch were removed. |
 | P5 | `mobile` feature around the link server, the mobile tool, and pairing. |
 | P6 | `sonic` feature around the second loop and its client. Retired in #26: the loop, AWS SDK, provider, and doc were removed. |
 

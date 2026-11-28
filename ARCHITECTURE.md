@@ -1,8 +1,8 @@
 # Architecture
 
 `hyusk_agent` is an experimental composition of an OpenRouter-compatible agent,
-local tools, event-driven Tokio tasks, optional audio components, and a small
-`eframe` overlay.
+local tools, event-driven Tokio tasks, optional audio components, and two
+owner-only runtime files that bar widgets, keybinds, and scripts drive.
 
 The detailed module and event walkthrough is in
 [`docs/architecture.md`](docs/architecture.md).
@@ -18,7 +18,7 @@ main.rs
   |
   +-- WakeWordDetector -> WakeWordDetected -> SpeechToText -> UserInput
   |
-  +-- eframe UI <- state/tool/response events
+  +-- GNOME/Noctalia bars <-> runtime status/control files
   |
   +-- optional TLS WebSocket LinkServer <-> Android companion
        (challenge auth, replay-safe JSON-RPC, typed phone actions)
@@ -33,7 +33,7 @@ main.rs
 - `model/openrouter.rs` handles the HTTP protocol and transient retries.
 - `tools/` contains the tool trait, registry, and every local tool (desktop,
   shell, media, memory, scheduling, background tasks, and optional backends).
-- `speech/`, `wake/`, and `ui/` are audio and desktop refinement components.
+- `speech/` and `wake/` are the audio refinement components.
 - `link/` is an opt-in TLS-only mobile transport, compiled only with the
   `mobile` feature. It feeds authenticated phone turns into the same event
   loop, exposes the phone as the `mobile` tool, and broadcasts status and
@@ -47,8 +47,8 @@ playback. A wake word during a running turn records a speech probe while the
 turn continues; only a non-empty transcription replaces the turn and stops
 playback. The first available classifier is selected automatically in the order
 `hey_hyusk`, `hey_livekit`, `alexa`, `nihao_livekit`, `hey_jarvis`,
-`hey_mycroft`, `hey_rhasspy`. The overlay draws a black circular orb but does
-not render response text. See
+`hey_mycroft`, `hey_rhasspy`. The GNOME and Noctalia surfaces render state,
+reply text, and approvals from the runtime files; see
 [`docs/voice-and-ui.md`](docs/voice-and-ui.md) for the exact behavior.
 
 ## Runtime characteristics

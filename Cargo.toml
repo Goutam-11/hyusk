@@ -61,8 +61,6 @@ sha2 = { version = "0.10", optional = true }
 rand = { version = "0.8", optional = true }
 whisper-rs = "0.16"
 cpal = "0.15"       # Audio input/output
-eframe = "0.33"
-egui = "0.33"
 livekit-wakeword = "0.1.3"
 nnnoiseless = { version = "0.5", default-features = false }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "macros", "chrono", "uuid", "json"] }

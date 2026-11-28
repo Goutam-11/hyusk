@@ -255,9 +255,8 @@ accepted.
 
 Keyboard input uses Linux evdev keycodes through `NotifyKeyboardKeycode`, with
 keysyms as a fallback for characters that have no evdev mapping. Keyboard
-events follow the focused window, so the orb does not request focus by default
-(`ORB_STEAL_FOCUS=0`); otherwise portal typing would be delivered to the orb
-instead of the controlled application.
+events follow the focused window, and the agent opens no window of its own, so
+portal typing reaches the controlled application.
 
 Absolute pointer movement uses the PipeWire stream from a combined ScreenCast
 session, so `mouse_move` is not limited to relative deltas. The first action

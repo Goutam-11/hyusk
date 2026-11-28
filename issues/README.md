@@ -61,7 +61,7 @@ in [`docs/tools.md`](../docs/tools.md), or an entry in
 | P1 | The experimental shell agent is deleted | 2026-10-31 |
 | P2 | macOS and Windows branches are gone; Linux is declared once | 2026-10-31 |
 | P3 | The GTK workflow editor is the `workflow-editor` feature | 2026-10-31 |
-| P4 | The orb overlay was deferred, not closed - see below | deferred |
+| P4 | The orb overlay and its UI event channel were removed (#19) | 2026-11-28 |
 | P5 | The mobile link is the `mobile` feature, off by default | 2026-10-31 |
 | P6 | Nova Sonic was retired in #26 (the `sonic` feature is gone) | 2026-11-28 |
 | T1 | Every tool declares a validated manifest, and the registry enforces it | 2026-10-31 |
@@ -111,18 +111,6 @@ open deliberately rather than hidden inside F2.
 Acceptance criteria: one database open per turn at most, measured; the budget
 and consistency tests still green; a read failure still returning an empty
 store instead of failing the turn. Tests to add with the change.
-
-### P4 - the orb overlay is deferred
-
-Not rejected. eframe and egui stay unconditional until someone takes it,
-because this installation is driven from the GNOME top-bar extension and the
-Noctalia bar widget, so an `orb` feature would buy build time and nothing the
-user sees. Whoever takes it needs:
-
-- the default build to stop compiling eframe or egui;
-- the orb to behave as today with the feature, including `HYUSK_ORB=0`;
-- `docs/voice-and-ui.md` to state the feature requirement;
-- both build modes checked, plus a manual orb check.
 
 ### Manual checks that never ran
 
