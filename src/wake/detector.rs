@@ -158,8 +158,8 @@ impl WakeResume {
 
 /// Longest the detector stays paused waiting for the speech owner before it
 /// resumes on its own and clears the stale buffer.
-// A continuous Nova Sonic conversation may legitimately own the microphone
-// for several minutes. Leave a safety timeout beyond Bedrock's stream limit.
+// A long voice conversation may legitimately own the microphone for several
+// minutes; leave a safety timeout beyond any plausible single utterance.
 const MAX_PAUSE: Duration = Duration::from_secs(540);
 
 pub struct WakeWordDetector {

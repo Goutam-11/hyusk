@@ -8,8 +8,6 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) use super::control::PendingApproval;
 use super::control::{self as control_state, AgentControl, ControlHandle};
-#[cfg(feature = "sonic")]
-use crate::model::bedrock_sonic::BedrockSonicClient;
 use crate::{
     agent::audit::{self, Outcome as AuditOutcome},
     model::openrouter::OpenRouterClient,
@@ -24,9 +22,6 @@ mod prompts;
 mod reply;
 #[path = "runner/session.rs"]
 mod session;
-#[cfg(feature = "sonic")]
-#[path = "runner/sonic.rs"]
-mod sonic;
 #[path = "runner/stream.rs"]
 mod stream;
 use prompts::{append_desktop_context, build_system_prompt, build_tool_guide, build_tool_specs};
@@ -181,6 +176,13 @@ impl ToolProgress {
     }
 }
 
+/// The message a stored selection gets when its provider has been retired.
+pub fn retired_provider_message(provider: &str) -> Option<&'static str> {
+    (provider == "bedrock-sonic").then_some(
+        "Nova Sonic was retired; choose another provider (the AWS voice path is no longer built)",
+    )
+}
+
 impl Agent {
     pub fn workflow_tools(&self) -> ToolRegistry {
         self.tools.clone()
@@ -206,7 +208,7 @@ impl Agent {
     pub fn new(client: OpenRouterClient, model: String, tools: ToolRegistry) -> Self {
         let tool_specs = build_tool_specs(&tools);
         let tool_guide = build_tool_guide(&tools);
-        let system_prompt = build_system_prompt(&tool_guide, "", false);
+        let system_prompt = build_system_prompt(&tool_guide, "");
         let mut messages = vec![Message::system(system_prompt)];
         let (saved_messages, action_journal, task_paused, loaded_session_identity) = load_session();
         messages.extend(saved_messages);
@@ -242,26 +244,6 @@ impl Agent {
     pub fn with_bedrock(self, client: Option<OpenRouterClient>) -> Self {
         self.control().set_provider_client("bedrock", client);
         self
-    }
-
-    #[cfg(feature = "sonic")]
-    pub fn with_bedrock_sonic(self, client: Option<std::sync::Arc<BedrockSonicClient>>) -> Self {
-        self.control().set_sonic_client(client);
-        self
-    }
-
-    /// True only in a build with the `sonic` feature and with Nova Sonic
-    /// selected. Without the feature the second loop does not exist, so the
-    /// text path is the only path.
-    pub fn uses_bedrock_sonic(&self) -> bool {
-        #[cfg(feature = "sonic")]
-        {
-            self.control().uses_sonic()
-        }
-        #[cfg(not(feature = "sonic"))]
-        {
-            false
-        }
     }
 
     pub fn with_active_api_model(self, active: SharedActiveModel) -> Self {
@@ -405,27 +387,8 @@ impl Agent {
     }
 
     fn set_model(&mut self, provider: &str, model: &str, new_conversation: bool) -> Result<()> {
-        if provider == "bedrock-sonic" {
-            #[cfg(not(feature = "sonic"))]
-            anyhow::bail!("Nova Sonic is not compiled in; rebuild with --features sonic");
-            #[cfg(feature = "sonic")]
-            {
-                if self.control().sonic_client().is_none() {
-                    anyhow::bail!(
-                        "Nova Sonic is unavailable: configure an AWS CLI profile/region and Bedrock access"
-                    );
-                }
-                self.control().set_identity(provider, model);
-                self.control().set_pending(None);
-                self.reply_needs_follow_up = Some(false);
-                self.messages[0] =
-                    Message::system(build_system_prompt(&self.tool_guide, "", false));
-                if new_conversation || self.session_belongs_to_another_model(provider, model) {
-                    self.reset_conversation();
-                }
-                self.loaded_session_identity = Some((provider.to_string(), model.to_string()));
-                return Ok(());
-            }
+        if let Some(message) = retired_provider_message(provider) {
+            anyhow::bail!("{message}");
         }
         let client = match provider {
             "openrouter" => self
@@ -446,8 +409,7 @@ impl Agent {
                 }
                 self.control().set_identity(provider, model);
                 self.control().set_pending(None);
-                self.messages[0] =
-                    Message::system(build_system_prompt(&self.tool_guide, "", false));
+                self.messages[0] = Message::system(build_system_prompt(&self.tool_guide, ""));
                 self.reply_needs_follow_up = Some(false);
                 if new_conversation || self.session_belongs_to_another_model(provider, model) {
                     self.reset_conversation();
@@ -461,7 +423,7 @@ impl Agent {
         self.control().set_text_client(Some(client));
         self.vision = configured_vision();
         self.control().set_identity(provider, model);
-        self.messages[0] = Message::system(build_system_prompt(&self.tool_guide, "", false));
+        self.messages[0] = Message::system(build_system_prompt(&self.tool_guide, ""));
         self.control().set_pending(None);
         self.reply_needs_follow_up = Some(false);
         if new_conversation || self.session_belongs_to_another_model(provider, model) {
@@ -840,10 +802,6 @@ impl Agent {
         cancel: &CancellationToken,
         sentences: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
     ) -> Result<Option<String>> {
-        #[cfg(feature = "sonic")]
-        if self.uses_bedrock_sonic() {
-            return self.handle_sonic_text(&user_input, ui_tx, cancel).await;
-        }
         // An approval that timed out while the user was away is resolved before
         // the new input is interpreted, so it can never be read as an answer.
         if let Some(reply) = self.expire_stale_approval() {
@@ -977,7 +935,7 @@ impl Agent {
          * long-running session never acts on a stale date or misses something
          * the user told us earlier.
          */
-        let mut prompt = build_system_prompt(&self.tool_guide, &user_input, false);
+        let mut prompt = build_system_prompt(&self.tool_guide, &user_input);
         // Approval is runtime state, not something inferred from old assistant
         // questions retained in conversation history. Any approval above has
         // already been consumed before we enter the model loop.
@@ -1642,6 +1600,15 @@ mod tests {
         tools::{Tool, ToolRegistry, ToolResult},
         types::Message,
     };
+
+    #[test]
+    fn a_stored_sonic_selection_reports_the_retirement() {
+        let message = super::retired_provider_message("bedrock-sonic")
+            .expect("the retired provider must have a message");
+        assert!(message.contains("retired"), "{message}");
+        assert!(message.contains("provider"), "{message}");
+        assert!(super::retired_provider_message("openrouter").is_none());
+    }
 
     struct CountingTool(Arc<AtomicUsize>);
 
@@ -3407,16 +3374,6 @@ mod tests {
     fn preserves_ordinary_json_examples_in_prose() {
         let raw = "An example:\n```json\n{\"text\":\"example\"}\n```";
         assert_eq!(parse_structured_reply(raw), (raw.to_string(), None));
-    }
-
-    #[cfg(feature = "sonic")]
-    #[test]
-    fn sonic_prompt_never_requests_spoken_json() {
-        let voice = super::prompts::build_system_prompt("", "hello", true);
-        let chat = super::prompts::build_system_prompt("", "hello", false);
-        assert!(voice.contains("Speak only the natural answer"));
-        assert!(!voice.contains("Response protocol (required)"));
-        assert!(chat.contains("Response protocol (required)"));
     }
 
     #[test]

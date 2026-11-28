@@ -21,8 +21,6 @@ use std::{
     time::Instant,
 };
 
-#[cfg(feature = "sonic")]
-use crate::model::bedrock_sonic::BedrockSonicClient;
 use crate::model::{codex::CodexClient, openrouter::OpenRouterClient, SharedActiveModel};
 
 /// A confirmation waiting for the user, with the exact call that will run.
@@ -55,8 +53,6 @@ pub(crate) struct AgentControl {
     openrouter: Option<OpenRouterClient>,
     openai: Option<OpenRouterClient>,
     bedrock: Option<OpenRouterClient>,
-    #[cfg(feature = "sonic")]
-    sonic: Option<Arc<BedrockSonicClient>>,
     active_api_model: Option<SharedActiveModel>,
     codex: Option<CodexClient>,
 }
@@ -80,8 +76,6 @@ pub(crate) fn new_control(
         openrouter: None,
         openai: None,
         bedrock: None,
-        #[cfg(feature = "sonic")]
-        sonic: None,
         active_api_model: None,
         codex: None,
     }))
@@ -105,10 +99,6 @@ impl AgentControl {
 
     pub(crate) fn model(&self) -> String {
         self.model.clone()
-    }
-
-    pub(crate) fn uses_sonic(&self) -> bool {
-        self.provider == "bedrock-sonic"
     }
 
     /// Record the selected provider and model without touching the clients.
@@ -146,16 +136,6 @@ impl AgentControl {
         }
     }
 
-    #[cfg(feature = "sonic")]
-    pub(crate) fn sonic_client(&self) -> Option<Arc<BedrockSonicClient>> {
-        self.sonic.clone()
-    }
-
-    #[cfg(feature = "sonic")]
-    pub(crate) fn set_sonic_client(&mut self, client: Option<Arc<BedrockSonicClient>>) {
-        self.sonic = client;
-    }
-
     pub(crate) fn codex_client(&self) -> Option<CodexClient> {
         self.codex.clone()
     }
@@ -186,11 +166,6 @@ impl AgentControl {
 
     pub(crate) fn armed(&self) -> bool {
         self.pending.is_some()
-    }
-
-    #[cfg(feature = "sonic")]
-    pub(crate) fn pending_cloned(&self) -> Option<PendingApproval> {
-        self.pending.clone()
     }
 
     pub(crate) fn take_pending(&mut self) -> Option<PendingApproval> {
@@ -283,7 +258,6 @@ mod tests {
         assert!(lock(&control).provider_client("openai").is_some());
         assert!(lock(&control).provider_client("openrouter").is_none());
         assert_eq!(lock(&control).provider(), "openrouter");
-        assert!(!lock(&control).uses_sonic());
     }
 
     #[test]

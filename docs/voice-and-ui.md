@@ -244,8 +244,7 @@ top bar. See [gnome-indicator.md](gnome-indicator.md).
   scanner is disabled and the wake-word threshold is raised so it does not
   trigger on its own TTS, but the wake word stays live. During a text-model turn
   a wake word starts a speech probe while the turn continues; only a non-empty
-  transcript replaces the turn and stops Linux TTS. Nova Sonic keeps its own
-  streaming barge-in path.
+  transcript replaces the turn and stops Linux TTS.
 - The `eframe` orb does not display transcripts or response text; the GNOME
   response card and the Noctalia tooltip show the latest response. While a
   confirmation is armed they show the exact pending call instead - the tool and

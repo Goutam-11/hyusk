@@ -90,8 +90,8 @@ from any tab.
   file as soon as it has the key, so the secret does not linger in the runtime
   directory.
 
-Nova Sonic (AWS profile) and Codex (CLI login) appear as selectable providers
-because they authenticate outside the keyring.
+Codex (CLI login) appears as a selectable provider because it authenticates
+outside the keyring.
 
 ## How it works
 

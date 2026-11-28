@@ -87,7 +87,6 @@ for the microphone at the same time.
 | `agent/runner/session.rs` | Builds the session snapshot, repairs interrupted tool batches and unsettled confirmations, and compacts history without splitting tool/result pairs. |
 | `persist.rs` | One coalescing writer task for the session snapshot and `hyusk-status.json`; the caller hands over a builder, at most one write per file is queued, and shutdown flushes the rest (L2). |
 | `agent/runner/stream.rs` | Decodes streamed prose and response envelopes into speakable sentences while the reply is still arriving. |
-| `agent/runner/sonic.rs` | Runs Nova Sonic conversations, tool dispatch, audio playback, and stream cleanup; compiled only with the `sonic` feature (P6). |
 | `agent/runtime.rs` | Consumes `HyuskEvent`s, runs post-wake STT, invokes the agent, emits responses, and calls TTS. |
 | `agent/commands.rs` | Deterministic app/site/workflow command router and workflow validation. |
 | `agent/control.rs` | Approval, model-selection, and paused-task state shared with the event loop so control events never wait for a turn (lock order: agent then control). |
@@ -138,13 +137,13 @@ for the microphone at the same time.
   is what changes the guidance; a failed executable or CDP timeout is not an
   approval request.
 - **A task ends too early or repeats actions:** inspect the text loop in
-  `runner.rs`, or the voice loop in `runner/sonic.rs`, together with the tool's
-  output. Dispatch success alone is not proof that the user goal is complete.
+  `runner.rs` together with the tool's output. Dispatch success alone is not
+  proof that the user goal is complete.
 - **Lost conversation or malformed tool history:** inspect
   `runner/session.rs` and `model/openrouter/protocol.rs`. Preserve call IDs,
   roles, and complete tool batches when editing compaction or cancellation.
 - **Listening stays active or the microphone remains occupied:** inspect
-  `runtime.rs` lifecycle tokens and `runner/sonic.rs` cleanup guards. Recorder
+  `runtime.rs` lifecycle tokens and cleanup guards. Recorder
   timeout cancellation must not cancel the outer lifecycle or suppress its
   completion event. Dropping an async task handle does not stop its worker.
 - **Browser editing or navigation:** inspect `tools/browser.rs`. Keep action
@@ -172,11 +171,9 @@ screenshot, and it does not infer that the user is actively working merely
 because a window is open. The snapshot replaces the previous turn's observation;
 it is not stored as a user memory.
 
-Nova Sonic receives the same snapshot when its voice session starts, after
-microphone capture has begun. During that continuing session the model uses
-`window active/list` to refresh changing state. Context-relative commands such
-as "search here" bypass the instant command router and use the model and UI
-inspection tools. Focus metadata identifies a likely target; accessibility or
+During a continuing voice conversation the model uses `window active/list` to
+refresh changing state. Context-relative commands such as "search here" bypass
+the instant command router and use the model and UI inspection tools. Focus metadata identifies a likely target; accessibility or
 screen inspection is still required to find controls and verify actions.
 
 ```text
@@ -282,7 +279,7 @@ provider boundary independent from local execution details.
 
 - Input and voice: `WakeWordDetected`, `UserInput`, `VoiceTranscript`,
   `ListenCompleted`, `ContinueListening`, `AwaitReplyListening`, `StopListening`,
-  and the scoped `SonicListenCompleted`/`WakeProbeFinished` results.
+  and the scoped `WakeProbeFinished` results.
 - Work: `RunWorkflow`, `ScheduledWorkflow`, `ScheduledAgentInput`,
   `ScheduledAgentTask`, `WorkflowFinished`, `SubtaskFinished`, `TurnFinished`.
 - UI and control: `StateChanged`, `ToolStarted`, `ToolFinished`, `Response`,

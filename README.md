@@ -29,8 +29,8 @@
 
 > **Status: pre-release (0.1.0), not yet a daily driver.** The core agent,
 > tools, memory, and the niri/GNOME window adapters are implemented and tested.
-> Live provider calls, a live Android reconnect, Nova Sonic, the indicator
-> panels, the portals, and the installer have not all been verified end to end,
+> Live provider calls, a live Android reconnect, the indicator panels, the
+> portals, and the installer have not all been verified end to end,
 > and reliability is still being hardened. Use it with that in mind.
 
 ## Why Hyusk
@@ -182,7 +182,7 @@ cargo clippy --all-targets --offline
 cargo test --all-targets --offline -- --test-threads=4
 ```
 
-The default suite is 523 passing and 6 ignored; feature builds and the isolated
+The default suite is 524 passing and 6 ignored; feature builds and the isolated
 test environment are documented in [`docs/development.md`](docs/development.md),
 along with prerequisites, the installer, and known gaps. The propose-diff and
 review loop is [`docs/self-upgrade.md`](docs/self-upgrade.md); the work record

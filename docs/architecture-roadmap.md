@@ -4,7 +4,8 @@ Status: agreed on 2026-10-29. Wave 1 (P1, P2, P3, T1) was completed on
 2026-10-31, Wave 2 began with M1 (memory schema v2), and M2 (hybrid retrieval),
 M3 (consolidation), M4 (explain and export), G1 (preference notes), T2 (the
 external tool host), P5 (the mobile feature), T3 (the MCP provider), T4 (the
-provider trust model and contract tests), P6 (the Nova Sonic feature), and G2
+provider trust model and contract tests), P6 (the Nova Sonic feature, retired in
+#26), and G2
 (the propose-diff loop) followed; the architecture track is complete and P4 is
 deferred. The work units were closed and their tracker removed on 2026-11-01;
 [issues/README.md](../issues/README.md) is the record of what shipped and what
@@ -28,17 +29,18 @@ the panels.
 The instability is not feature count. It is parallel implementations of the
 same three concerns:
 
-- two agent loops (`runner.rs` and `runner/sonic.rs`), each with its own
-  approval handling;
-- three approval call sites (runner, Sonic loop, workflow queue) plus a fast
-  command lane that never consults the gate;
-- two speech stacks (local Whisper/Piper and Nova Sonic live audio);
+- two agent loops (`runner.rs` and the now-retired `runner/sonic.rs`), each
+  with its own approval handling;
+- three approval call sites (runner, the retired Sonic loop, workflow queue)
+  plus a fast command lane that never consults the gate;
+- two speech stacks (local Whisper/Piper and the retired Nova Sonic live
+  audio);
 - several UI contracts (`hyusk-status.json`, `hyusk-control.json`,
   `hyusk-pairing.json`, orb events);
 - overlapping model clients (OpenRouter, OpenAI, Bedrock Mantle, Codex).
 
-Surfaces this installation does not use: the Android app and mobile link, Nova
-Sonic, the GTK workflow editor, and the orb overlay. Roughly 5.8k of the 32.4k
+Surfaces this installation does not use: the Android app and mobile link, the
+GTK workflow editor, and the orb overlay. Roughly 5.8k of the 32.4k
 Rust lines and 8.8k Kotlin lines support paths that are not exercised here. Wave
 1 has started the pruning: the experimental shell-only agent was deleted and the
 macOS branches removed (P1, P2), Linux is the only declared target, and the
@@ -49,7 +51,7 @@ compiles GTK4 or libadwaita (P3).
 
 | Area | Decision |
 | --- | --- |
-| Pruning | Park Android plus link and Nova Sonic behind features; delete the experimental shell-only agent; remove macOS branches; make the orb optional; feature-gate the GTK editor with `required-features`. |
+| Pruning | Park Android plus link behind a feature; retire Nova Sonic; delete the experimental shell-only agent; remove macOS branches; make the orb optional; feature-gate the GTK editor with `required-features`. |
 | Tool architecture | Hybrid: OS control and approval stay in-process; external tools arrive through one MCP-compatible boundary. |
 | First boundary work | MCP client with an explicit allowlist. |
 | Memory | Hybrid retrieval with provenance and consolidation. |
@@ -109,7 +111,7 @@ permission track.
 | P3 | `workflow-editor` feature; gtk4 and libadwaita optional; `required-features` on the bin. |
 | P4 | `orb` feature; eframe and egui optional. Deferred on 2026-10-31: the installation uses the GNOME extension and the Noctalia widget, not the orb. |
 | P5 | `mobile` feature around the link server, the mobile tool, and pairing. |
-| P6 | `sonic` feature around the second loop and its client. |
+| P6 | `sonic` feature around the second loop and its client. Retired in #26: the loop, AWS SDK, provider, and doc were removed. |
 
 ### T — tools
 
@@ -161,8 +163,8 @@ additions.
   Obsidian export must not carry secrets.
 - **Preference drift.** A wrong preference saved silently is worse than none.
   The review path must be one action, and `forget` must be immediate.
-- **Pruning is product-visible.** Android and Sonic are shipped features in
-  `README.md` and the changelog. Parking is reversible; deleting them is not.
+- **Pruning is product-visible.** Android is a shipped feature in `README.md`
+  and the changelog. Parking is reversible; deleting it is not.
 
 ## Deferred, deliberately
 

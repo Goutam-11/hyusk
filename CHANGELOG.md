@@ -696,6 +696,15 @@
 
 ### Removed
 
+- Retired Nova Sonic and its second voice loop (#26). The `sonic` feature, the
+  AWS SDK dependencies, the Bedrock Sonic client, the Sonic runner, the
+  `SonicListenCompleted` event, the `bedrock-sonic` provider and catalog entry,
+  its capture/PCM helpers, its tests, and its document are gone. The shared
+  approval, prompt, execution, and audit code stays shared, and the local
+  Whisper/Piper voice path is unchanged. A stored `bedrock-sonic` selection now
+  falls back with a message that the provider was retired. CI no longer builds
+  a `sonic` feature. The Android app keeps its own optional Sonic voice session;
+  retiring the app is #27.
 - Removed the design-exploration artefacts, the mobile design-system mockup
   set, and the two superseded research and audit documents that nothing in the
   build reads (#25). Their conclusions live in `docs/architecture.md`,

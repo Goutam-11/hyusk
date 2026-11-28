@@ -150,7 +150,7 @@ fn join_with_and(items: &[String]) -> String {
     }
 }
 
-pub(super) fn build_system_prompt(tool_guide: &str, query: &str, sonic_voice: bool) -> String {
+pub(super) fn build_system_prompt(tool_guide: &str, query: &str) -> String {
     let mut prompt = r#"
 You are Hyusk, a warm, quick-witted local AI assistant that lives on the
 user's computer. You are talking with the user out loud through a
@@ -308,13 +308,9 @@ Available tools:
     prompt.push_str("\n\nUser profile and service style:\n");
     prompt.push_str(&user_profile_context());
 
-    if sonic_voice {
-        prompt.push_str("\nVoice response protocol: your words are synthesized directly by Nova Sonic. Speak only the natural answer. Never say or produce JSON, field names, quotation marks around the answer, or a structured response envelope. Ask a clear spoken question when you need a reply or confirmation.\n");
-    } else {
-        prompt.push_str(
-            "\nResponse protocol (required): after all tool calls are complete, return exactly one JSON object with this shape: {\"text\":\"the concise spoken response\",\"needs_reply\":false,\"reply_type\":\"none\"}. Set needs_reply to true only when the user must answer a question, choose an option, or confirm an action. Use reply_type values none, question, choice, or confirmation. Do not wrap the final JSON in markdown and do not add any text outside it. A tool-call message may additionally contain the one brief spoken preamble described above; that preamble is not the final response and must not claim completion.\n",
-        );
-    }
+    prompt.push_str(
+        "\nResponse protocol (required): after all tool calls are complete, return exactly one JSON object with this shape: {\"text\":\"the concise spoken response\",\"needs_reply\":false,\"reply_type\":\"none\"}. Set needs_reply to true only when the user must answer a question, choose an option, or confirm an action. Use reply_type values none, question, choice, or confirmation. Do not wrap the final JSON in markdown and do not add any text outside it. A tool-call message may additionally contain the one brief spoken preamble described above; that preamble is not the final response and must not claim completion.\n",
+    );
 
     prompt.push_str(
         "\nIf the user sends a new message while you are still working, treat it \
@@ -436,7 +432,7 @@ mod tests {
     }
 
     fn system_prompt() -> String {
-        build_system_prompt("- fixture tool: test\n", "check the build", false)
+        build_system_prompt("- fixture tool: test\n", "check the build")
     }
 
     /// Collapse the prompt's wrapping so phrase checks are independent of line

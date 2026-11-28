@@ -31,8 +31,6 @@ separate `hyusk` workspace CLI.
   by the `browser` tool.
 - [Android companion](android-agent.md) documents the phone app, and the
   [mobile link protocol](mobile-link-protocol.md) its versioned wire contract.
-- [Bedrock Nova Sonic](bedrock-nova-sonic.md) covers the speech-to-speech
-  provider, AWS credentials, and live testing.
 
 The top-level [`README.md`](../README.md) is the starting point for running the
 binary and understanding its current status.

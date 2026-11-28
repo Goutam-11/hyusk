@@ -162,19 +162,16 @@ cargo clippy --all-targets
 cargo test --bin hyusk_agent
 cargo check --all-targets --features mobile
 cargo test --all-targets --features mobile
-cargo check --all-targets --features sonic
-cargo test --all-targets --features sonic
 cargo check --all-targets --features workflow-editor
 cargo test --all-targets --features workflow-editor
 ```
 
-`cargo test --all-targets` runs the default suite: 523 passing tests and 6
-ignored. The GTK workflow editor (P3), the mobile link (P5), and Nova Sonic (P6)
-are skipped by default; `--features sonic` is 536 passing and 6 ignored,
-`--features mobile` is 536 passing and 6 ignored, and `--features
-workflow-editor` is 528 passing and 7 ignored (the main binary alone: 523
+`cargo test --all-targets` runs the default suite: 524 passing tests and 6
+ignored. The GTK workflow editor (P3) and the mobile link (P5) are skipped by
+default; `--features mobile` is 537 passing and 6 ignored, and `--features
+workflow-editor` is 529 passing and 7 ignored (the main binary alone: 524
 passing, 6 ignored; the editor contributes five, one of them ignored). All
-features together are 554 passing and 7 ignored. The
+features together (mobile and the editor) are 542 passing and 7 ignored. The
 ignored ones need a real session or network: the four portal smoke tests below,
 a live CDP browser test, a Whisper cancel/cache test, and the GTK workflow
 editor draft test. Coverage includes the computer tool and portal mapping, the
@@ -189,9 +186,8 @@ timeout, truncation, argument validation, and shutdown), the MCP provider
 (modern and legacy discovery, curated descriptions, ignored annotations, the
 environment and tool grants, the kill switch, and live removal), the provider
 contract suite that runs the same guarantees against both fixture servers, the
-Nova Sonic client, loop, capture helpers, and audio player under `--features
-sonic`, the mobile link's auth/protocol/server under `--features mobile`, and
-the one-shot `WakeResume` handshake.
+mobile link's auth/protocol/server under `--features mobile`, and the one-shot
+`WakeResume` handshake.
 
 `cargo clippy --all-targets` is clean by default. With `--features mobile` it
 reports the three pre-existing `result_large_err` warnings on `LinkServerError`
