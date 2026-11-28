@@ -199,7 +199,6 @@ pub async fn run_agent_task(
     // Control state is taken before the agent is wrapped in its mutex, so the
     // event loop can reach it while a turn holds that mutex (L1).
     let control = agent.control_handle();
-    let mut sonic_mode = agent.uses_bedrock_sonic();
     // Clone the Arc-backed tools before any model turn can hold Agent's mutex.
     let workflow_tools = agent.workflow_tools();
     let agent = Arc::new(Mutex::new(agent));
@@ -298,13 +297,6 @@ pub async fn run_agent_task(
                     HyuskEvent::UserInput(text)
                 }
             }
-            #[cfg(feature = "sonic")]
-            event @ HyuskEvent::SonicListenCompleted { id, .. } => {
-                if !is_current_sonic_listen(id, &listen) {
-                    continue;
-                }
-                event
-            }
             event => event,
         };
         match event {
@@ -343,7 +335,7 @@ pub async fn run_agent_task(
                     .as_ref()
                     .is_some_and(|turn| !turn.handle.is_finished());
                 if task_running {
-                    if !should_probe_busy_wake(&event, sonic_mode) {
+                    if !should_probe_busy_wake(&event) {
                         wake_resume.resume();
                         continue;
                     }
@@ -481,24 +473,16 @@ pub async fn run_agent_task(
                 next_listen_id += 1;
                 let cancel = CancellationToken::new();
                 let task_agent_tx = agent_tx.clone();
-                let task_ui_tx = ui_tx.clone();
                 let task_resume = wake_resume.clone();
-                let task_agent = Arc::clone(&agent);
                 let task_cancel = cancel.clone();
-                let task_output = Arc::clone(&output_active);
-                let task_control = Arc::clone(&control);
                 let task_listen_until = voice_listen_until;
 
                 let handle = tokio::spawn(async move {
                     handle_listen(
                         stt,
                         task_agent_tx,
-                        task_ui_tx,
                         task_resume,
                         task_cancel,
-                        task_agent,
-                        task_control,
-                        task_output,
                         task_listen_until,
                         id,
                     )
@@ -531,79 +515,6 @@ pub async fn run_agent_task(
                 } else {
                     send_state(&ui_tx, HyuskState::Hidden).await;
                 }
-            }
-
-            #[cfg(feature = "sonic")]
-            HyuskEvent::SonicListenCompleted {
-                id: _,
-                text,
-                waiting,
-                error,
-            } => {
-                listen = None;
-                let keep_listening = waiting && text.is_some() && error.is_none();
-                if let Some(error) = error {
-                    eprintln!("[Nova Sonic] Turn failed: {error}");
-                    let message = format!(
-                        "Nova Sonic failed: {}",
-                        error.lines().next().unwrap_or("unknown error")
-                    );
-                    crate::status::card("error", &message, false);
-                    let _ = ui_tx.try_send(HyuskEvent::Response(message));
-                } else if let Some(text) = text {
-                    crate::status::awaiting_reply(waiting);
-                    crate::status::card(
-                        if waiting {
-                            crate::status::APPROVAL_CARD_KIND
-                        } else {
-                            "response"
-                        },
-                        &text,
-                        waiting,
-                    );
-                    let _ = ui_tx.try_send(HyuskEvent::Response(text));
-                }
-
-                // This completion also performs the StopListening cleanup.
-                // Keeping it in this ID-validated dispatch prevents an old
-                // Sonic worker from hiding a newer capture or resuming media.
-                if keep_listening {
-                    voice_conversation = true;
-                    voice_listen_until = Some(std::time::Instant::now() + Duration::from_secs(30));
-                    pending_followups.push_back(HyuskEvent::ContinueListening);
-                    crate::status::awaiting_reply(true);
-                } else {
-                    finish_voice_conversation(&mut voice_conversation, &mut voice_listen_until);
-                }
-                release_next_scheduled_input(
-                    &mut scheduled_inputs,
-                    &mut pending_followups,
-                    active.is_some(),
-                    listen_capture_active(&listen),
-                    voice_conversation,
-                    approval_blocks_scheduled_input(&control),
-                );
-                if resume_media.swap(false, Ordering::Relaxed) {
-                    tokio::spawn(media::resume());
-                }
-                send_state(
-                    &ui_tx,
-                    if keep_listening {
-                        HyuskState::Listening
-                    } else {
-                        HyuskState::Hidden
-                    },
-                )
-                .await;
-                start_next_workflow(
-                    &mut workflow_queue,
-                    &mut active_workflow,
-                    active.is_some(),
-                    listen_capture_active(&listen),
-                    &workflow_tools,
-                    &agent_tx,
-                    &ui_tx,
-                );
             }
 
             event @ (HyuskEvent::UserInput(_) | HyuskEvent::ScheduledAgentInput(_)) => {
@@ -1004,7 +915,6 @@ pub async fn run_agent_task(
                     false,
                 );
                 let result = agent.lock().await.select_model(&provider, &model);
-                sonic_mode = control_state::lock(&control).uses_sonic();
                 let message = match result {
                     Ok(()) => {
                         crate::status::model(&provider, &model);
@@ -1174,13 +1084,6 @@ fn normalize_listen_completed(
         })
 }
 
-#[cfg(feature = "sonic")]
-fn is_current_sonic_listen(id: u64, listen: &Option<ActiveListen>) -> bool {
-    listen.as_ref().is_some_and(|capture| {
-        capture.id == id && capture.probe_id.is_none() && !capture.cancel.is_cancelled()
-    })
-}
-
 fn should_defer_scheduled_input(
     turn_active: bool,
     listen_active: bool,
@@ -1254,7 +1157,7 @@ fn apply_approval_decision(
 /// Whether a confirmation is armed.
 ///
 /// Read from the shared control state, so the answer is always current: a turn
-/// or a Sonic session holding the agent mutex cannot make it unknowable.
+/// or a long turn holding the agent mutex cannot make it unknowable.
 fn armed_approval(control: &ControlHandle) -> bool {
     control_state::lock(control).armed()
 }
@@ -1302,10 +1205,10 @@ fn remove_stale_listen_followups(pending_followups: &mut VecDeque<HyuskEvent>) {
     });
 }
 
-fn should_probe_busy_wake(event: &HyuskEvent, sonic_mode: bool) -> bool {
-    // Follow-up notifications cannot cancel or replace a running task. Nova
-    // owns its live mic/barge-in path; text providers validate new speech first.
-    matches!(event, HyuskEvent::WakeWordDetected) && !sonic_mode
+fn should_probe_busy_wake(event: &HyuskEvent) -> bool {
+    // Follow-up notifications cannot cancel or replace a running task; a wake
+    // word records a short probe first, and only non-empty speech replaces it.
+    matches!(event, HyuskEvent::WakeWordDetected)
 }
 
 async fn cancel_desktop_workflow(active: &mut Option<ActiveWorkflow>, ui_tx: &Sender<HyuskEvent>) {
@@ -1459,16 +1362,11 @@ fn take_completed_task_announcements(
 /// This runs as a dedicated task so a slow or failed recording never blocks
 /// the event loop: typed input, another wake word, and shutdown all keep
 /// working. The wake detector is resumed before this task even starts.
-#[allow(clippy::too_many_arguments)]
 async fn handle_listen(
     stt: Arc<SpeechToText>,
     agent_tx: Sender<HyuskEvent>,
-    ui_tx: Sender<HyuskEvent>,
     wake_resume: WakeResume,
     cancel: CancellationToken,
-    agent: Arc<Mutex<Agent>>,
-    control: ControlHandle,
-    output_active: Arc<AtomicBool>,
     listen_until: Option<std::time::Instant>,
     listen_id: u64,
 ) {
@@ -1476,48 +1374,7 @@ async fn handle_listen(
     // task is cancelled mid-recording.
     let _resume_guard = ResumeOnDrop(wake_resume);
 
-    // These four are only read by the Nova Sonic live-audio branch. Naming
-    // them in a default build keeps the shared capture path warning-free.
-    #[cfg(not(feature = "sonic"))]
-    let _ = (&ui_tx, &agent, &control, &output_active);
-
     let stt_start = std::time::Instant::now();
-
-    // Read the selection from the shared control: a turn may be finishing and
-    // holding the agent mutex while this capture starts (L1).
-    #[cfg(feature = "sonic")]
-    if control_state::lock(&control).uses_sonic() {
-        output_active.store(true, Ordering::Relaxed);
-        let _output_guard = OutputOnDrop(output_active);
-        send_state(&ui_tx, HyuskState::Listening).await;
-        let mut sonic_agent = agent.lock().await;
-        let result = tokio::select! {
-            _ = cancel.cancelled() => None,
-            result = sonic_agent.handle_sonic_live_audio(Arc::clone(&stt), Some(&ui_tx), &cancel) => Some(result),
-        };
-        drop(sonic_agent);
-        if !cancel.is_cancelled() {
-            let (text, waiting, error) = match result {
-                Some(Ok(Some(text))) => {
-                    let waiting = agent.lock().await.reply_needs_follow_up() == Some(true);
-                    (Some(text), waiting, None)
-                }
-                Some(Ok(None)) | None => (None, false, None),
-                Some(Err(error)) => (None, false, Some(error.to_string())),
-            };
-            if !cancel.is_cancelled() {
-                let _ = agent_tx
-                    .send(HyuskEvent::SonicListenCompleted {
-                        id: listen_id,
-                        text,
-                        waiting,
-                        error,
-                    })
-                    .await;
-            }
-        }
-        return;
-    }
 
     // A generous cap; recording still stops shortly after the speaker pauses,
     // so this only bounds unusually long requests.
@@ -1783,8 +1640,6 @@ async fn send_state(ui_tx: &Sender<HyuskEvent>, state: HyuskState) {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "sonic")]
-    use super::is_current_sonic_listen;
     use super::{
         approval_blocks_scheduled_input, approval_expiry, cancel_desktop_workflow, card_text,
         clear_pending_interactions, execute_workflow_actions, finish_voice_conversation,
@@ -1830,16 +1685,8 @@ mod tests {
     #[test]
     fn busy_wake_requires_new_speech_and_follow_up_cannot_interrupt() {
         use crate::types::HyuskEvent;
-        assert!(should_probe_busy_wake(&HyuskEvent::WakeWordDetected, false));
-        assert!(!should_probe_busy_wake(
-            &HyuskEvent::ContinueListening,
-            false
-        ));
-        assert!(!should_probe_busy_wake(&HyuskEvent::WakeWordDetected, true));
-        assert!(!should_probe_busy_wake(
-            &HyuskEvent::ContinueListening,
-            true
-        ));
+        assert!(should_probe_busy_wake(&HyuskEvent::WakeWordDetected));
+        assert!(!should_probe_busy_wake(&HyuskEvent::ContinueListening));
     }
 
     #[async_trait]
@@ -1909,24 +1756,6 @@ mod tests {
         .await
         .expect("the pending internal event should be delivered locally");
         assert!(matches!(second, Some(HyuskEvent::ContinueListening)));
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "sonic")]
-    async fn stale_or_cancelled_sonic_completion_is_rejected() {
-        let active_handle = tokio::spawn(std::future::pending());
-        let mut active = Some(ActiveListen {
-            id: 9,
-            cancel: CancellationToken::new(),
-            handle: active_handle,
-            probe_id: None,
-        });
-        assert!(is_current_sonic_listen(9, &active));
-        assert!(!is_current_sonic_listen(8, &active));
-
-        active.as_ref().unwrap().cancel.cancel();
-        assert!(!is_current_sonic_listen(9, &active));
-        active.as_mut().unwrap().handle.abort();
     }
 
     #[tokio::test]

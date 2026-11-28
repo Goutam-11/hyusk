@@ -41,7 +41,7 @@ use tokio::sync::mpsc;
 
 use agent::Agent;
 use control_file::Action;
-#[cfg(any(test, feature = "sonic"))]
+#[cfg(test)]
 use model::openrouter::OpenRouterClient;
 use model::SharedActiveModel;
 
@@ -363,15 +363,6 @@ async fn refresh_catalogs() {
             fresh,
         });
     }
-    #[cfg(feature = "sonic")]
-    catalogs.push(status::Catalog {
-        provider: "bedrock-sonic".to_string(),
-        models: vec![status::Model {
-            id: "amazon.nova-2-sonic-v1:0".to_string(),
-            label: "Nova 2 Sonic · Speech to speech".to_string(),
-        }],
-        fresh: true,
-    });
     catalogs.push(status::Catalog {
         provider: "codex".to_string(),
         models: vec![status::Model {
@@ -521,155 +512,6 @@ async fn stt_test_mode() -> Result<()> {
     Ok(())
 }
 
-/// End-to-end laptop smoke test for Nova Sonic, independent of the selected
-/// chat-completions provider: `HYUSK_NOVA_SONIC_TEST=1 cargo run --bin hyusk_agent`.
-#[cfg(feature = "sonic")]
-async fn nova_sonic_test_mode() -> Result<()> {
-    let client = model::bedrock_sonic::BedrockSonicClient::from_aws_config().await?;
-    let test_text = std::env::var("HYUSK_NOVA_SONIC_TEST_TEXT")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let test_wav = std::env::var("HYUSK_NOVA_SONIC_TEST_WAV").ok();
-    let stt = if test_text.is_none() && test_wav.is_none() {
-        let model = std::env::var("STT_MODEL")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| default_model_path("models/ggml-base.en.bin"));
-        Some(std::sync::Arc::new(SpeechToText::new(&model)?))
-    } else {
-        None
-    };
-
-    let test_tool = std::env::var_os("HYUSK_NOVA_SONIC_TEST_TOOL").is_some();
-    let tools = if test_tool {
-        vec![
-            serde_json::json!({"type":"function","function":{"name":"get_time","description":"Read the current local date and time","parameters":{"type":"object","properties":{},"required":[]}}}),
-        ]
-    } else {
-        Vec::new()
-    };
-    let system_prompt = if test_tool {
-        "You are Hyusk, a concise spoken computer assistant. When asked for the time, call get_time and answer using its result."
-    } else {
-        "You are Hyusk, a concise spoken computer assistant. Reply naturally in one or two sentences. Do not claim to have performed computer actions unless a tool was actually used."
-    };
-    let mut session = client.start_session(system_prompt, &tools).await?;
-    let mut audio_send = None;
-    let mut capture_task = None;
-    if let Some(text) = test_text.as_deref() {
-        println!("⌨️ Testing Nova Sonic with text input (no microphone or tools)…");
-        session.send_text(text).await?;
-    } else if let Some(path) = test_wav {
-        let wav = std::fs::read(&path)?;
-        anyhow::ensure!(
-            wav.len() > 44
-                && &wav[0..4] == b"RIFF"
-                && &wav[8..12] == b"WAVE"
-                && u16::from_le_bytes([wav[22], wav[23]]) == 1
-                && u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]) == 16_000
-                && u16::from_le_bytes([wav[34], wav[35]]) == 16,
-            "Test WAV must be standard 16 kHz mono PCM16"
-        );
-        let (frames_tx, frames_rx) = tokio::sync::mpsc::channel(32);
-        audio_send = Some(session.send_live_audio_in_background(frames_rx)?);
-        println!("🎤 Streaming test recording: {path}");
-        capture_task = Some(tokio::spawn(async move {
-            let mut cadence = tokio::time::interval(std::time::Duration::from_millis(32));
-            for frame in wav[44..].chunks(1_024) {
-                cadence.tick().await;
-                frames_tx.send(frame.to_vec()).await?;
-            }
-            Ok::<bool, anyhow::Error>(true)
-        }));
-    } else if let Some(stt) = stt {
-        let (frames_tx, frames_rx) = tokio::sync::mpsc::channel(32);
-        audio_send = Some(session.send_live_audio_in_background(frames_rx)?);
-        println!("🎤 Speak a short request (up to 8 seconds)…");
-        capture_task = Some(tokio::task::spawn_blocking(move || {
-            stt.stream_audio_for_speech_model(
-                8.0,
-                frames_tx,
-                &tokio_util::sync::CancellationToken::new(),
-            )
-        }));
-    }
-    let mut heard = test_text.unwrap_or_default();
-    let mut said = String::new();
-    let mut audio_player = None;
-    let mut tool_calls = 0usize;
-    let started = std::time::Instant::now();
-    loop {
-        use model::bedrock_sonic::SonicEvent;
-        let event = tokio::select! {
-            captured = async {
-                if let Some(task) = capture_task.as_mut() {
-                    Some(task.await)
-                } else {
-                    std::future::pending().await
-                }
-            } => {
-                capture_task.take();
-                if !captured.expect("capture branch requires a task")?? {
-                    anyhow::bail!("No speech was captured; check the microphone and try again");
-                }
-                continue;
-            }
-            result = session.recv() => result?,
-        };
-        match event {
-            SonicEvent::UserText(text) => heard.push_str(&text),
-            SonicEvent::UserTranscriptEnd => {}
-            SonicEvent::AssistantText(text) => said.push_str(&text),
-            SonicEvent::AssistantAudio(chunk) => {
-                if audio_player.is_none() {
-                    println!(
-                        "🔊 First reply audio after {:.2}s",
-                        started.elapsed().as_secs_f32()
-                    );
-                    audio_player = Some(speech::speech::Pcm16Player::start()?);
-                }
-                if let Some(player) = audio_player.as_mut() {
-                    player.write(&chunk).await?;
-                }
-            }
-            SonicEvent::ToolUse(call) => {
-                if let Some(task) = audio_send.take() {
-                    task.await??;
-                }
-                tool_calls += 1;
-                let now = chrono::Local::now().to_rfc3339();
-                println!("🛠 Nova requested {}: {now}", call.name);
-                session.send_tool_result(&call, &now, true).await?;
-            }
-            SonicEvent::CompletionEnd(reason) if reason != "TOOL_USE" => break,
-            SonicEvent::Interrupted => {
-                if let Some(mut player) = audio_player.take() {
-                    player.stop().await?;
-                }
-            }
-            SonicEvent::StreamEnd => break,
-            SonicEvent::CompletionEnd(_) | SonicEvent::Other => {}
-        }
-    }
-    if let Some(task) = audio_send {
-        task.await??;
-    }
-    if let Some(task) = capture_task {
-        task.await??;
-    }
-    session.close().await?;
-    println!("📝 Nova heard: {}", heard.trim());
-    println!("💬 Nova said: {}", said.trim());
-    println!("⏱ Turn finished in {:.2}s", started.elapsed().as_secs_f32());
-    if test_tool {
-        println!("🛠 Tool calls: {tool_calls}");
-    }
-    if let Some(player) = audio_player {
-        player.finish().await?;
-    }
-    Ok(())
-}
-
 /// The runtime dependencies the tool registry needs from the composition root.
 struct ToolSetup<'a> {
     events: &'a mpsc::Sender<HyuskEvent>,
@@ -804,13 +646,6 @@ async fn main() -> Result<()> {
     persist::start();
     dotenv().ok();
 
-    if std::env::var_os("HYUSK_NOVA_SONIC_TEST").is_some() {
-        #[cfg(feature = "sonic")]
-        return nova_sonic_test_mode().await;
-        #[cfg(not(feature = "sonic"))]
-        anyhow::bail!("Nova Sonic is not compiled in; rebuild with --features sonic");
-    }
-
     if std::env::var_os("HYUSK_WAKE_TEST").is_some() {
         return wake_test_mode().await;
     }
@@ -841,38 +676,15 @@ async fn main() -> Result<()> {
     let model =
         std::env::var("OPENROUTER_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
 
-    #[cfg(feature = "sonic")]
-    let bedrock_sonic_client =
-        match model::bedrock_sonic::BedrockSonicClient::from_aws_config().await {
-            Ok(client) => Some(Arc::new(client)),
-            Err(error) => {
-                eprintln!("[Nova Sonic] Provider unavailable: {error:#}");
-                None
-            }
-        };
     let client = openrouter_client
         .clone()
         .or_else(|| openai_client.clone())
-        .or_else(|| bedrock_client.clone());
-    #[cfg(feature = "sonic")]
-    let client = client.or_else(|| {
-        bedrock_sonic_client
-            .as_ref()
-            .map(|_| OpenRouterClient::new("".into(), "https://invalid.local/v1".into()))
-    });
-    let client = client.context(if cfg!(feature = "sonic") {
-        "Configure an OpenRouter, OpenAI, Bedrock API key, or AWS CLI profile for Nova Sonic"
-    } else {
-        "Configure an OpenRouter, OpenAI, or Bedrock API key"
-    })?;
+        .or_else(|| bedrock_client.clone())
+        .context("Configure an OpenRouter, OpenAI, or Bedrock API key")?;
     let default_provider = if openrouter_client.is_some() {
         "openrouter"
     } else if openai_client.is_some() {
         "openai"
-    } else if bedrock_client.is_some() {
-        "bedrock"
-    } else if cfg!(feature = "sonic") {
-        "bedrock-sonic"
     } else {
         "bedrock"
     };
@@ -881,7 +693,6 @@ async fn main() -> Result<()> {
         "bedrock" => {
             std::env::var("BEDROCK_MODEL").unwrap_or_else(|_| "openai.gpt-oss-20b".to_string())
         }
-        "bedrock-sonic" => "amazon.nova-2-sonic-v1:0".to_string(),
         _ => model.clone(),
     };
     let active_api_model =
@@ -986,10 +797,6 @@ async fn main() -> Result<()> {
         .with_openai(openai_client.clone())
         .with_bedrock(bedrock_client.clone())
         .with_active_api_model(active_api_model);
-    #[cfg(feature = "sonic")]
-    {
-        agent = agent.with_bedrock_sonic(bedrock_sonic_client.clone());
-    }
     let active_selection =
         if let Err(error) = agent.restore_model(&selected_provider, &selected_model) {
             eprintln!(
@@ -2111,67 +1918,55 @@ mod platform_tests {
         }
     }
 
+    /// #26: Nova Sonic and its second agent loop are retired. The provider,
+    /// the AWS SDK, its event variant, its modules, its doc, and the feature
+    /// all stay gone; a stored selection still reports the retirement.
+    #[test]
+    fn the_nova_sonic_loop_is_retired() {
+        let manifest = std::fs::read_to_string(manifest_dir().join("Cargo.toml"))
+            .expect("read the package manifest");
+        let features = manifest_section(&manifest, "[features]");
+        assert!(
+            !features.contains("sonic = ["),
+            "Cargo.toml still declares a sonic feature"
+        );
+        let dependencies = manifest_section(&manifest, "[dependencies]");
+        for dependency in ["aws-config", "aws-sdk-bedrockruntime"] {
+            assert!(
+                dependencies
+                    .lines()
+                    .all(|line| !line.trim_start().starts_with(&format!("{dependency} = "))),
+                "{dependency} must be gone"
+            );
+        }
+        for path in [
+            "src/model/bedrock_sonic.rs",
+            "src/agent/runner/sonic.rs",
+            "docs/bedrock-nova-sonic.md",
+        ] {
+            assert!(
+                !manifest_dir().join(path).exists(),
+                "{path} was not deleted"
+            );
+        }
+        let model = std::fs::read_to_string(manifest_dir().join("src/model/mod.rs"))
+            .expect("read the model modules");
+        assert!(!model.contains("bedrock_sonic"));
+        let events = std::fs::read_to_string(manifest_dir().join("src/types/event.rs"))
+            .expect("read the event types");
+        assert!(!events.contains("SonicListenCompleted"));
+        let main = std::fs::read_to_string(manifest_dir().join("src/main.rs"))
+            .expect("read the composition root");
+        assert!(
+            !main.contains("\"bedrock-sonic\""),
+            "the composition root must not offer the retired provider"
+        );
+    }
+
     /// P5: the link server, its TLS transport, the pairing file, and the
     /// model-facing `mobile` tool sit behind one feature, off by default. The
     /// test cannot prove the compiler skips the module; `cargo tree` and the
     /// default test count do, and this keeps the wiring from drifting.
-    /// P6: the second loop, its AWS SDK, the event variant, and the provider
-    /// entry sit behind one feature, off by default. The test cannot prove the
-    /// compiler skips the module; `cargo tree` and the default test count do,
-    /// and this keeps the wiring from drifting.
-    #[test]
-    fn the_nova_sonic_loop_is_behind_its_feature() {
-        let manifest = std::fs::read_to_string(manifest_dir().join("Cargo.toml"))
-            .expect("read the package manifest");
-
-        let features = manifest_section(&manifest, "[features]");
-        assert!(
-            features.contains("sonic = ["),
-            "Cargo.toml has no sonic feature"
-        );
-        for dependency in ["dep:aws-config", "dep:aws-sdk-bedrockruntime"] {
-            assert!(
-                features.contains(dependency),
-                "the sonic feature must enable {dependency}"
-            );
-        }
-
-        let dependencies = manifest_section(&manifest, "[dependencies]");
-        for dependency in ["aws-config", "aws-sdk-bedrockruntime"] {
-            let prefix = format!("{dependency} = ");
-            let line = dependencies
-                .lines()
-                .find(|line| line.trim_start().starts_with(&prefix))
-                .unwrap_or_else(|| panic!("{dependency} is not a dependency"));
-            assert!(
-                line.contains("optional = true"),
-                "{dependency} must be optional so a default build skips it"
-            );
-        }
-
-        let model = std::fs::read_to_string(manifest_dir().join("src/model/mod.rs"))
-            .expect("read the model modules");
-        assert!(
-            model.contains("#[cfg(feature = \"sonic\")]\npub mod bedrock_sonic;"),
-            "the Sonic client module must be feature-gated"
-        );
-
-        let events = std::fs::read_to_string(manifest_dir().join("src/types/event.rs"))
-            .expect("read the event types");
-        assert!(
-            events.contains("#[cfg(feature = \"sonic\")]\n    SonicListenCompleted {"),
-            "the Sonic completion event must be feature-gated"
-        );
-
-        let runner = std::fs::read_to_string(manifest_dir().join("src/agent/runner.rs"))
-            .expect("read the runner");
-        assert!(
-            runner
-                .contains("#[cfg(feature = \"sonic\")]\n#[path = \"runner/sonic.rs\"]\nmod sonic;"),
-            "the Sonic loop module must be feature-gated"
-        );
-    }
-
     #[test]
     fn the_mobile_link_is_behind_its_feature() {
         let manifest = std::fs::read_to_string(manifest_dir().join("Cargo.toml"))

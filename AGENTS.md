@@ -22,7 +22,7 @@ Windows branch; `platform_tests` in `src/main.rs` guards both conditions.
 | `src/agent/` | Event runtime, turn runner, prompts, sessions, approvals. |
 | `src/desktop/` | Session detection and the per-compositor window adapters behind one `WindowsBackend` trait, including niri workspace/output navigation. |
 | `src/tools/` | Tool trait/registry, all tools, and the central approval policy (`safety.rs`). |
-| `src/model/` | OpenRouter-compatible clients, Bedrock Mantle, Nova Sonic, Codex CLI. |
+| `src/model/` | OpenRouter-compatible clients, Bedrock Mantle, Codex CLI. |
 | `src/speech/` | Whisper STT (`whisper-rs`) and local TTS (Piper/espeak). |
 | `src/wake/` | LiveKit ONNX wake-word detector plus optional clap detection. |
 | `src/ui/` | Transparent `eframe` orb overlay. |
@@ -61,22 +61,15 @@ cargo test --all-targets --offline --features workflow-editor -- --test-threads=
 # TLS transport, pairing file, or model-facing `mobile` tool.
 cargo check --all-targets --offline --features mobile
 cargo test --all-targets --offline --features mobile -- --test-threads=4
-
-# Nova Sonic is behind the `sonic` feature (P6): a default build has no AWS
-# SDK, second agent loop, `SonicListenCompleted` event, or `bedrock-sonic`
-# provider.
-cargo check --all-targets --offline --features sonic
-cargo test --all-targets --offline --features sonic -- --test-threads=4
 ```
 
-Current baseline: **523 tests passing, 6 ignored** for the default suite.
-`--features sonic` restores the second loop (536 passing, 6 ignored), and
-`--features mobile` restores the link (536 passing, 6 ignored). The workflow
+Current baseline: **524 tests passing, 6 ignored** for the default suite.
+`--features mobile` restores the link (537 passing, 6 ignored). The workflow
 editor adds five tests (one ignored) under `--features workflow-editor`, for
-**528 passing, 7 ignored**; all features together are **554 passing, 7
-ignored**. Default and `--features sonic` clippy are clean; the three
-pre-existing `result_large_err` warnings live behind `mobile` in
-`src/link/server.rs` and appear with that feature. CI runs fmt, clippy, the
+**529 passing, 7 ignored**; all features together (mobile and the editor) are
+**542 passing, 7 ignored**. Default clippy is clean; the three pre-existing
+`result_large_err` warnings live behind `mobile` in `src/link/server.rs` and
+appear with that feature. CI runs fmt, clippy, the
 default tests, and the feature builds on Ubuntu.
 
 Several tests touch session/memory/status paths, so isolate them:
@@ -160,15 +153,6 @@ tests live in `#[cfg(test)]` modules beside the code.
   of `docs/tools.md`, and `src/tools/contract_tests.rs` runs the same contract
   (namespaced conformant manifests, an always-ask gate, a refused malformed
   call, a working call, reaped children) against the local and MCP fixtures.
-- Nova Sonic (P6): the `sonic` feature gates the AWS SDK, `model/bedrock_sonic.rs`,
-  `runner/sonic.rs`, `HyuskEvent::SonicListenCompleted`, the
-  `uses_bedrock_sonic` branch, the `bedrock-sonic` provider and model-catalog
-  entry, the capture helpers and `Pcm16Player` it uses, and the Sonic tests. A
-  default build must not compile the AWS path, must not list the provider, and
-  `uses_bedrock_sonic` is false; a stored `bedrock-sonic` selection fails with
-  "rebuild with --features sonic" and falls back to the text providers. The
-  shared approval, execution, prompt, and audit code stays shared (A7): the
-  gate moved the callers, never the decisions.
 - Approved calls execute the stored arguments, not a fresh model call. Task
   delegation pins the canonical workspace root via `approval_arguments`.
 - Workflows execute deterministic `Action` steps from `src/agent/commands.rs`;
@@ -191,7 +175,7 @@ tests live in `#[cfg(test)]` modules beside the code.
   (S4); any other argument asks in both.
 - `computer` (D1): `type_text`, `key_press`, and `key_combo` ask while a terminal
   is focused (the card names it) and ask when the focus cannot be read; the text
-  runner and the Nova Sonic loop both pass the `window` tool's focus to
+  runner passes the `window` tool's focus to
   `safety::requires_approval_with_context`. The terminal list is explicit plus
   `HYUSK_TERMINAL_APPS`. Adding a context-sensitive decision means adding a
   `Decision::Contextual` row, not a second gate.
@@ -227,13 +211,13 @@ tests live in `#[cfg(test)]` modules beside the code.
   so one approval covers the rest of the turn's clicks, not a `fill`.
 - OS capabilities (D3): `tools::capabilities` records input, screenshot, and
   accessibility state (`granted`/`denied`/`unsupported`/`unknown`) with the
-  backend that reported it. The runner, Sonic loop, and workflow executor call
+  backend that reported it. The runner and workflow executor call
   `capabilities::refusal` before arming a card, so a denied or unsupported
   capability fails with a capability error; `unknown` allows the attempt. The
   state appears as one line in the per-turn desktop context and in
   `desktop_doctor`. The record is process-local and never persisted.
 - Tool output (X2): `tools::redact::redact` runs once in `execute_tool`, the
-  choke point for the text runner, Nova Sonic, and the instant lane, before the
+  choke point for the text runner and the instant lane, before the
   result reaches the session, the provider request, or status text. It replaces
   private-key blocks, token prefixes, bearer credentials, and long values
   assigned to secret-shaped names with `[redacted]`/`[redacted private key]` and
@@ -372,7 +356,7 @@ tests live in `#[cfg(test)]` modules beside the code.
 ## Open work
 
 The permission and desktop-control review of 2026-10-29 (A1-A10, S1-S4, D1-D6,
-X1-X4, L1-L6) and the architecture track of 2026-10-31 (P1-P3, P5, P6, T1-T4,
+X1-X4, L1-L6) and the architecture track of 2026-10-31 (P1-P3, P5, T1-T4,
 M1-M4, G1-G2) are closed. The six trackers were removed on 2026-11-01; their
 evidence, decisions, acceptance criteria, and tests are in git history and
 summarised in [`issues/README.md`](issues/README.md).
@@ -386,8 +370,8 @@ Two items are carried in that record rather than in a tracker of their own:
   GNOME extension and the Noctalia widget. Its acceptance criteria are kept in
   the same record.
 
-The manual checks that never ran (live servers, a live Android reconnect, a
-live Nova Sonic call, the panels, the portals, the installer) are listed there
+The manual checks that never ran (live servers, a live Android reconnect, the
+panels, the portals, the installer) are listed there
 too, so they are not mistaken for covered work.
 
 Do not add new bullets here - open a new `issues/<AREA>_ISSUE.md` (one file per

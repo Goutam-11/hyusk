@@ -44,8 +44,8 @@ decides a restart. It may *ask* for one.
    - `cargo clippy --all-targets --offline` (no new warnings);
    - the isolated test command from `AGENTS.md` (never a bare `cargo test`);
    - every feature build the change touches: `--features mobile`,
-     `--features sonic`, `--features workflow-editor`, and `--all-features`
-     when the change is cross-cutting.
+     `--features workflow-editor`, and `--all-features` when the change is
+     cross-cutting.
    A documentation-only change runs fmt plus the review; it still names the
    test counts it did not touch.
 5. **Commit for review.** Use the log's style: `feat(scope): ... (ID)`,

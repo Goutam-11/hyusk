@@ -302,109 +302,33 @@ static WHISPER_NATIVE_CALLBACK_ENTERED: std::sync::atomic::AtomicBool =
 static WHISPER_TEST_HOLD_ABORT_CALLBACK: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-#[cfg(feature = "sonic")]
-fn stream_pulse_input(
-    device: &str,
-    frames: tokio::sync::mpsc::Sender<Vec<u8>>,
-    speech_onsets: tokio::sync::mpsc::Sender<()>,
-    cancel: &CancellationToken,
-) -> Result<()> {
-    use std::io::Read;
-
-    let mut child = std::process::Command::new("parec")
-        .args(["--raw", "--format=s16le", "--rate=16000", "--channels=1"])
-        .arg(format!("--device={device}"))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("Could not start echo-cancelled microphone capture (parec)")?;
-    let Some(mut stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        anyhow::bail!("parec has no audio output");
-    };
-    // `read_exact` on a pipe can block forever if the audio server stalls.
-    // Keep that blocking read off this worker so cancellation can still kill
-    // parec and close the pipe promptly.
-    let (reader_tx, reader_rx) = mpsc::sync_channel(2);
-    let reader = std::thread::spawn(move || loop {
-        let mut frame = [0_u8; 1_024]; // 32 ms at 16 kHz, 16-bit mono
-        let result = stdout.read_exact(&mut frame).map(|()| frame);
-        let failed = result.is_err();
-        if reader_tx.send(result).is_err() || failed {
-            break;
-        }
-    });
-    let mut onset_detector = SpeechOnsetDetector::new(320);
-    let result = loop {
-        if cancel.is_cancelled() {
-            break Ok(());
-        }
-        let frame = match reader_rx.recv_timeout(std::time::Duration::from_millis(25)) {
-            Ok(Ok(frame)) => frame,
-            Ok(Err(error)) => {
-                break Err(anyhow::anyhow!(
-                    "Echo-cancelled microphone stopped: {error}"
-                ));
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                break Err(anyhow::anyhow!("Echo-cancelled microphone reader stopped"));
-            }
-        };
-        for sample in frame.chunks_exact(2) {
-            let value = i16::from_le_bytes([sample[0], sample[1]]) as f32 / 32768.0;
-            if onset_detector.push(value) {
-                pulse_speech_onset(&speech_onsets);
-            }
-        }
-        match send_frame_cancellable(&frames, frame.to_vec(), Some(cancel)) {
-            FrameSendOutcome::Sent => {}
-            FrameSendOutcome::Cancelled => break Ok(()),
-            FrameSendOutcome::ReceiverClosed => {
-                if cancel.is_cancelled() {
-                    break Ok(());
-                }
-                break Err(anyhow::anyhow!(
-                    "Echo-cancelled microphone audio receiver stopped"
-                ));
-            }
-        }
-    };
-    let _ = child.kill();
-    let _ = child.wait();
-    drop(reader_rx);
-    let _ = reader.join();
-    result
-}
-
+/// Select the configured input device, or the system default.
 pub(crate) fn input_device(host: &cpal::Host) -> Result<cpal::Device> {
-    if let Some(requested) = env::var_os("HYUSK_INPUT_DEVICE") {
-        let requested = requested.to_string_lossy();
-        let devices = host
-            .input_devices()
-            .context("Could not enumerate audio input devices")?;
-        let mut available = Vec::new();
-        let mut exact = None;
-        let mut partial = None;
-        for device in devices {
-            let name = device.name().unwrap_or_else(|_| "<unnamed>".to_string());
-            available.push(name.clone());
-            if name == requested {
-                exact = Some(device);
-                break;
+    if let Ok(requested) = env::var("HYUSK_INPUT_DEVICE") {
+        let requested = requested.trim();
+        if !requested.is_empty() {
+            let mut exact = None;
+            let mut partial = None;
+            let mut available = Vec::new();
+            for device in host.input_devices()? {
+                let name = device.name().unwrap_or_else(|_| "<unnamed>".to_string());
+                available.push(name.clone());
+                if name == requested {
+                    exact = Some(device);
+                    break;
+                }
+                if partial.is_none() && name.to_lowercase().contains(&requested.to_lowercase()) {
+                    partial = Some(device);
+                }
             }
-            if partial.is_none() && name.to_lowercase().contains(&requested.to_lowercase()) {
-                partial = Some(device);
+            if let Some(device) = exact.or(partial) {
+                return Ok(device);
             }
+            anyhow::bail!(
+                "HYUSK_INPUT_DEVICE '{requested}' did not match an audio input. Available inputs: {}",
+                available.join(", ")
+            );
         }
-        if let Some(device) = exact.or(partial) {
-            return Ok(device);
-        }
-        anyhow::bail!(
-            "HYUSK_INPUT_DEVICE '{requested}' did not match an audio input. Available inputs: {}",
-            available.join(", ")
-        );
     }
 
     host.default_input_device()
@@ -414,10 +338,9 @@ pub(crate) fn input_device(host: &cpal::Host) -> Result<cpal::Device> {
 impl SpeechToText {
     pub fn new(model_path: &str) -> Result<Self> {
         Ok(Self {
-            // Microphone capture is shared by local STT and speech-to-speech
-            // providers. Defer loading Whisper until transcription is actually
-            // requested so Nova Sonic does not load an unused second speech
-            // recognizer at startup.
+            // Microphone capture is shared by the local STT path. Defer loading
+            // Whisper until transcription is actually requested, so startup
+            // does not pay for a model that is not used yet.
             context: Arc::new(std::sync::Mutex::new(None)),
             inference_permit: Arc::new(Semaphore::new(1)),
             model_path: model_path.to_string(),
@@ -460,159 +383,6 @@ impl SpeechToText {
         );
 
         self.transcribe_audio(&audio_data, &request_cancel).await
-    }
-
-    /// Capture on a blocking worker and send 16 kHz mono PCM frames as the mic
-    /// produces them. Returns whether the local endpointer found speech.
-    #[cfg(feature = "sonic")]
-    pub fn stream_audio_for_speech_model(
-        &self,
-        duration_secs: f32,
-        frames: tokio::sync::mpsc::Sender<Vec<u8>>,
-        cancel: &CancellationToken,
-    ) -> Result<bool> {
-        Ok(!self
-            .record_audio(duration_secs, Some(&frames), Some(cancel))?
-            .is_empty())
-    }
-
-    /// Continuously stream microphone audio as 16 kHz mono PCM until cancelled.
-    /// Unlike `stream_audio_for_speech_model`, this does not buffer an
-    /// utterance or run a local endpointer.
-    #[cfg(feature = "sonic")]
-    pub fn stream_continuous_audio_for_speech_model(
-        &self,
-        frames: tokio::sync::mpsc::Sender<Vec<u8>>,
-        speech_onsets: tokio::sync::mpsc::Sender<()>,
-        cancel: &CancellationToken,
-    ) -> Result<()> {
-        // CPAL's ALSA device enumeration does not expose PipeWire's virtual
-        // echo-cancel source. Capture that source through Pulse's native
-        // compatibility client, still in the same bounded frame channel.
-        if let Ok(device) = env::var("HYUSK_SONIC_INPUT_DEVICE") {
-            if !device.trim().is_empty() {
-                return stream_pulse_input(device.trim(), frames, speech_onsets, cancel);
-            }
-        }
-        let host = cpal::default_host();
-        let device = input_device(&host)?;
-        let config = device
-            .default_input_config()
-            .context("Failed to get input config")?;
-        let sample_rate = config.sample_rate().0;
-        let channels = config.channels() as usize;
-        let sample_format = config.sample_format();
-        // A bounded queue caps capture-side memory at roughly 250 ms. If the
-        // consumer falls behind, dropping input is preferable to unbounded lag.
-        let (tx, rx) = mpsc::sync_channel::<f32>(4096);
-        let stream = match sample_format {
-            SampleFormat::F32 => device.build_input_stream(
-                &config.into(),
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    for frame in data.chunks(channels) {
-                        let mono = frame.iter().sum::<f32>() / channels as f32;
-                        let _ = tx.try_send(mono);
-                    }
-                },
-                |err| eprintln!("Audio stream error: {}", err),
-                None,
-            )?,
-            SampleFormat::I16 => device.build_input_stream(
-                &config.into(),
-                move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    for frame in data.chunks(channels) {
-                        let mono = frame.iter().map(|&s| s as f32 / 32768.0).sum::<f32>()
-                            / channels as f32;
-                        let _ = tx.try_send(mono);
-                    }
-                },
-                |err| eprintln!("Audio stream error: {}", err),
-                None,
-            )?,
-            SampleFormat::U16 => device.build_input_stream(
-                &config.into(),
-                move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                    for frame in data.chunks(channels) {
-                        let mono = frame
-                            .iter()
-                            .map(|&s| (s as f32 - 32768.0) / 32768.0)
-                            .sum::<f32>()
-                            / channels as f32;
-                        let _ = tx.try_send(mono);
-                    }
-                },
-                |err| eprintln!("Audio stream error: {}", err),
-                None,
-            )?,
-            _ => anyhow::bail!("Unsupported audio format"),
-        };
-        stream.play()?;
-
-        let hp_alpha = {
-            let dt = 1.0 / sample_rate as f32;
-            let rc = 1.0 / (2.0 * std::f32::consts::PI * 90.0);
-            rc / (rc + dt)
-        };
-        let output_step = sample_rate as f64 / self.sample_rate as f64;
-        let mut next_output_position = 0.0_f64;
-        let mut input_position = 0usize;
-        let mut previous_input = 0.0_f32;
-        let mut hp_prev_in = 0.0_f32;
-        let mut hp_prev_out = 0.0_f32;
-        let mut live_pcm = Vec::with_capacity(1_024);
-        let mut denoiser = voice_denoise_enabled().then(LiveDenoiser::new);
-        let mut onset_detector = SpeechOnsetDetector::new(self.sample_rate as usize / 50);
-
-        while !cancel.is_cancelled() {
-            match rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                Ok(sample) => {
-                    let filtered = hp_alpha * (hp_prev_out + sample - hp_prev_in);
-                    hp_prev_in = sample;
-                    hp_prev_out = filtered;
-                    let position = input_position as f64;
-                    while next_output_position <= position {
-                        let fraction =
-                            (next_output_position - (position - 1.0)).clamp(0.0, 1.0) as f32;
-                        let interpolated = previous_input * (1.0 - fraction) + filtered * fraction;
-                        if let Some(state) = denoiser.as_mut() {
-                            if let Some(clean) = state.push(interpolated) {
-                                for value in clean {
-                                    if onset_detector.push(value) {
-                                        pulse_speech_onset(&speech_onsets);
-                                    }
-                                    if !push_live_sample(
-                                        value,
-                                        &mut live_pcm,
-                                        &frames,
-                                        Some(cancel),
-                                    )? {
-                                        return Ok(());
-                                    }
-                                }
-                            }
-                        } else {
-                            if onset_detector.push(interpolated) {
-                                pulse_speech_onset(&speech_onsets);
-                            }
-                            if !push_live_sample(
-                                interpolated,
-                                &mut live_pcm,
-                                &frames,
-                                Some(cancel),
-                            )? {
-                                return Ok(());
-                            }
-                        }
-                        next_output_position += output_step;
-                    }
-                    previous_input = filtered;
-                    input_position += 1;
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        Ok(())
     }
 
     fn record_audio(
@@ -1380,89 +1150,6 @@ fn push_live_sample(
     }
 }
 
-#[cfg(feature = "sonic")]
-fn pulse_speech_onset(sender: &tokio::sync::mpsc::Sender<()>) {
-    let _ = sender.try_send(());
-}
-
-#[cfg(feature = "sonic")]
-fn align_pcm16(pending: &mut Option<u8>, pcm: &[u8]) -> Vec<u8> {
-    let mut aligned = Vec::with_capacity(pcm.len() + usize::from(pending.is_some()));
-    if let Some(byte) = pending.take() {
-        aligned.push(byte);
-    }
-    aligned.extend_from_slice(pcm);
-    if aligned.len() % 2 != 0 {
-        *pending = aligned.pop();
-    }
-    aligned
-}
-
-/// Frame based onset detector for the continuous 16 kHz microphone stream.
-/// Noise is tracked only during inactive periods, preventing speech from
-/// raising its own threshold. Three active frames give modest transient
-/// rejection while keeping onset latency near 60 ms.
-#[cfg(feature = "sonic")]
-struct SpeechOnsetDetector {
-    frame_samples: usize,
-    frame_energy: f32,
-    samples_in_frame: usize,
-    noise_floor: f32,
-    active_frames: usize,
-    quiet_frames: usize,
-    speaking: bool,
-}
-
-#[cfg(feature = "sonic")]
-impl SpeechOnsetDetector {
-    fn new(frame_samples: usize) -> Self {
-        Self {
-            frame_samples: frame_samples.max(1),
-            frame_energy: 0.0,
-            samples_in_frame: 0,
-            noise_floor: 0.002,
-            active_frames: 0,
-            quiet_frames: 0,
-            speaking: false,
-        }
-    }
-
-    /// Returns true exactly once when a new utterance is detected.
-    fn push(&mut self, sample: f32) -> bool {
-        self.frame_energy += sample * sample;
-        self.samples_in_frame += 1;
-        if self.samples_in_frame < self.frame_samples {
-            return false;
-        }
-
-        let rms = (self.frame_energy / self.samples_in_frame as f32).sqrt();
-        self.frame_energy = 0.0;
-        self.samples_in_frame = 0;
-        let threshold = (self.noise_floor * 2.8).max(0.009);
-
-        if rms >= threshold {
-            self.active_frames += 1;
-            self.quiet_frames = 0;
-            if !self.speaking && self.active_frames >= 3 {
-                self.speaking = true;
-                return true;
-            }
-        } else {
-            self.active_frames = 0;
-            if self.speaking {
-                self.quiet_frames += 1;
-                if self.quiet_frames >= 15 {
-                    self.speaking = false;
-                    self.quiet_frames = 0;
-                }
-            } else {
-                self.noise_floor = self.noise_floor * 0.97 + rms * 0.03;
-            }
-        }
-        false
-    }
-}
-
 /// The same RNNoise preprocessing as `denoise_for_stt`, but retaining its
 /// 10 ms frame state so audio can leave the microphone without waiting for the
 /// whole utterance. Its output adds at most one 10 ms frame of latency.
@@ -1771,108 +1458,6 @@ impl TextToSpeech {
     }
 }
 
-/// A single player for Nova Sonic's 24 kHz mono PCM response stream.
-#[cfg(feature = "sonic")]
-pub struct Pcm16Player {
-    child: tokio::process::Child,
-    trailing_byte: Option<u8>,
-}
-
-#[cfg(feature = "sonic")]
-impl Pcm16Player {
-    fn spawn_player() -> Result<tokio::process::Child> {
-        use tokio::process::Command as AsyncCommand;
-
-        if let Ok(device) = env::var("HYUSK_OUTPUT_DEVICE") {
-            if !device.trim().is_empty() {
-                return AsyncCommand::new("paplay")
-                    .args([
-                        "--raw",
-                        "--format=s16le",
-                        "--rate=24000",
-                        "--channels=1",
-                        "--latency-msec=100",
-                    ])
-                    .arg(format!("--device={}", device.trim()))
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::piped())
-                    .kill_on_drop(true)
-                    .spawn()
-                    .context(
-                        "Nova Sonic audio playback requires paplay for the selected output device",
-                    );
-            }
-        }
-        AsyncCommand::new("aplay")
-            .args(["-q", "-t", "raw", "-f", "S16_LE", "-r", "24000", "-c", "1"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .context("Nova Sonic audio playback requires aplay (ALSA utils)")
-    }
-
-    pub fn start() -> Result<Self> {
-        let child = Self::spawn_player()?;
-        Ok(Self {
-            child,
-            trailing_byte: None,
-        })
-    }
-
-    pub async fn write(&mut self, pcm: &[u8]) -> Result<()> {
-        use tokio::io::AsyncWriteExt;
-        let aligned = align_pcm16(&mut self.trailing_byte, pcm);
-        if !aligned.is_empty() {
-            self.child
-                .stdin
-                .as_mut()
-                .context("Nova Sonic audio player is closed")?
-                .write_all(&aligned)
-                .await
-                .context("Could not feed audio to the PCM player")?;
-        }
-        Ok(())
-    }
-
-    pub async fn finish(mut self) -> Result<()> {
-        if self.trailing_byte.is_some() {
-            let _ = self.stop().await;
-            anyhow::bail!("Nova Sonic PCM stream ended mid-sample");
-        }
-        self.child.stdin.take();
-        let output = self
-            .child
-            .wait_with_output()
-            .await
-            .context("Could not wait for aplay")?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "aplay failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        Ok(())
-    }
-
-    /// Immediately stop playback and discard audio buffered by aplay/device.
-    /// The player is closed after this call; start a new player to speak again.
-    pub async fn stop(&mut self) -> Result<()> {
-        self.child.stdin.take();
-        if self.child.try_wait()?.is_none() {
-            self.child
-                .start_kill()
-                .context("Could not stop Nova Sonic audio playback")?;
-        }
-        // Reap the child so repeated stop calls are harmless and do not leave
-        // an aplay process behind.
-        let _ = self.child.wait().await?;
-        Ok(())
-    }
-}
-
 pub async fn test_audio() -> Result<()> {
     let host = cpal::default_host();
     let device = match host.default_input_device() {
@@ -1894,8 +1479,6 @@ pub async fn test_audio() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "sonic")]
-    use super::{align_pcm16, SpeechOnsetDetector};
     use super::{
         capture_frame_is_speech, clean_transcript, denoise_for_stt, next_piper_output_path,
         sanitize_for_speech, send_frame_cancellable, FrameSendOutcome, LiveDenoiser,
@@ -1963,36 +1546,6 @@ mod tests {
         let _ = std::fs::remove_file(&second);
     }
 
-    #[cfg(feature = "sonic")]
-    fn push_vad_frames(vad: &mut SpeechOnsetDetector, level: f32, count: usize) -> usize {
-        let mut onsets = 0;
-        for _ in 0..count * vad.frame_samples {
-            if vad.push(level) {
-                onsets += 1;
-            }
-        }
-        onsets
-    }
-
-    #[cfg(feature = "sonic")]
-    #[test]
-    fn onset_detector_rejects_short_transients_and_pulses_once_per_utterance() {
-        let mut vad = SpeechOnsetDetector::new(320);
-        assert_eq!(push_vad_frames(&mut vad, 0.05, 2), 0);
-        assert_eq!(push_vad_frames(&mut vad, 0.05, 8), 1);
-        assert_eq!(push_vad_frames(&mut vad, 0.05, 5), 0);
-        assert_eq!(push_vad_frames(&mut vad, 0.0, 15), 0);
-        assert_eq!(push_vad_frames(&mut vad, 0.05, 3), 1);
-    }
-
-    #[cfg(feature = "sonic")]
-    #[test]
-    fn onset_detector_adapts_to_quiet_noise_without_triggering() {
-        let mut vad = SpeechOnsetDetector::new(320);
-        assert_eq!(push_vad_frames(&mut vad, 0.001, 200), 0);
-        assert_eq!(push_vad_frames(&mut vad, 0.05, 3), 1);
-    }
-
     #[test]
     fn live_denoiser_matches_batch_preprocessing() {
         let samples: Vec<f32> = (0..1_600)
@@ -2038,18 +1591,6 @@ mod tests {
             sanitize_for_speech("cafe\u{301} क\u{93f} தமிழ் മലയാളം"),
             "cafe\u{301} क\u{93f} தமிழ் മലയാളം"
         );
-    }
-
-    #[cfg(feature = "sonic")]
-    #[test]
-    fn pcm16_alignment_carries_bytes_across_arbitrary_chunk_boundaries() {
-        let mut pending = None;
-        assert_eq!(align_pcm16(&mut pending, &[1]), Vec::<u8>::new());
-        assert_eq!(pending, Some(1));
-        assert_eq!(align_pcm16(&mut pending, &[2, 3, 4]), vec![1, 2, 3, 4]);
-        assert_eq!(pending, None);
-        assert_eq!(align_pcm16(&mut pending, &[5, 6, 7]), vec![5, 6]);
-        assert_eq!(pending, Some(7));
     }
 
     #[test]

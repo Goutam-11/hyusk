@@ -51,16 +51,6 @@ pub enum HyuskEvent {
         text: Option<String>,
     },
 
-    /// Final result from a Nova Sonic listen, scoped to the capture that
-    /// produced it so a canceled session cannot update a newer interaction.
-    #[cfg(feature = "sonic")]
-    SonicListenCompleted {
-        id: u64,
-        text: Option<String>,
-        waiting: bool,
-        error: Option<String>,
-    },
-
     // UI state
     StateChanged(HyuskState),
 

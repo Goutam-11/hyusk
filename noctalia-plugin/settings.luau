@@ -25,7 +25,7 @@ local PAIRING = runtime_dir() .. "/hyusk-pairing.json"
 -- companion scripts the Device tab runs.
 local PLUGIN_DIR = (noctalia.pluginDir and noctalia.pluginDir()) or ""
 
--- Providers whose credential is an HTTP API key the keyring can hold. Nova Sonic
+-- Providers whose credential is an HTTP API key the keyring can hold.
 -- (AWS profile) and Codex (CLI login) are select-only.
 local KEY_PROVIDERS = {
   { id = "openrouter", label = "OpenRouter" },
@@ -37,7 +37,6 @@ local PROVIDER_LABELS = {
   openrouter = "OpenRouter",
   openai = "OpenAI",
   bedrock = "Amazon Bedrock",
-  ["bedrock-sonic"] = "Nova Sonic",
   codex = "Codex",
 }
 

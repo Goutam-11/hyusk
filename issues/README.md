@@ -63,7 +63,7 @@ in [`docs/tools.md`](../docs/tools.md), or an entry in
 | P3 | The GTK workflow editor is the `workflow-editor` feature | 2026-10-31 |
 | P4 | The orb overlay was deferred, not closed - see below | deferred |
 | P5 | The mobile link is the `mobile` feature, off by default | 2026-10-31 |
-| P6 | Nova Sonic is the `sonic` feature, off by default | 2026-10-31 |
+| P6 | Nova Sonic was retired in #26 (the `sonic` feature is gone) | 2026-11-28 |
 | T1 | Every tool declares a validated manifest, and the registry enforces it | 2026-10-31 |
 | T2 | External servers are hosted over JSON-RPC stdio under one always-ask row | 2026-10-31 |
 | T3 | MCP is a provider over that host, with a curated description and an env allowlist | 2026-10-31 |
@@ -135,7 +135,7 @@ real device, and none was available when the items were closed.
 - T2/T3/T4: a real external server and a real MCP server (the fixtures are the
   only ones the tests ran), and a live kill-switch run against the service.
 - P5: a live Android reconnect against a `--features mobile` build.
-- P6: a live `bedrock-sonic` call and a live microphone round trip.
+- P6: retired in #26; the live `bedrock-sonic` check no longer applies.
 - A1/A5/A6/A7/D1/D3: the GNOME and Noctalia panels - card text, the "allow for
   this turn" button, a stale click - and the spoken confirmations.
 - S2/D1/D3: GNOME Wayland and niri portal behaviour (the four portal smokes are
@@ -155,8 +155,8 @@ real device, and none was available when the items were closed.
   daily use; the phone link is not, and stays at once-only approvals.
 - **Interaction:** voice hands-free with the wake word, so confirmation grammar
   has to tolerate STT phrasing and paraphrases.
-- **Stack:** OpenRouter and Bedrock Mantle text models. Nova Sonic is compiled
-  only under `--features sonic` and is not the daily path.
+- **Stack:** OpenRouter and Bedrock Mantle text models; the local Whisper/Piper
+  voice path. Nova Sonic was retired in #26.
 - **Browser:** a dedicated automation profile with no personal logins counts as
   low risk, but click, fill, and press key still ask; read and navigate stay
   free.

@@ -1,5 +1,3 @@
-#[cfg(feature = "sonic")]
-pub mod bedrock_sonic;
 pub mod codex;
 pub mod openrouter;
 
@@ -11,8 +9,8 @@ use self::openrouter::OpenRouterClient;
 
 /// Build an HTTP client for an API provider from a key.
 ///
-/// Returns `None` for providers that are not HTTP model APIs (Nova Sonic and
-/// Codex authenticate differently), so callers can report an unusable choice
+/// Returns `None` for a provider that is not an HTTP model API (Codex
+/// authenticates differently), so callers can report an unusable choice
 /// instead of silently substituting a base URL.
 pub fn client_for_provider(provider: &str, key: impl Into<String>) -> Option<OpenRouterClient> {
     let key = key.into();
