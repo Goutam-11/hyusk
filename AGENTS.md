@@ -25,7 +25,6 @@ Windows branch; `platform_tests` in `src/main.rs` guards both conditions.
 | `src/model/` | OpenRouter-compatible clients, Bedrock Mantle, Codex CLI. |
 | `src/speech/` | Whisper STT (`whisper-rs`) and local TTS (Piper/espeak). |
 | `src/wake/` | LiveKit ONNX wake-word detector plus optional clap detection. |
-| `src/ui/` | Transparent `eframe` orb overlay. |
 | `src/link/` | Opt-in TLS WebSocket mobile-link server. |
 | `src/types/` | Messages and internal events. |
 | `gnome-extension/hyusk@hyusk.local/` | GNOME Shell top-bar indicator and the shell-side `org.hyusk.Shell` window service. |
@@ -63,11 +62,11 @@ cargo check --all-targets --offline --features mobile
 cargo test --all-targets --offline --features mobile -- --test-threads=4
 ```
 
-Current baseline: **527 tests passing, 6 ignored** for the default suite.
-`--features mobile` restores the link (540 passing, 6 ignored). The workflow
+Current baseline: **528 tests passing, 6 ignored** for the default suite.
+`--features mobile` restores the link (541 passing, 6 ignored). The workflow
 editor adds five tests (one ignored) under `--features workflow-editor`, for
-**532 passing, 7 ignored**; all features together (mobile and the editor) are
-**545 passing, 7 ignored**. Default clippy is clean; the three pre-existing
+**533 passing, 7 ignored**; all features together (mobile and the editor) are
+**546 passing, 7 ignored**. Default clippy is clean; the three pre-existing
 `result_large_err` warnings live behind `mobile` in `src/link/server.rs` and
 appear with that feature. CI runs fmt, clippy, the
 default tests, and the feature builds on Ubuntu.
@@ -361,14 +360,11 @@ M1-M4, G1-G2) are closed. The six trackers were removed on 2026-11-01; their
 evidence, decisions, acceptance criteria, and tests are in git history and
 summarised in [`issues/README.md`](issues/README.md).
 
-Two items are carried in that record rather than in a tracker of their own:
+One item is carried in that record rather than in a tracker of its own:
 
 - **R1** - the memory path opens the database twice per turn, about 12 ms of
   blocking work on a tokio worker. Low priority; acceptance criteria are in
   `issues/README.md`.
-- **P4** - the orb overlay stays deferred because this installation uses the
-  GNOME extension and the Noctalia widget. Its acceptance criteria are kept in
-  the same record.
 
 The manual checks that never ran (live servers, a live Android reconnect, the
 panels, the portals, the installer) are listed there

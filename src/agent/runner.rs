@@ -3,7 +3,6 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::Value;
 use std::sync::{Arc, MutexGuard};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) use super::control::PendingApproval;
@@ -13,7 +12,7 @@ use crate::{
     model::openrouter::OpenRouterClient,
     model::{codex::CodexClient, SharedActiveModel},
     tools::{ToolRegistry, ToolResult},
-    types::{event::ApprovalScope, HyuskEvent, HyuskState, Message},
+    types::{event::ApprovalScope, HyuskState, Message},
 };
 
 #[path = "runner/prompts.rs"]
@@ -77,18 +76,13 @@ struct ModelReply {
 struct ReplySink<'a> {
     stream: ReplyStream,
     sentences: Option<&'a tokio::sync::mpsc::UnboundedSender<String>>,
-    ui_tx: Option<&'a Sender<HyuskEvent>>,
 }
 
 impl<'a> ReplySink<'a> {
-    fn new(
-        sentences: Option<&'a tokio::sync::mpsc::UnboundedSender<String>>,
-        ui_tx: Option<&'a Sender<HyuskEvent>>,
-    ) -> Self {
+    fn new(sentences: Option<&'a tokio::sync::mpsc::UnboundedSender<String>>) -> Self {
         Self {
             stream: ReplyStream::default(),
             sentences,
-            ui_tx,
         }
     }
 
@@ -113,9 +107,6 @@ impl<'a> ReplySink<'a> {
     fn emit(&mut self, chunk: &str) {
         if let Some(sink) = self.sentences {
             let _ = sink.send(chunk.to_string());
-        }
-        if let Some(tx) = self.ui_tx {
-            let _ = tx.try_send(HyuskEvent::ResponseDelta(chunk.to_string()));
         }
         // Mirror the reply-so-far into the status card so the indicator shows
         // progress instead of a static "Working" note.
@@ -651,7 +642,6 @@ impl Agent {
         &mut self,
         cancel: &CancellationToken,
         sentences: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
-        ui_tx: Option<&Sender<HyuskEvent>>,
     ) -> Option<Result<ModelReply>> {
         let model = self.control().model();
         if self.control().provider() == "codex" {
@@ -683,7 +673,7 @@ impl Agent {
             return Some(Err(anyhow::anyhow!("No model client is selected")));
         };
 
-        let mut sink = ReplySink::new(sentences, ui_tx);
+        let mut sink = ReplySink::new(sentences);
         let streamed = {
             let mut on_delta = |delta: &str| sink.on_delta(delta);
 
@@ -779,7 +769,6 @@ impl Agent {
     pub async fn handle(
         &mut self,
         user_input: String,
-        ui_tx: Option<&Sender<HyuskEvent>>,
         cancel: &CancellationToken,
         sentences: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
     ) -> Result<Option<String>> {
@@ -790,7 +779,7 @@ impl Agent {
         // A grant lasts exactly one turn: drop the previous turn's before the
         // new input is interpreted, and again once this turn is over.
         self.turn_grants.clear();
-        let outcome = self.run_turn(user_input, ui_tx, cancel, sentences).await;
+        let outcome = self.run_turn(user_input, cancel, sentences).await;
         self.turn_grants.clear();
         outcome
     }
@@ -798,7 +787,6 @@ impl Agent {
     async fn run_turn(
         &mut self,
         mut user_input: String,
-        ui_tx: Option<&Sender<HyuskEvent>>,
         cancel: &CancellationToken,
         sentences: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
     ) -> Result<Option<String>> {
@@ -987,11 +975,11 @@ impl Agent {
                 );
             }
             round += 1;
-            publish_round(ui_tx, round);
+            publish_round(round);
 
             let reply = match tokio::time::timeout(
                 remaining,
-                self.request_model(cancel, sentences, ui_tx),
+                self.request_model(cancel, sentences),
             )
             .await
             {
@@ -1037,9 +1025,6 @@ impl Agent {
                             if let Some(sink) = sentences {
                                 let _ = sink.send(progress.clone());
                             }
-                            if let Some(tx) = ui_tx {
-                                let _ = tx.try_send(HyuskEvent::Response(progress));
-                            }
                         }
                     }
 
@@ -1083,16 +1068,7 @@ impl Agent {
                             journal_arguments(&args_value.to_string())
                         );
 
-                        if let Some(tx) = ui_tx {
-                            HyuskState::Working.publish();
-
-                            // try_send: the UI channel must never block the
-                            // agent while it holds the agent lock (in
-                            // indicator mode nothing consumes this channel).
-                            let _ = tx.try_send(HyuskEvent::StateChanged(HyuskState::Working));
-
-                            let _ = tx.try_send(HyuskEvent::ToolStarted { name: name.clone() });
-                        }
+                        HyuskState::Working.publish();
 
                         // Typing and key input are classified by the focused
                         // window, so read it only for those calls (D1).
@@ -1226,10 +1202,6 @@ impl Agent {
 
                         if let Some(image_path) = image_path {
                             screenshots.push(image_path);
-                        }
-
-                        if let Some(tx) = ui_tx {
-                            let _ = tx.try_send(HyuskEvent::ToolFinished { name, success });
                         }
                     }
 
@@ -1413,16 +1385,10 @@ fn short(text: &str) -> String {
     }
 }
 
-fn publish_round(ui_tx: Option<&Sender<HyuskEvent>>, round: usize) {
+fn publish_round(round: usize) {
     println!("[Agent] Starting tool round {round}");
     crate::status::card("progress", format!("Working… step {round}"), false);
-
-    if let Some(tx) = ui_tx {
-        HyuskState::Working.publish();
-        // The UI channel may not be consumed in indicator mode. Progress
-        // reporting must never hold up the model/tool loop in that case.
-        let _ = tx.try_send(HyuskEvent::StateChanged(HyuskState::Working));
-    }
+    HyuskState::Working.publish();
 }
 
 fn tool_call_signature(name: &str, args: &Value, raw_args: &str) -> String {
@@ -1796,7 +1762,7 @@ mod tests {
         ];
         let result = tokio::time::timeout(
             Duration::from_secs(10),
-            agent.request_model(&CancellationToken::new(), None, None),
+            agent.request_model(&CancellationToken::new(), None),
         )
         .await?
         .unwrap()?
@@ -2005,12 +1971,7 @@ mod tests {
 
         let reply = tokio::time::timeout(
             Duration::from_secs(20),
-            agent.handle(
-                "use the ghost tool".into(),
-                None,
-                &CancellationToken::new(),
-                None,
-            ),
+            agent.handle("use the ghost tool".into(), &CancellationToken::new(), None),
         )
         .await??;
 
@@ -2063,7 +2024,6 @@ mod tests {
             Duration::from_secs(20),
             agent.handle(
                 "delete the build folder".into(),
-                None,
                 &CancellationToken::new(),
                 None,
             ),
@@ -2121,7 +2081,6 @@ mod tests {
             Duration::from_secs(20),
             agent.handle(
                 "show me the .env file".into(),
-                None,
                 &CancellationToken::new(),
                 None,
             ),
@@ -2207,7 +2166,7 @@ mod tests {
 
         let reply = tokio::time::timeout(
             Duration::from_secs(20),
-            agent.handle("click there".into(), None, &CancellationToken::new(), None),
+            agent.handle("click there".into(), &CancellationToken::new(), None),
         )
         .await??;
 
@@ -2342,12 +2301,7 @@ mod tests {
 
         let reply = tokio::time::timeout(
             Duration::from_secs(20),
-            agent.handle(
-                "research this".into(),
-                None,
-                &CancellationToken::new(),
-                None,
-            ),
+            agent.handle("research this".into(), &CancellationToken::new(), None),
         )
         .await??;
 
@@ -2379,12 +2333,7 @@ mod tests {
 
         let reply = tokio::time::timeout(
             Duration::from_secs(20),
-            agent.handle(
-                "fix the build".into(),
-                None,
-                &CancellationToken::new(),
-                None,
-            ),
+            agent.handle("fix the build".into(), &CancellationToken::new(), None),
         )
         .await??;
 
@@ -2546,9 +2495,7 @@ mod tests {
 
         let denied_command = "rm -rf audit-denied";
         arm_shell_approval_for(&mut agent, denied_command);
-        let _ = agent
-            .handle("no thanks".into(), None, &cancel, None)
-            .await?;
+        let _ = agent.handle("no thanks".into(), &cancel, None).await?;
         let denied = audit_lines_for(denied_command);
         assert_eq!(denied.len(), 1, "a denial is one line: {denied:?}");
         assert_eq!(denied[0]["decision"], "denied");
@@ -2558,7 +2505,7 @@ mod tests {
         let approved_command = "rm -rf audit-approved";
         arm_shell_approval_for(&mut agent, approved_command);
         let _ = agent
-            .handle("allow for this turn".into(), None, &cancel, None)
+            .handle("allow for this turn".into(), &cancel, None)
             .await?;
         let approved = audit_lines_for(approved_command);
         assert_eq!(approved.len(), 1, "an approval is one line: {approved:?}");
@@ -2571,9 +2518,7 @@ mod tests {
             expired_command,
             Instant::now() - Duration::from_secs(1),
         );
-        let reply = agent
-            .handle("hello there".into(), None, &cancel, None)
-            .await?;
+        let reply = agent.handle("hello there".into(), &cancel, None).await?;
         assert!(reply.is_some_and(|reply| reply.contains("expired")));
         let expired = audit_lines_for(expired_command);
         assert_eq!(expired.len(), 1, "an expiry is one line: {expired:?}");
@@ -2620,7 +2565,6 @@ mod tests {
             Duration::from_secs(20),
             agent.handle(
                 "open Firefox".into(),
-                None,
                 &CancellationToken::new(),
                 Some(&sentences),
             ),
@@ -2668,12 +2612,7 @@ mod tests {
 
         let reply = tokio::time::timeout(
             Duration::from_secs(20),
-            agent.handle(
-                "no, open Firefox".into(),
-                None,
-                &CancellationToken::new(),
-                None,
-            ),
+            agent.handle("no, open Firefox".into(), &CancellationToken::new(), None),
         )
         .await??;
 
@@ -2698,7 +2637,7 @@ mod tests {
 
         let reply = tokio::time::timeout(
             Duration::from_secs(20),
-            agent.handle("no thanks".into(), None, &CancellationToken::new(), None),
+            agent.handle("no thanks".into(), &CancellationToken::new(), None),
         )
         .await??;
 
@@ -2747,7 +2686,7 @@ mod tests {
         agent.messages = history;
 
         let reply = agent
-            .handle("yes".into(), None, &CancellationToken::new(), None)
+            .handle("yes".into(), &CancellationToken::new(), None)
             .await?;
 
         assert_eq!(
@@ -2781,7 +2720,7 @@ mod tests {
 
         let reply = tokio::time::timeout(
             Duration::from_secs(20),
-            agent.handle("yes".into(), None, &CancellationToken::new(), None),
+            agent.handle("yes".into(), &CancellationToken::new(), None),
         )
         .await??;
 
@@ -2807,7 +2746,7 @@ mod tests {
 
         let reply = tokio::time::timeout(
             Duration::from_secs(20),
-            agent.handle("open Firefox".into(), None, &cancel, None),
+            agent.handle("open Firefox".into(), &cancel, None),
         )
         .await??;
 
@@ -2840,7 +2779,6 @@ mod tests {
             Duration::from_secs(20),
             agent.handle(
                 "delete the build folder".into(),
-                None,
                 &CancellationToken::new(),
                 None,
             ),
@@ -2855,7 +2793,7 @@ mod tests {
 
         let reply = tokio::time::timeout(
             Duration::from_secs(20),
-            agent.handle("open Firefox".into(), None, &CancellationToken::new(), None),
+            agent.handle("open Firefox".into(), &CancellationToken::new(), None),
         )
         .await??;
 
@@ -2893,7 +2831,6 @@ mod tests {
         agent
             .handle(
                 "delete the build folder".into(),
-                None,
                 &CancellationToken::new(),
                 None,
             )
@@ -2906,7 +2843,6 @@ mod tests {
         agent
             .handle(
                 "allow for this turn".into(),
-                None,
                 &CancellationToken::new(),
                 None,
             )
@@ -2929,7 +2865,6 @@ mod tests {
         agent
             .handle(
                 "delete the third folder".into(),
-                None,
                 &CancellationToken::new(),
                 None,
             )
@@ -2988,7 +2923,6 @@ mod tests {
         agent
             .handle(
                 "click the Go button".into(),
-                None,
                 &CancellationToken::new(),
                 None,
             )
@@ -3005,7 +2939,6 @@ mod tests {
         agent
             .handle(
                 "allow for this turn".into(),
-                None,
                 &CancellationToken::new(),
                 None,
             )
@@ -3024,7 +2957,6 @@ mod tests {
         agent
             .handle(
                 "click the third link".into(),
-                None,
                 &CancellationToken::new(),
                 None,
             )
@@ -3052,7 +2984,6 @@ mod tests {
         agent
             .handle(
                 "delete the build folder".into(),
-                None,
                 &CancellationToken::new(),
                 None,
             )
@@ -3060,7 +2991,6 @@ mod tests {
         agent
             .handle(
                 "allow for this turn".into(),
-                None,
                 &CancellationToken::new(),
                 None,
             )
@@ -3093,13 +3023,12 @@ mod tests {
         agent
             .handle(
                 "delete the build folder".into(),
-                None,
                 &CancellationToken::new(),
                 None,
             )
             .await?;
         agent
-            .handle("yes".into(), None, &CancellationToken::new(), None)
+            .handle("yes".into(), &CancellationToken::new(), None)
             .await?;
 
         assert_eq!(executions.load(Ordering::SeqCst), 1);

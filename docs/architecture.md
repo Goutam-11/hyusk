@@ -7,40 +7,30 @@
    scheduling, and background-task actions.
 3. A Tokio event task that coordinates voice input, tool activity, responses,
    and TTS.
-4. Optional wake-word, speech-to-text, and overlay components that are wired
-   together when their local models and backends are available.
+4. Optional wake-word and speech-to-text components that are wired together
+   when their local models and backends are available.
 
 ## Runtime topology
 
 ```text
-                         +-----------------------+
-                         | main.rs               |
-                         | configuration + setup |
-                         +-----------+-----------+
-                                     |
-                 +-------------------+-------------------+
-                 |                   |                   |
-          +------v------+     +------v------+     +------v------+
-          | Agent task  |     | Wake task   |     | UI task     |
-          | MPSC loop   |     | microphone  |     | eframe      |
-          +------+------+     +------+------+     +------+------+
-                 |                   |                   |
-          +------v------+     +------v------+            |
-          | provider    |     | ONNX model  |            |
-          | client      |     | classifier  |            |
-          +------+------+     +------+------+            |
-                 |                   |                   |
-          +------v------+     +------v------+            |
-          | ToolRegistry|     | SpeechToText|            |
-          +--+---+---+--+     +------+------+            |
-             |   |   |               |                   |
-    desktop shell media memory +------+---- UserInput --->+
+main.rs
+  |
+  +-- Agent task (MPSC loop)
+  |     provider client -> tool loop -> ToolRegistry
+  |                                 -> desktop, shell, media, memory
+  |
+  +-- Wake task
+  |     microphone -> ONNX classifier -> SpeechToText -> UserInput -> Agent task
+  |
+  +-- Runtime files: hyusk-status.json (agent writes) and
+        hyusk-control.json (agent reads)
+        <-> GNOME extension, Noctalia widget, keybinds, scripts
 ```
 
-`main.rs` creates one MPSC channel for requests to the agent and another for
-events from the agent to the UI. The wake detector pauses through a small
-shared `WakeResume` signal while STT records, so two components do not compete
-for the microphone at the same time.
+`main.rs` creates one MPSC channel for requests to the agent and one for its
+internal events. The wake detector pauses through a small shared `WakeResume`
+signal while STT records, so two components do not compete for the microphone
+at the same time.
 
 ## Startup sequence
 
@@ -60,7 +50,7 @@ for the microphone at the same time.
 5. Construct `Agent` and `SharedActiveModel` with a per-turn system prompt and
    tool specs.
 6. Probe the default audio input device.
-7. Create the agent, UI, and status channels.
+7. Create the agent and status channels.
 8. Try to load `STT_MODEL`; on failure, log a warning and continue in
    text-only mode.
 9. Spawn `run_agent_task` with the STT handle and the shared wake-resume signal.
@@ -73,9 +63,8 @@ for the microphone at the same time.
     noise floor, and cooldown come from `WAKE_WORD_THRESHOLD`,
     `WAKE_WORD_MIN_RMS`, and `WAKE_WORD_COOLDOWN_MS`. A missing or incompatible
     model logs a warning and skips wake detection instead of stopping startup.
-12. Start a terminal stdin reader that sends typed lines as `UserInput` events.
-13. Start the native `eframe` event loop unless `HYUSK_ORB`/the GNOME
-    indicator say to skip it.
+12. Start a terminal stdin reader that sends typed lines as `UserInput` events,
+    then wait for Ctrl-C.
 
 ## Modules
 
@@ -123,11 +112,10 @@ for the microphone at the same time.
 | `tools/process.rs` | Spawns an executable directly and reports immediate failures. |
 | `tools/media.rs` | Delegates MPRIS control to `playerctl`. |
 | `types/message.rs` | Mirrors the chat-completions message, tool-call, and tool-result wire shape. |
-| `types/event.rs` | Defines events exchanged by the agent, wake detector, STT path, and UI. |
-| `types/state.rs` | Defines visual states consumed by the overlay. |
+| `types/event.rs` | Defines events exchanged by the agent, wake detector, STT path, and runtime. |
+| `types/state.rs` | Defines the state names published to the indicator files. |
 | `speech/speech.rs` | Contains Whisper microphone transcription and the Piper/espeak TTS adapters. |
 | `wake/detector.rs` | Captures microphone audio, resamples it, runs a LiveKit ONNX classifier, and exposes `WakeResume`. |
-| `ui/orb.rs` | Consumes events and draws the animated butterfly overlay. |
 
 ### Where to change agent behavior
 
@@ -273,7 +261,7 @@ function spec per tool:
 The model layer does not know about individual tool structs. This keeps the
 provider boundary independent from local execution details.
 
-## Events and UI states
+## Events
 
 `HyuskEvent` is a shared enum rather than a typed API. The main groups are:
 
@@ -282,21 +270,17 @@ provider boundary independent from local execution details.
   and the scoped `WakeProbeFinished` results.
 - Work: `RunWorkflow`, `ScheduledWorkflow`, `ScheduledAgentInput`,
   `ScheduledAgentTask`, `WorkflowFinished`, `SubtaskFinished`, `TurnFinished`.
-- UI and control: `StateChanged`, `ToolStarted`, `ToolFinished`, `Response`,
-  `ResponseDelta`, `StopRequested`, `ApprovalExpired`, `ModelSelected`,
+- Control and lifecycle: `StopRequested`, `ApprovalExpired`, `ModelSelected`,
   `ApiKeySaved`, `Shutdown`.
 
 Ids on the async variants let the runtime drop a result from a superseded
 listen session or turn.
 
 `run_agent_task` handles wake events and `UserInput`, cancels the previous turn,
-and spawns each turn as a separate task. `OrbApp` drains events on each frame
-and changes its visual state, including `Waking` and `Listening`. The overlay is
-a 160 x 160 transparent window with a black circle and always-on-top window
-level. It does not request keyboard focus by default (`ORB_STEAL_FOCUS=0`), so
-portal keyboard input reaches the controlled application. The orb itself does
-not render `Response` text; the GNOME response card and the Noctalia tooltip do,
-including Approve/Deny for armed actions.
+and spawns each turn as a separate task. It publishes the current state to
+`hyusk-status.json` and the legacy `hyusk-state` file; the GNOME response card
+and the Noctalia widget render the latest reply and Approve/Deny for armed
+actions from those files. The agent opens no window of its own.
 
 ## Model protocol and failure handling
 
@@ -336,10 +320,6 @@ provide:
   scanner is disabled and the wake threshold is raised to avoid hearing its own
   voice, but a deliberate wake word still interrupts the turn; wake detection
   and STT use the microphone sequentially);
-- guaranteed top-center window placement or focus on Wayland, where the
-  compositor may ignore those requests;
-- response text inside the `eframe` orb (the GNOME and Noctalia indicators
-  render it; the orb stays a status visual);
 - a stable client API or IPC protocol. The runtime status and control files are
   intentionally small, versioned by a monotonic `revision`, and may change.
 

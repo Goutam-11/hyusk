@@ -1,8 +1,9 @@
 # Voice and UI pipeline
 
-The wake-word, speech-to-text, text-to-speech, and overlay components are
-connected when their local models and external programs are available. This
-document describes the implemented path and the remaining limitations.
+The wake-word, speech-to-text, and text-to-speech components, plus the bar
+surfaces that read the runtime files, are connected when their local models and
+external programs are available. This document describes the implemented path
+and the remaining limitations.
 
 ## Current flow
 
@@ -16,8 +17,7 @@ WakeWordDetector
    v
 run_agent_task
    |
-   |  StateChanged(Waking)
-   |  StateChanged(Listening)
+   |  HyuskState::publish (Waking, Listening)
    |  SpeechToText::transcribe_from_microphone(8.0)
    |  WakeResume::resume
    v
@@ -26,18 +26,17 @@ UserInput event
    v
 Agent::handle -> OpenRouter -> tool loop -> final text
    |
-   +-> Response event
    +-> TextToSpeech::speak_cancellable (awaited)
-   +-> StateChanged(Hidden)
-   +-> UI event channel
+   +-> status::card(...) -> hyusk-status.json
+   +-> HyuskState::publish(Hidden) -> hyusk-state, hyusk-status.json
+```
 
-The overlay receives state/tool/response events and draws an animated
-butterfly. It does not render the response text.
+The GNOME indicator card and the Noctalia widget render state, the latest
+reply, and approvals from those files; the agent opens no window of its own.
 
 Typed terminal lines bypass wake detection and STT and are delivered directly
 as `UserInput`, so the text and `computer` tool paths remain available even
 when the voice models are missing.
-```
 
 ### Spoken confirmations
 
@@ -211,28 +210,6 @@ If Piper cannot run, it tries `espeak-ng`, then `espeak`. These executables are
 external to the Rust binary and must be installed separately. There is no
 platform fallback: Hyusk builds for Linux only.
 
-## Desktop overlay
-
-`ui::run` creates a 160 x 160 transparent, undecorated, always-on-top `eframe`
-window. `OrbApp` draws a black circle with a state-colored ring and the
-butterfly inside it. It requests a top-center position and focus while active;
-GNOME Wayland may ignore both requests, so the compositor may place the window
-elsewhere.
-
-The butterfly changes motion and intensity for these states:
-
-- `Waking`
-- `Listening`
-- `Thinking`
-- `Working`
-- `Speaking`
-
-`Response` events are retained in memory but not drawn. The overlay is an
-activity indicator rather than a complete agent interface.
-
-A GNOME Shell extension can replace the orb with a color-coded butterfly in the
-top bar. See [gnome-indicator.md](gnome-indicator.md).
-
 ## Remaining limitations
 
 - Wake detection requires a compatible local classifier and is disabled when it
@@ -245,11 +222,10 @@ top bar. See [gnome-indicator.md](gnome-indicator.md).
   trigger on its own TTS, but the wake word stays live. During a text-model turn
   a wake word starts a speech probe while the turn continues; only a non-empty
   transcript replaces the turn and stops Linux TTS.
-- The `eframe` orb does not display transcripts or response text; the GNOME
-  response card and the Noctalia tooltip show the latest response. While a
-  confirmation is armed they show the exact pending call instead - the tool and
-  its key arguments - and the same sentence reaches the model, which repeats it
-  in one short spoken line.
+- The GNOME response card and the Noctalia tooltip show the latest response,
+  and while a confirmation is armed they show the exact pending call instead -
+  the tool and its key arguments - and the same sentence reaches the model,
+  which repeats it in one short spoken line.
 - The **Stop** control ends the active turn, and **Stop listening** ends an
   in-flight recording. Local Whisper cancellation is cooperative between
   compute nodes, so an individual native compute operation may still finish
@@ -264,7 +240,5 @@ top bar. See [gnome-indicator.md](gnome-indicator.md).
 
 Useful next steps for the voice/UI layer:
 
-1. Render the latest transcript or response in the `eframe` orb; the GNOME card
-   and the Noctalia tooltip already show it.
-2. Implement the desktop-portal screenshot approval flow for GNOME Wayland.
-3. Surface microphone, STT, model, tool, and TTS failures as distinct states.
+1. Implement the desktop-portal screenshot approval flow for GNOME Wayland.
+2. Surface microphone, STT, model, tool, and TTS failures as distinct states.

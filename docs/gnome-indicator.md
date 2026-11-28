@@ -135,17 +135,6 @@ GNOME Shell only scans extensions when the session starts. Log out and back in,
 then enable **Hyusk Agent Indicator** in the Extensions app if it is not already
 enabled.
 
-## Orb behavior
-
-The agent skips its separate orb window when the extension is enabled in
-GNOME Shell. Override with:
-
-| Variable | Behavior |
-| --- | --- |
-| `HYUSK_ORB=1` | Always show the orb window. |
-| `HYUSK_ORB=0` | Never show the orb; indicator only. |
-| unset | Show the orb only when the extension is not enabled. |
-
 ## State colors
 
 | State | Color |

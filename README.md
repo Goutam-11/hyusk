@@ -124,7 +124,6 @@ variables:
 | `STT_MODEL` | `models/ggml-base.en.bin` | Whisper model for post-wake transcription. |
 | `PIPER_MODEL` | `models/en_US-lessac-medium.onnx` | Local Piper voice. |
 | `HYUSK_WORKSPACE` | current directory | Root for coding tasks and workspace delegation. |
-| `HYUSK_ORB` | auto | `0` hides the orb; it is also skipped when the GNOME indicator is installed. |
 
 The full list, defaults, and tuning notes are in
 [`.env.example`](.env.example); safety and timeout variables are documented in

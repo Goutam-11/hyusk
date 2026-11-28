@@ -24,7 +24,6 @@ mod system_info;
 mod timing;
 mod tools;
 mod types;
-mod ui;
 mod wake;
 
 use std::{
@@ -135,28 +134,6 @@ fn configured_wake_model_paths() -> Vec<std::path::PathBuf> {
     }
 
     default_wake_model_paths()
-}
-
-fn should_run_orb() -> bool {
-    if let Ok(value) = std::env::var("HYUSK_ORB") {
-        return !matches!(
-            value.to_ascii_lowercase().as_str(),
-            "0" | "false" | "off" | "no"
-        );
-    }
-
-    !gnome_indicator_enabled()
-}
-
-fn gnome_indicator_enabled() -> bool {
-    let output = std::process::Command::new("gsettings")
-        .args(["get", "org.gnome.shell", "enabled-extensions"])
-        .output();
-
-    match output {
-        Ok(output) => String::from_utf8_lossy(&output.stdout).contains("hyusk@hyusk.local"),
-        Err(_) => false,
-    }
 }
 
 #[cfg(feature = "mobile")]
@@ -815,12 +792,6 @@ async fn main() -> Result<()> {
     }
     tokio::spawn(refresh_catalogs());
 
-    /*
-     * Agent/runtime sends UI events through
-     * ui_tx.
-     */
-    let (ui_tx, mut ui_rx) = mpsc::channel::<HyuskEvent>(32);
-
     // ==========================================
     // Speech-to-text
     // ==========================================
@@ -861,8 +832,6 @@ async fn main() -> Result<()> {
     // Agent task
     // ==========================================
 
-    let agent_ui_tx = ui_tx.clone();
-
     let agent_event_tx = agent_tx.clone();
 
     let runtime_wake_resume = wake_resume.clone();
@@ -876,7 +845,6 @@ async fn main() -> Result<()> {
             agent,
             agent_rx,
             agent_event_tx,
-            agent_ui_tx,
             runtime_wake_resume,
             runtime_stt,
             runtime_output_active,
@@ -1315,20 +1283,9 @@ async fn main() -> Result<()> {
 
     println!();
 
-    if should_run_orb() {
-        ui::run(ui_rx).map_err(|error| anyhow::anyhow!("UI error: {}", error))?;
-    } else {
-        println!("🦋 GNOME top-bar indicator mode (HYUSK_ORB=0). Press Ctrl-C to quit.");
-
-        /*
-         * Nothing consumes the UI event channel in indicator mode (the
-         * indicator reads the state file directly). Drain it so senders can
-         * never block on a full channel.
-         */
-        tokio::spawn(async move { while ui_rx.recv().await.is_some() {} });
-
-        tokio::signal::ctrl_c().await?;
-    }
+    // Bars and scripts read the runtime files; this process owns no window.
+    println!("Press Ctrl-C to quit.");
+    tokio::signal::ctrl_c().await?;
 
     // ==========================================
     // Shutdown
@@ -2108,5 +2065,69 @@ mod platform_tests {
             panel.contains("payload.schema = 1"),
             "the Noctalia panel must write schema 1 with every command"
         );
+    }
+
+    /// #19: the orb overlay and the event channel it consumed are retired.
+    /// `eframe`/`egui` must stay out of the manifest, and no source may carry
+    /// the orb switch, the channel names, or the UI-only events. The needles are
+    /// assembled at run time so this guard never matches itself. Probe: written
+    /// before the removal, and failed on the first needle below.
+    #[test]
+    fn the_orb_and_its_ui_channel_are_retired() {
+        let orb_module = ["src", "ui"].join("/");
+        assert!(
+            !manifest_dir().join(&orb_module).exists(),
+            "{orb_module}/ was not deleted"
+        );
+
+        let manifest = std::fs::read_to_string(manifest_dir().join("Cargo.toml"))
+            .expect("read the package manifest");
+        let dependencies = manifest_section(&manifest, "[dependencies]");
+        for dependency in ["eframe", "egui"] {
+            let prefix = format!("{dependency} = ");
+            assert!(
+                dependencies
+                    .lines()
+                    .all(|line| !line.trim_start().starts_with(&prefix)),
+                "{dependency} must be gone from Cargo.toml"
+            );
+        }
+        let lock =
+            std::fs::read_to_string(manifest_dir().join("Cargo.lock")).expect("read the lock file");
+        for dependency in ["eframe", "egui"] {
+            let entry = format!("name = \"{dependency}\"");
+            assert!(
+                !lock.contains(&entry),
+                "{dependency} must be gone from Cargo.lock"
+            );
+        }
+
+        let needles = [
+            ["HYUSK", "ORB"].join("_"),
+            ["should", "run", "orb"].join("_"),
+            ["ui", "tx"].join("_"),
+            ["ui", "rx"].join("_"),
+            ["State", "Changed"].concat(),
+            ["Tool", "Started"].concat(),
+            ["Tool", "Finished"].concat(),
+            ["HyuskEvent::", "Response"].concat(),
+        ];
+        let mut sources = Vec::new();
+        rust_sources(&manifest_dir().join("src"), &mut sources);
+        assert!(
+            sources.len() > 20,
+            "the source walk found only {} files; the guard would pass by accident",
+            sources.len()
+        );
+        let mut offenders = Vec::new();
+        for path in &sources {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            for needle in &needles {
+                if text.contains(needle.as_str()) {
+                    offenders.push(format!("{}: {needle}", path.display()));
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "orb plumbing remains: {offenders:#?}");
     }
 }

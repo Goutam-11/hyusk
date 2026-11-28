@@ -62,7 +62,7 @@ async fn request_case(responses: Vec<(&str, &str, String)>) -> (Result<Message>,
     let (sentences, _) = tokio::sync::mpsc::unbounded_channel();
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        agent.request_model(&CancellationToken::new(), Some(&sentences), None),
+        agent.request_model(&CancellationToken::new(), Some(&sentences)),
     )
     .await;
     server.abort();
@@ -166,9 +166,8 @@ async fn streamed_sentences_reach_the_sink_before_the_reply_completes() {
     agent.messages = vec![Message::system("Test"), Message::user("Hello")];
 
     let (sentences, mut sentence_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel(16);
     let cancel = CancellationToken::new();
-    let request = agent.request_model(&cancel, Some(&sentences), Some(&ui_tx));
+    let request = agent.request_model(&cancel, Some(&sentences));
 
     let observe = async {
         let first = tokio::time::timeout(Duration::from_secs(5), sentence_rx.recv())
@@ -193,10 +192,6 @@ async fn streamed_sentences_reach_the_sink_before_the_reply_completes() {
     assert!(reply.streamed, "text was already delivered");
 
     assert!(sentence_rx.try_recv().is_err(), "no duplicated reply");
-    let deltas: Vec<_> = std::iter::from_fn(|| ui_rx.try_recv().ok()).collect();
-    assert_eq!(deltas.len(), 2);
-    assert!(matches!(&deltas[0], HyuskEvent::ResponseDelta(text) if text == "First sentence."));
-    assert!(matches!(&deltas[1], HyuskEvent::ResponseDelta(text) if text == "Second sentence."));
 
     server.await.unwrap();
 }

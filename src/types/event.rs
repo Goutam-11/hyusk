@@ -1,5 +1,3 @@
-use super::HyuskState;
-
 /// How far a panel decision reaches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalScope {
@@ -50,27 +48,6 @@ pub enum HyuskEvent {
         id: u64,
         text: Option<String>,
     },
-
-    // UI state
-    StateChanged(HyuskState),
-
-    // Agent/tool activity
-    ToolStarted {
-        name: String,
-    },
-
-    ToolFinished {
-        name: String,
-        success: bool,
-    },
-
-    // Agent output
-    Response(String),
-
-    /// A speakable sentence of the reply, delivered while the model is still
-    /// generating. Deltas arrive in order and are followed by the final
-    /// [`HyuskEvent::Response`] with the complete text.
-    ResponseDelta(String),
 
     // A configured background subagent finished work. This is kept separate
     // from UserInput so it never interrupts the user's current request.
